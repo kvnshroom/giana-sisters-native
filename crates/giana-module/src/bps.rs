@@ -59,6 +59,12 @@ fn apply_delta(rel: usize, v: u64) -> Result<usize, String> {
 
 /// Applies `patch` to `source`; checks magic, sizes and all three CRC32 values.
 pub fn decode(source: &[u8], patch: &[u8]) -> Result<Vec<u8>, String> {
+    decode_max(source, patch, MAX_TARGET)
+}
+
+/// [`decode`] for a patch whose target must not be larger than `max_target` bytes (checked on the header, before anything
+/// is allocated).
+pub fn decode_max(source: &[u8], patch: &[u8], max_target: u64) -> Result<Vec<u8>, String> {
     if patch.len() < 4 + 3 + 12 || &patch[..4] != b"BPS1" {
         return Err("BPS: not a BPS patch".into());
     }
@@ -76,7 +82,7 @@ pub fn decode(source: &[u8], patch: &[u8]) -> Result<Vec<u8>, String> {
     if src_size != source.len() as u64 {
         return Err("BPS: source size mismatch".into());
     }
-    if tgt_size > MAX_TARGET {
+    if tgt_size > max_target.min(MAX_TARGET) {
         return Err("BPS: target too large".into());
     }
     if meta_size > (end - pos) as u64 {

@@ -83,8 +83,8 @@ mod tests {
     #[test]
     fn tables_match_original_binary() {
         crate::skip_without_data!();
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/ingame.bin");
-        let bin = std::fs::read(path).expect("data/ingame.bin");
+        // the data that skip_without_data! found (the repository's data/ or the user's data folder)
+        let bin = crate::image::image();
         assert_eq!(&bin[0x9A56..0x9A56 + 0x44], &TABLE_9A56[..]);
         assert_eq!(&bin[0x9A9A..0x9A9A + 0x44], &TABLE_9A9A[..]);
         assert_eq!(&bin[0x9ADE..0x9ADE + 36], &TABLE_9ADE[..]);

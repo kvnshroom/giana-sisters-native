@@ -37,7 +37,12 @@ impl GameState {
     /// sub_98D9 ($98D9..$991C): print the bytes `bytes[0]` (= memory at `$02/$03 + X`) down to `bytes[X]` (= `$02/$03`) as two
     /// digits each at screen row `row` (row pointer table `$9FD3`), starting at column `col`
     pub fn print_bcd_sub_98d9(&mut self, bytes: &[u8], row: usize, col: usize) {
-        let base = img_word(0x9FD3 + 2 * row).wrapping_sub(0xC800);
+        let base = if self.engine_b.is_some() {
+            // family B (`$98E7..$98F1`): the row address is split in two tables, low bytes `$9BA0`, high bytes `$9FD3`
+            ((img(0x9FD3 + row) as usize) << 8 | img(0x9BA0 + row) as usize).wrapping_sub(0xC800)
+        } else {
+            img_word(0x9FD3 + 2 * row).wrapping_sub(0xC800)
+        };
         let mut idx = base + col;
         for &b in bytes {
             self.text_cell(idx, ((b >> 4) & 0x0F) | 0x30);
@@ -51,6 +56,11 @@ impl GameState {
         let score = [self.score_bcd[2], self.score_bcd[1], self.score_bcd[0]];
         self.print_bcd_sub_98d9(&score, 0, 0x2A);
         self.print_bcd_sub_98d9(&[self.diamonds_bcd], 0, 0x36);
+        if self.engine_b.is_some() {
+            // family B (`$1CF9..$1D07`): four digits, the high byte first, from column $4A
+            self.print_bcd_sub_98d9(&[self.timer_seconds_high, self.timer_seconds_low], 0, 0x4A);
+            return;
+        }
         self.print_bcd_sub_98d9(&[self.timer_seconds_low], 0, 0x4B);
     }
 
@@ -100,7 +110,7 @@ impl GameState {
         self.screen_ram[0x33] = 0xF7;
         self.color_ram[0x33] = 0x01;
         // $0E06: LDX $20; LDA $9FAE,X; STA $043D
-        self.warp_stage_id = img(0x9FAE + self.stage as usize);
+        self.warp_stage_id = self.bcd_table(self.stage as usize);
         self.print_bcd_sub_98d9(&[self.warp_stage_id], 0, 0x45);
         // $0E1F: the code falls into sub_0E1F (lives counter)
         self.draw_lives_sub_0e1f();

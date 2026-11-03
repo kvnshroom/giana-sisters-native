@@ -5,13 +5,14 @@
 //! the explicitly listed patches. No C64 ROM and no CPU emulation is needed. See `image` for what is and is not
 //! part of the result.
 
+pub mod d64;
 pub mod derive;
 pub mod g64;
 pub mod image;
 pub mod mini6502;
 pub mod sha256;
 
-pub use derive::{verify_dir, write_data_dir, DataFile, MANIFEST};
+pub use derive::{missing_optional, verify_dir, write_data_dir, DataFile, MANIFEST};
 
 use sha256::sha256_hex;
 
@@ -36,6 +37,8 @@ pub struct Extracted {
     pub patched: Vec<u8>,
     /// disk file `2`: packed title picture (and title tune), unpacked by `derive`
     pub title_prg: Vec<u8>,
+    /// disk file `ATG`: the high score table (optional: only the AUTHENTIC presentation needs it)
+    pub atg: Option<Vec<u8>>,
 }
 
 /// Checks the input file against the list of known versions, reads the program file from the disk and builds
@@ -64,11 +67,12 @@ pub fn extract(g64: &[u8]) -> Result<Extracted, String> {
     }
     let patched = image::apply_patches(&unpatched);
     let title_prg = disk.read_prg("2")?;
-    Ok(Extracted { version, unpatched, patched, title_prg })
+    let atg = disk.read_prg("ATG").ok();
+    Ok(Extracted { version, unpatched, patched, title_prg, atg })
 }
 
 /// Everything at once: checks the disk image, extracts the program and derives all files of the manifest (verified).
 pub fn extract_all(g64: &[u8]) -> Result<Vec<DataFile>, String> {
     let ex = extract(g64)?;
-    derive::derive_all(ex.patched, ex.title_prg)
+    derive::derive_all_with(ex.patched, ex.title_prg, ex.atg)
 }

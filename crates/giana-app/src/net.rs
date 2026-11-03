@@ -21,9 +21,40 @@ use std::time::{Duration, Instant};
 
 /// TCP for the game, UDP for finding a game in the network.
 pub const PORT: u16 = 47064;
-const HELLO: &[u8; 8] = b"GIANANT5";
+const HELLO: &[u8; 8] = b"GIANANT7";
 /// The host answers with this instead of the game mode when the other computer runs another build.
 const REFUSED: u8 = 0xFF;
+/// The same, when the build matches but the ROM module does not.
+const REFUSED_MODULE: u8 = 0xFE;
+
+/// Largest ROM module that goes over the wire (a `.grom` is at most 1 MB).
+pub const MAX_MODULE: usize = 1 << 20;
+/// How long a module transfer may take in all, on both sides.
+const TRANSFER_TIME: Duration = Duration::from_secs(20);
+/// The guest's answer to a module offer.
+const WANT_MODULE: u8 = 1;
+
+/// Where a guest keeps a ROM module that the host sends: the store, and the folder with the player's own game data
+/// (the module is checked against it before it is kept).
+#[derive(Clone, Debug)]
+pub struct ModuleSink {
+    pub store: crate::modules::Store,
+    pub data_dir: std::path::PathBuf,
+}
+
+/// A module the host can send to a guest that lacks it.
+struct SharedModule {
+    bytes: Vec<u8>,
+    sha: [u8; 32],
+}
+
+/// The ROM module on the wire: its 16 hex digits as 8 bytes, all zero for the original game.
+fn module_bytes(module: &str) -> [u8; 8] {
+    if module.is_empty() {
+        return [0; 8];
+    }
+    u64::from_str_radix(module, 16).map_or([0xFF; 8], u64::to_be_bytes)
+}
 
 /// Which build this is: the version and a hash of the game logic. Computers with other builds would drift apart, so they
 /// refuse each other in the handshake.
@@ -127,6 +158,12 @@ pub enum NetError {
     BadAddress,
     /// the other computer runs another build
     WrongVersion,
+    /// the other computer plays another ROM module
+    OtherModule,
+    /// the host sent its ROM module and it is stored now (its id): the game has to restart with it
+    ModuleReceived(String),
+    /// the host's ROM module did not arrive or is not usable with this computer's game data
+    BadModule,
     Other(std::io::Error),
 }
 
@@ -137,6 +174,9 @@ impl NetError {
             NetError::TimedOut => "NO ANSWER - CHECK THE ADDRESS",
             NetError::BadAddress => "THAT IS NOT A VALID ADDRESS",
             NetError::WrongVersion => "OTHER PLAYER HAS ANOTHER VERSION",
+            NetError::OtherModule => "OTHER PLAYER USES ANOTHER ROM MODULE",
+            NetError::ModuleReceived(_) => "MODULE RECEIVED - PICK IT IN ROM MODULES",
+            NetError::BadModule => "COULD NOT TAKE THE ROM MODULE",
             NetError::Other(_) => "COULD NOT CONNECT",
         }
     }
@@ -190,6 +230,11 @@ pub fn checksum(g: &GameState) -> u32 {
     g.en.col.iter().for_each(|&b| add(b));
     g.en.vic_frame.xy.iter().for_each(|&b| add(b));
     [g.player, g.lives_c64, g.scroll_fine, g.stage as u8].iter().for_each(|&b| add(b));
+    // a ROM module on the 7A3 engine keeps its objects in its own slot arrays
+    if let Some(b) = g.engine_b.as_ref() {
+        b.sprites.m.iter().for_each(|&x| add(x));
+        (b.spawn_next as u32).to_le_bytes().iter().for_each(|&x| add(x));
+    }
     h
 }
 
@@ -238,6 +283,10 @@ pub struct Host {
     mode: NetMode,
     winner: Winner,
     rules: u8,
+    /// the ROM module this computer plays (empty: the original game); a guest with another one is refused
+    module: [u8; 8],
+    /// the file of that module, offered to a guest that lacks it
+    shared: Option<std::sync::Arc<SharedModule>>,
     /// Connections whose handshake runs on a thread of its own, so that a silent client cannot hold up the game loop
     greeting: Vec<Pending>,
 }
@@ -252,12 +301,29 @@ impl Host {
         listener.set_nonblocking(true)?;
         // Finding the game is a convenience: without it the address can still be typed in
         let finder = UdpSocket::bind(("0.0.0.0", port)).ok().filter(|s| s.set_nonblocking(true).is_ok());
-        Ok(Self { listener, finder, mode, winner: Winner::default(), rules: 0, greeting: Vec::new() })
+        Ok(Self { listener, finder, mode, winner: Winner::default(), rules: 0, module: [0; 8], shared: None, greeting: Vec::new() })
     }
 
     /// The rules of the enhancements that change the game, sent to the computer that joins (see `KNOWN_RULES`).
     pub fn set_rules(&mut self, rules: u8) {
         self.rules = rules;
+    }
+
+    /// The ROM module of this computer (its id, empty for the original game): the guest has to play the same one.
+    pub fn set_module(&mut self, module: &str) {
+        self.module = module_bytes(module);
+    }
+
+    /// Offer the file of the module set with `set_module` to a guest that does not have it (nothing is offered for the
+    /// original game, or when the file is missing or larger than `MAX_MODULE`).
+    pub fn share_module(&mut self, store: &crate::modules::Store) {
+        use sha2::{Digest, Sha256};
+        let id = u64::from_be_bytes(self.module);
+        self.shared = (id != 0)
+            .then(|| store.read_module(&format!("{id:016x}")))
+            .flatten()
+            .filter(|b| b.len() <= MAX_MODULE)
+            .map(|bytes| std::sync::Arc::new(SharedModule { sha: Sha256::digest(&bytes).into(), bytes }));
     }
 
     /// The rule for the winner, sent to the computer that joins (the host decides, so that both show the same result).
@@ -308,11 +374,11 @@ impl Host {
                     }
                     let Ok(handle) = stream.try_clone() else { continue };
                     let (tx, rx) = channel();
-                    let (mode, winner, rules) = (self.mode, self.winner, self.rules);
+                    let (mode, winner, rules, module, shared) = (self.mode, self.winner, self.rules, self.module, self.shared.clone());
                     LIVE_GREETERS.fetch_add(1, Ordering::Relaxed);
                     let spawned = std::thread::Builder::new().name("net-greet".into()).spawn(move || {
                         // A session nobody takes any more is closed, so that its reader thread ends too
-                        if let Err(unsent) = tx.send(greet(stream, mode, winner, rules)) {
+                        if let Err(unsent) = tx.send(greet(stream, mode, winner, rules, module, shared.as_deref())) {
                             if let Ok(mut s) = unsent.0 {
                                 s.leave();
                             }
@@ -399,26 +465,90 @@ fn read_exact_until(stream: &mut TcpStream, buf: &mut [u8], deadline: std::time:
     Ok(())
 }
 
-fn greet(mut stream: TcpStream, mode: NetMode, winner: Winner, rules: u8) -> Result<Session, NetError> {
+fn greet(mut stream: TcpStream, mode: NetMode, winner: Winner, rules: u8, module: [u8; 8], shared: Option<&SharedModule>) -> Result<Session, NetError> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     let mut hello = [0u8; 8];
     read_exact_until(&mut stream, &mut hello, deadline)?;
     let mut id = [0u8; 4];
-    // A program of an older version sends no build id: its hello is already wrong
+    let mut guest_module = [0u8; 8];
+    // A program of an older version sends no module id: its hello is already wrong
     if &hello == HELLO {
         read_exact_until(&mut stream, &mut id, deadline)?;
+        read_exact_until(&mut stream, &mut guest_module, deadline)?;
     }
     if &hello != HELLO || id != build_id() {
         let _ = stream.write_all(&[REFUSED]);
         return Err(NetError::WrongVersion);
+    }
+    if guest_module != module {
+        let _ = offer_module(&mut stream, module, shared);
+        return Err(NetError::OtherModule);
     }
     stream.write_all(&[mode_byte(mode, winner), rules])?;
     let mut session = Session::start(stream, 0, mode)?;
     session.winner = winner;
     session.rules = rules;
     Ok(session)
+}
+
+/// The refusal for another ROM module, with the host's module on offer: `REFUSED_MODULE`, the size (4 bytes, 0: nothing on
+/// offer) and the SHA-256 (32 bytes). If the guest answers `WANT_MODULE`, the file follows. Best effort: any error just ends
+/// the handshake, which is refused anyway.
+fn offer_module(stream: &mut TcpStream, module: [u8; 8], shared: Option<&SharedModule>) -> std::io::Result<()> {
+    let deadline = Instant::now() + TRANSFER_TIME;
+    let mut msg = vec![REFUSED_MODULE];
+    match shared {
+        Some(m) => {
+            msg.extend_from_slice(&(m.bytes.len() as u32).to_be_bytes());
+            msg.extend_from_slice(&module);
+            msg.extend_from_slice(&m.sha);
+        }
+        None => msg.extend_from_slice(&[0; 44]),
+    }
+    stream.write_all(&msg)?;
+    let Some(m) = shared else { return Ok(()) };
+    let mut answer = [0u8; 1];
+    read_exact_until(stream, &mut answer, deadline)?;
+    if answer[0] != WANT_MODULE {
+        return Ok(());
+    }
+    for chunk in m.bytes.chunks(16 * 1024) {
+        if Instant::now() >= deadline {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        stream.write_all(chunk)?;
+    }
+    // the guest closes after reading: wait for that, so that the bytes are not cut off by a reset
+    let mut end = [0u8; 1];
+    let _ = read_exact_until(stream, &mut end, deadline);
+    Ok(())
+}
+
+/// The guest side of `offer_module`: takes the file, checks it and stores it. `Ok` is the id of the stored module.
+fn receive_module(stream: &mut TcpStream, sink: Option<&ModuleSink>) -> Result<String, NetError> {
+    use sha2::{Digest, Sha256};
+    let deadline = Instant::now() + TRANSFER_TIME;
+    let mut head = [0u8; 44];
+    read_exact_until(stream, &mut head, deadline)?;
+    let size = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
+    let sink = match sink {
+        Some(s) if size > 0 && size <= MAX_MODULE => s,
+        _ => return Err(NetError::OtherModule),
+    };
+    stream.write_all(&[WANT_MODULE])?;
+    let mut bytes = vec![0u8; size];
+    read_exact_until(stream, &mut bytes, deadline).map_err(|_| NetError::BadModule)?;
+    if Sha256::digest(&bytes)[..] != head[12..] {
+        return Err(NetError::BadModule);
+    }
+    // stored only if it is a valid module for this computer's own game data, and the one that was announced
+    let module = sink.store.add_received(&bytes, &sink.data_dir).map_err(|_| NetError::BadModule)?;
+    if module_bytes(&module.id) != head[4..12] {
+        return Err(NetError::BadModule);
+    }
+    Ok(module.id)
 }
 
 /// The address of a host. Without a port the usual one. Names are not looked up: that could hold up the game for a long time.
@@ -430,15 +560,30 @@ pub fn parse_address(addr: &str) -> Result<SocketAddr, NetError> {
 
 /// Connect to a host and wait for the handshake. It can take several seconds: the game loop uses `Joiner`.
 pub fn join(addr: &str) -> Result<Session, NetError> {
+    join_with(addr, "")
+}
+
+/// The same for a computer that plays the ROM module `module` (its id, empty for the original game).
+pub fn join_with(addr: &str, module: &str) -> Result<Session, NetError> {
+    join_receiving(addr, module, None)
+}
+
+/// The same; if the host plays another ROM module and offers it, it is taken into `sink` and the result is
+/// `NetError::ModuleReceived`.
+pub fn join_receiving(addr: &str, module: &str, sink: Option<&ModuleSink>) -> Result<Session, NetError> {
     let target = parse_address(addr)?;
     let mut stream = TcpStream::connect_timeout(&target, Duration::from_secs(3))?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
     let mut hello = HELLO.to_vec();
     hello.extend_from_slice(&build_id());
+    hello.extend_from_slice(&module_bytes(module));
     stream.write_all(&hello)?;
     let mut mode = [0u8; 1];
     stream.read_exact(&mut mode)?;
+    if mode[0] == REFUSED_MODULE {
+        return receive_module(&mut stream, sink).and_then(|id| Err(NetError::ModuleReceived(id)));
+    }
     let (mode, winner) = mode_from(mode[0]).ok_or(NetError::WrongVersion)?;
     let mut rules = [0u8; 1];
     stream.read_exact(&mut rules)?;
@@ -457,11 +602,16 @@ pub struct Joiner {
 }
 
 impl Joiner {
-    pub fn start(addr: &str) -> Self {
-        let addr = addr.to_string();
+    pub fn start(addr: &str, module: &str) -> Self {
+        Self::start_receiving(addr, module, None)
+    }
+
+    /// The same; a ROM module that the host offers is taken into `sink`.
+    pub fn start_receiving(addr: &str, module: &str, sink: Option<ModuleSink>) -> Self {
+        let (addr, module) = (addr.to_string(), module.to_string());
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            if let Err(unwanted) = tx.send(join(&addr)) {
+            if let Err(unwanted) = tx.send(join_receiving(&addr, &module, sink.as_ref())) {
                 if let Ok(mut s) = unwanted.0 {
                     s.leave();
                 }
@@ -944,15 +1094,51 @@ mod tests {
         assert!(matches!(NetError::from(Error::from(ErrorKind::TimedOut)), NetError::TimedOut));
         assert!(matches!(NetError::from(Error::from(ErrorKind::WouldBlock)), NetError::TimedOut));
         assert!(matches!(NetError::from(Error::from(ErrorKind::NotFound)), NetError::Other(_)));
-        let texts = [NetError::Refused.text(), NetError::TimedOut.text(), NetError::BadAddress.text(), NetError::WrongVersion.text()];
+        let texts = [NetError::Refused.text(), NetError::TimedOut.text(), NetError::BadAddress.text(), NetError::WrongVersion.text(), NetError::OtherModule.text()];
         assert!(texts.iter().all(|t| t.len() <= 36));
-        assert_eq!(texts.iter().collect::<std::collections::HashSet<_>>().len(), 4);
+        assert_eq!(texts.iter().collect::<std::collections::HashSet<_>>().len(), 5);
     }
 
     #[test]
     fn nobody_at_the_address_is_refused() {
         let port = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port(); // closed again
         assert!(matches!(join(&format!("127.0.0.1:{port}")), Err(NetError::Refused)));
+    }
+
+    #[test]
+    fn a_guest_with_another_rom_module_is_refused_by_both_sides() {
+        let port = 47121;
+        let mut host = Host::on_port(NetMode::TakeTurns, port).unwrap();
+        host.set_module("0123456789abcdef");
+        let client = std::thread::spawn(move || join_with(&format!("127.0.0.1:{port}"), "fedcba9876543210"));
+        let host_side = loop {
+            if let Some(r) = host.poll() {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(matches!(host_side, Err(NetError::OtherModule)));
+        let guest_side = client.join().unwrap();
+        assert!(matches!(guest_side, Err(NetError::OtherModule)));
+        assert!(NetError::OtherModule.text().contains("ROM MODULE"));
+        // the original game on one side only is a mismatch too
+        let client = std::thread::spawn(move || join(&format!("127.0.0.1:{port}")));
+        let host_side = loop {
+            if let Some(r) = host.poll() {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(matches!(host_side, Err(NetError::OtherModule)) && matches!(client.join().unwrap(), Err(NetError::OtherModule)));
+        // the same module connects
+        let client = std::thread::spawn(move || join_with(&format!("127.0.0.1:{port}"), "0123456789abcdef"));
+        let host_side = loop {
+            if let Some(r) = host.poll() {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(host_side.is_ok() && client.join().unwrap().is_ok());
     }
 
     #[test]

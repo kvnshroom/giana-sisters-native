@@ -17,6 +17,12 @@ impl GameState {
         if self.en.flag_157e == 0 {
             return false;
         }
+        if self.engine_b.is_some() {
+            // family B (`$0B56 -> $9169`): the hack's own ending screen is not ported; the game ends here
+            self.en.flag_157e = 0;
+            self.game_over = true;
+            return true;
+        }
         if self.two_players {
             self.ending_two_players();
             return true;
@@ -35,7 +41,7 @@ impl GameState {
         if self.player_save[12] != 0 && self.player_save[13] != 0 {
             self.game_over = true;
         } else {
-            self.restart_stage_l09b6();
+            self.restart_or_hold_l09b6();
         }
     }
 

@@ -1,0 +1,11 @@
+[package]
+name = "giana-authentic"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "AUTHENTIC presentation: runs the player's own title program and the original high score code on a small C64 slice"
+
+[dependencies]
+giana-extract = { path = "../giana-extract" }
+giana-core = { path = "../giana-core" }
+giana-render = { path = "../giana-render" }

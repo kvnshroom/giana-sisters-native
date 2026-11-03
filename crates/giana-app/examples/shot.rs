@@ -1,4 +1,7 @@
 //! Headless screenshot of the ported game: `shot <frames> <out.ppm> [right_from] [jump_from]`
+//!
+//! `GIANA_MODULE=<id or its first digits>` plays an installed ROM module (from the modules folder of the configuration
+//! directory, so `XDG_CONFIG_HOME` picks another one).
 use giana_core::state::{ControllerInput, GameState};
 use giana_render::framebuffer::{Framebuffer, HEIGHT, WIDTH};
 use giana_render::vic::{render_vic, VicView};
@@ -6,6 +9,14 @@ use std::io::Write;
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
+    if let Ok(want) = std::env::var("GIANA_MODULE") {
+        let store = giana_app::modules::Store::default_location().expect("no configuration folder");
+        let found = store.find(&want).unwrap_or_else(|| panic!("no ROM module '{want}' in {}", store.dir().display()));
+        let data_dir = giana_app::firstrun::locate(None).expect("no game data");
+        let (data, _, meta) = store.load_selected(&found.id, &data_dir).expect("module does not load");
+        giana_core::data::install(data);
+        eprintln!("ROM module: {} ({})", meta.name, found.id);
+    }
     let frames: usize = a[1].parse().unwrap();
     let right_from: usize = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
     let jump_from: usize = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);

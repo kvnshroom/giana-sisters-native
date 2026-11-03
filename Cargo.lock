@@ -256,12 +256,14 @@ dependencies = [
 
 [[package]]
 name = "giana-app"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "giana-audio",
+ "giana-authentic",
  "giana-core",
  "giana-extract",
+ "giana-module",
  "giana-render",
  "rfd",
  "sdl2",
@@ -282,8 +284,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "giana-authentic"
+version = "0.1.0"
+dependencies = [
+ "giana-core",
+ "giana-extract",
+ "giana-render",
+]
+
+[[package]]
 name = "giana-core"
 version = "0.1.0"
+dependencies = [
+ "giana-engine-b",
+ "giana-extract",
+ "giana-render",
+]
+
+[[package]]
+name = "giana-engine-b"
+version = "0.1.0"
+dependencies = [
+ "giana-core",
+ "giana-module",
+ "giana-render",
+]
+
+[[package]]
+name = "giana-engine-c"
+version = "0.1.0"
+dependencies = [
+ "giana-module",
+ "giana-render",
+]
 
 [[package]]
 name = "giana-extract"
@@ -294,7 +327,9 @@ name = "giana-module"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "giana-core",
  "giana-extract",
+ "giana-render",
  "serde_json",
  "zip",
 ]

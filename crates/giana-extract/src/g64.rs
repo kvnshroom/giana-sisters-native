@@ -136,6 +136,10 @@ impl Disk {
         Ok(Disk { sectors })
     }
 
+    pub fn sector(&self, t: u8, s: u8) -> Option<&[u8; 256]> {
+        self.sectors.get(&(t, s))
+    }
+
     pub fn sector_count(&self) -> usize {
         self.sectors.len()
     }

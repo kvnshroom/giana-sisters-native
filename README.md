@@ -95,6 +95,7 @@ automatically; otherwise type the host's address.
 
 - **Fullscreen**, and **scaling**: *whole pixels* (sharp, with the C64 border), *no border* (sharp and as large as
   possible – 5× on a 1920×1080 screen) or *fill screen*.
+- **Screen: sharp or CRT**: CRT makes the picture look like on a tube television (scanlines, glow, soft pixels).
 - **Display 50 Hz**: the game runs at 50 frames per second like a European C64. In fullscreen it picks a 50, 100,
   150 or 200 Hz mode if your monitor has one, so every frame is shown evenly.
 - **Sound**: master volume, separate music and effects volume, and menu sounds (soft, classic or off). With both
@@ -102,17 +103,69 @@ automatically; otherwise type the host's address.
 - **Mode: ORIGINAL / ENHANCED**. ORIGINAL is the game as it was. ENHANCED switches on changes a purist might not want,
   currently *smooth motion*: on 60/120/144 Hz monitors the picture is moved smoothly between the C64's frames.
 
+### Authentic mode
+
+**Presentation: MODERN / AUTHENTIC** (on the options page, independent of *Mode*). AUTHENTIC shows exactly what the C64
+showed: you start in the Time Warp screen and the title picture of the original (fire continues), then the game's own
+title screen (`1` or `2` or fire), and after a game over the original high score table and the original name entry, with
+the C64 border at 50 Hz and no menus, hints or messages on top. Everything runs natively in the app, no emulator: the title
+sequence, the game's title and the high score screen are ports of the original routines that reproduce the raster effects
+of the C64 line by line, and the game itself is the port with the C64's picture geometry. Two players taking turns work as in the original; network play is not offered, and the
+enhancements of *Mode* do not apply.
+
+- `F1` (or `F10`, or the controller's Back button) opens a small settings overlay over the paused picture; closing it
+  returns to the pure picture. `Esc` does nothing, as on the C64. On the high score screen the original asks for the C64's
+  `F1` key ("PRESS F1 TO SAVE HIGHSCORES"): there `F1` is that key, and `F10` or Back still open the overlay.
+- Type your name with the keyboard, `Backspace` deletes, `Enter` ends. The table is saved to `authentic_scores.prg` next to
+  `settings.conf` when you press `F1` on that question, as the original saved it to disk; it is kept apart from the modern
+  high score table.
+- AUTHENTIC needs one more file from your disk image (`atg.prg`). If your game data was made by an earlier version, the item
+  is greyed out; select it and the game asks for the `.g64` again once.
+- Not like the C64: the loading of the game (about 40 seconds on the real drive) is replaced by a second of black screen.
+  Details and measurements: [docs/authentic-mode.md](docs/authentic-mode.md).
+
 Settings, controls and high scores live in `~/.config/giana-native/` (Linux and macOS) or `%APPDATA%\giana-native\`
 (Windows). The extracted game data lives in `~/.local/share/giana-native/data/` (Linux),
 `%APPDATA%\giana-native\data\` (Windows) or `~/Library/Application Support/giana-native/data/` (macOS); a `data`
 folder next to the program works too, and `--data DIR` picks any other place.
 
+### ROM modules
+
+Fan-made versions of the game ("ROM hacks": other levels, graphics, colours, music, sometimes a changed engine) can be
+played as **ROM modules**, files with the extension `.grom`. Add the hack's own disk image (`.d64`, `.g64`) and the game
+turns it into a module; a module is a patch against *your own* extracted game data, so for most hacks it contains none of
+the original.
+
+- **Add one:** main menu, *ROM MODULES*, *ADD ROM MODULE...* and choose the hack's disk image or a `.grom` file (or drop
+  it on the window, open it with the game, or run `giana-app FILE`). Pick it in the list and choose *PLAY THIS*: the game
+  restarts with it. *ORIGINAL* at the top of the list is the unchanged game. Each module has its own high scores.
+- **Which hacks work:** hacks that change levels, graphics and colours work as they are. Hacks that bring their own
+  engine run on a native port of that engine:
+  - the 1989 *Gianna Sisters Construction Kit* hacks (Gitty's Dreams, Power Sisters, Frankie's Horror Trip, The Furry
+    Knibble Girls, The Gitty's News),
+  - *The Great Giana Sisters 2* by The New Wave,
+  - hacks on the 7A3 *Construction-Set* engine (Ridley X, Power Edition 2023, Giana Sisters Junior, Super Marioahner
+    Sisters, games made with the construction set).
+
+  Not yet: *Giana Sisters II (Gem Nightmare)* and the *30th Anniversary* preview. For an unknown hack with changed code the
+  module page warns that it may not play as intended.
+- **Network games:** both computers have to play the same module. If you join a host that plays a module you do not have, the host sends it (a `.grom` holds no original data; it is checked against your own game data) and your game stores it. Pick it under ROM MODULES, then join again - a host never switches your game by itself.
+- **Make one:** from a modified game image with `giana-app --make-module INPUT -o OUT.grom --name "NAME"` (optional
+  `--author`, `--version`, `--description`, `--title F_2.PRG`). `INPUT` is the hack's disk image, a 64K image or RAM dump, a VICE snapshot
+  (`.vsf`), a PRG of disk file `1`, or a `.bps` patch against `ingame.bin`. It needs your original game data and
+  prints which game code the module changes. `giana-app --list-modules` shows what is installed.
+
 ### Command line
 
 ```
-giana-app [OPTIONS] [FILE.g64]
+giana-app [OPTIONS] [FILE.g64 | FILE.grom]
 
     FILE.g64           on the first start, use this disk image ("Open with", or drag it onto giana-app.exe)
+    FILE.grom          add this ROM module and play it from now on
+    --module FILE|ID   play this ROM module in this run only
+    --list-modules     list the installed ROM modules and exit
+    --make-module INPUT -o OUT.grom --name NAME [--author A] [--version V] [--description D] [--title F_2.PRG]
+                       make a ROM module from a modified game and exit
     --import FILE.g64  extract the game data from your original disk image and exit
     --data DIR         use the original game data in DIR (extract into it on first start)
     --stage N          skip the menu and start in stage N (1 to 33)
@@ -146,6 +199,7 @@ builds SDL2 from source and links it in (that's how the Windows and macOS releas
 | `giana-audio` | runs the ported sound driver on a SID chip model |
 | `giana-app` | window, input, menus, high scores, network play, options, updates |
 | `giana-extract` | reads the game out of your `.g64` (no ROMs needed) |
+| `giana-authentic` | test reference only: a cycle exact 6502 and VIC-II model that runs your own copy of the original, against which the native AUTHENTIC screens are compared (not part of the game) |
 
 ## How faithful is it?
 

@@ -2,10 +2,14 @@
 # Columns: path (relative to data/), size in bytes, sha256 of the content the port was verified with.
 # Lines starting with '#' are comments. Embedded in crates/giana-extract/src/derive.rs (a unit test keeps both equal); the app checks it at start-up.
 #
+# A fourth column `optional` marks a file the game does not need: a data folder without it is valid, only the feature that
+# uses it (the AUTHENTIC presentation) is unavailable until the extractor is run again.
+#
 # Inputs, taken from the user's .g64 by the extractor:
 #   ingame.bin          64K program image, file offset == C64 address: disk file 1 at $0820, zeros elsewhere, documented patches (giana-extract).
 #                       This is the oracle-patched variant ($1277 = $04). The game build does not
 #                       depend on that byte: the unpatched value $05 gives identical test results (checked with the unit tests).
+#   atg.prg             raw program file of disk file ATG (122 bytes, load address $36F7): the high score table the game loads at start.
 #   f_2.prg             raw program file of the title part (20088 bytes, load address $0801, crunched BASIC stub).
 # Derived by giana-extract (crates/giana-extract/src/derive.rs), in the app on first start or by `giana-extract <g64> <dir>`:
 #   collision_table.bin image $9C20..$9D20
@@ -15,6 +19,7 @@
 #   title_koala.bin     decrunched f_2.prg memory $2000..$4710: multicolour bitmap, screen RAM, colour RAM, background.
 # Not files any more (computed by the build from ingame.bin): the 33 stage maps (giana_core::state::all_stages, ported
 # sub_9936), character set and sprite shapes (game state), title and stage music (ported sound driver, giana-audio).
+atg.prg 122 24dffcdfd2399d16a13f055e4925a826922ed299d1b075350f1ab7c67adb5ad3 optional
 collision_table.bin 256 667526cbc31e27d88d7e5871b646f96ff904d5b76b81494f29e425f41083b22b
 colortable.bin 256 74ccc485e71ad8505c1c30932f07f728624f822e9277fecb659f63209287966a
 f_2.prg 20088 389ec667bab8bf119facad9706191d0ac79103950f3fa45dd3fe74e20c2676e0

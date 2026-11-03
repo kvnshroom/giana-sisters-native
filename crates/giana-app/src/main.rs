@@ -1,12 +1,14 @@
 // Release builds on Windows open no console window next to the game (debug builds keep it for the log)
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+use giana_app::authentic::{self, AuthenticRun};
 use giana_app::bindings::{config_path, Bindings, Held, PadInput, Source};
 use giana_app::cli::{self, Command, Options};
 use giana_app::display;
 use giana_app::firstrun;
 use giana_app::hints::InputState;
-use giana_app::menu::{self, nav_for_button, nav_for_key, nav_for_stick, GameMode, Menu, Nav, OptionChange, Outcome, Search};
+use giana_app::menu::{self, nav_for_button, nav_for_key, nav_for_stick, AuthenticAvail, GameMode, Menu, ModuleInfo, Nav, OptionChange, Outcome, Search};
+use giana_app::modules::{self, Store};
 use giana_app::menu_draw::{self, DrawCtx};
 use giana_app::menu_sound::{cue_for, Cue, MenuSounds};
 use giana_app::padicons::{sdl_type_for_index, PadKind};
@@ -15,7 +17,7 @@ use giana_app::present::{self, Presenter};
 use giana_app::ui::{self, PillTone};
 use giana_app::result::{decide, MatchResult, Standing, Winner};
 use giana_app::scores::{score_value, scores_path, Entry, Scores};
-use giana_app::settings::{settings_path, Settings};
+use giana_app::settings::{settings_path, Presentation, Settings};
 use giana_audio::mixer::Mixer;
 use giana_audio::player::MusicTrack;
 use giana_audio::split::SplitDrivers;
@@ -35,7 +37,11 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::Canvas;
 use sdl2::surface::Surface;
 use sdl2::video::{FullscreenType, Window};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// Set when the player switched the ROM module: `main` starts the game again once the window and the sound are closed.
+static RESTART: AtomicBool = AtomicBool::new(false);
 
 struct SidAudioCallback {
     mixer: Mixer,
@@ -139,8 +145,8 @@ fn open_controller(mgr: &sdl2::GameControllerSubsystem, skip: Option<u32>) -> Op
 }
 
 /// Write the scores; when it fails the player sees a notice in the menu.
-fn save_scores(scores: &Scores, open: &mut Option<Menu>) {
-    if let Some(path) = scores_path() {
+fn save_scores(scores: &Scores, module: &str, open: &mut Option<Menu>) {
+    if let Some(path) = scores_path(module) {
         if let Err(e) = scores.save(&path) {
             eprintln!("Could not save the scores to {}: {}", path.display(), e);
             if let Some(m) = open.as_mut() {
@@ -175,6 +181,13 @@ struct Pending {
     new_score: Option<giana_app::scores::Entry>,
     to_title: bool,
     quit: bool,
+    /// `ADD ROM MODULE...`: ask for a file
+    add_module: bool,
+    /// play this ROM module (its id, empty for the original game): save the choice and start again
+    play_module: Option<String>,
+    remove_module: Option<String>,
+    /// `PRESENTATION` on the options page asked for the disk image (AUTHENTIC needs a file older data folders lack)
+    authentic_data: bool,
 }
 
 /// Carry out what a menu step asks for.
@@ -198,6 +211,10 @@ fn apply_outcome(outcome: Outcome, open: &mut Option<Menu>, pending: &mut Pendin
         Outcome::CancelJoin => pending.cancel_join = true,
         Outcome::Option(change) => pending.options.push(change),
         Outcome::Update => pending.update = true,
+        Outcome::ModuleAdd => pending.add_module = true,
+        Outcome::ModulePlay(id) => pending.play_module = Some(id),
+        Outcome::ModuleRemove(id) => pending.remove_module = Some(id),
+        Outcome::AuthenticData => pending.authentic_data = true,
         Outcome::AddScore(entry) => pending.new_score = Some(entry),
         Outcome::Changed => {
             if let Some(path) = config_path() {
@@ -322,6 +339,109 @@ fn address_char(key: Keycode) -> Option<char> {
     (last.len() == 1).then(|| last.chars().next().unwrap()).filter(|c| c.is_ascii_digit() || *c == '.' || *c == ':')
 }
 
+/// The modules for the menu.
+fn module_infos(store: Option<&Store>, data_dir: &std::path::Path) -> Vec<ModuleInfo> {
+    let Some(store) = store else { return Vec::new() };
+    store
+        .list(Some(data_dir))
+        .iter()
+        .map(|i| ModuleInfo::new(&i.id, &i.meta.name, &i.meta.author, &i.meta.version, &i.meta.description, i.code_changes.unwrap_or(0) > 0))
+        .collect()
+}
+
+/// Adds a file to the modules. The menu shows the module, or says in plain words why it could not be added.
+fn add_module_file(store: Option<&Store>, data_dir: &std::path::Path, file: &std::path::Path, open: &mut Option<Menu>, infos: &mut Vec<ModuleInfo>) {
+    let Some(store) = store else {
+        if let Some(m) = open.as_mut() {
+            m.module_added(None, Some("there is no folder for the modules".to_string()));
+        }
+        return;
+    };
+    match store.add(file, data_dir) {
+        Ok(added) => {
+            println!("ROM module added: {} ({})", added.meta.name, added.id);
+            *infos = module_infos(Some(store), data_dir);
+            if let Some(m) = open.as_mut() {
+                let active = m.active_module.clone();
+                m.set_modules(infos, &active);
+                m.module_added(Some(&added.id), None);
+            }
+        }
+        Err(e) => {
+            eprintln!("Could not add {}: {e}", file.display());
+            if let Some(m) = open.as_mut() {
+                m.module_added(None, Some(e));
+            }
+        }
+    }
+}
+
+/// `--list-modules`
+fn list_modules(data: Option<&std::path::Path>) {
+    let Some(store) = Store::default_location() else {
+        eprintln!("giana-app: there is no folder for the modules.");
+        std::process::exit(1);
+    };
+    let data_dir = firstrun::locate(data);
+    let list = store.list(data_dir.as_deref());
+    println!("ROM modules in {}:", store.dir().display());
+    if list.is_empty() {
+        println!("  none. Add one with: giana-app FILE.grom");
+    }
+    for m in list {
+        let notes = match m.code_changes {
+            Some(n) if n > 0 => "  (changes game code)",
+            _ => "",
+        };
+        let kind = match m.kind_text() {
+            k if k.is_empty() => String::new(),
+            k => format!("  ({k})"),
+        };
+        println!("  {}  {}  V{}  by {}{notes}{kind}", m.id, m.meta.name, m.meta.version, m.meta.author);
+    }
+}
+
+/// `--make-module`
+fn make_module_command(m: cli::MakeModule) {
+    let fail = |text: String| -> ! {
+        eprintln!("giana-app: {text}");
+        std::process::exit(1);
+    };
+    let Some(data_dir) = firstrun::locate(m.data.as_deref()) else {
+        fail("a module is made against your original game data, which was not found. Start the game once to extract it, or give the folder with --data DIR.".into());
+    };
+    let base = modules::Base::read(&data_dir).unwrap_or_else(|e| fail(e));
+    let meta = giana_module::Meta::new(&m.name, &m.author, &m.version, &m.description);
+    let (module, applied) = modules::make_module(&base, &m.input, m.title.as_deref(), meta).unwrap_or_else(|e| fail(e));
+    let bytes = module.write();
+    if let Err(e) = std::fs::write(&m.out, &bytes) {
+        fail(format!("cannot write {}: {e}", m.out.display()));
+    }
+    println!("ROM module '{}' ({}) written to {} ({} bytes)", module.meta.name, applied.id, m.out.display(), bytes.len());
+    let uncovered = applied.uncovered_code_changes();
+    if applied.engine.is_some() && applied.family != giana_module::Family::Tnw1989 {
+        println!(
+            "It is a game of the 7A3 construction-set engine, with {} stage, monster and treasure room files from the disk. \
+             Its own engine plays it; until that engine is part of this program the game does not play as intended.",
+            applied.files.len()
+        );
+    } else if applied.code_changes.is_empty() {
+        println!("It changes game data only.");
+    } else if uncovered.is_empty() {
+        println!("It changes game code the way {} hacks do; the port supports that family, so it plays as intended.", applied.family.name());
+    } else {
+        let total: usize = uncovered.iter().map(|c| c.1).sum();
+        println!("It changes game CODE: {} range(s), {total} bytes. The port runs its own version of the code, so these changes have no effect and the module may not play as intended:", uncovered.len());
+        for (start, len) in uncovered.iter().take(12) {
+            println!("  ${start:04X}..${:04X} ({len} bytes)", start + len - 1);
+        }
+        if uncovered.len() > 12 {
+            println!("  ... and {} more", uncovered.len() - 12);
+        }
+    }
+    println!("Add it with: giana-app {}", m.out.display());
+}
+
 fn main() {
     let command = cli::parse(std::env::args().skip(1)).unwrap_or_else(|message| {
         eprintln!("giana-app: {message}\nTry 'giana-app --help'.");
@@ -330,6 +450,8 @@ fn main() {
     match command {
         Command::Help => println!("{}", cli::HELP),
         Command::Version => println!("{}", cli::version_text()),
+        Command::ListModules(data) => list_modules(data.as_deref()),
+        Command::MakeModule(m) => make_module_command(m),
         Command::CheckUpdate => {
             let (text, ok) = giana_app::update::check_report();
             println!("{text}");
@@ -362,6 +484,14 @@ fn main() {
                 eprintln!("giana-app: {e}");
                 report_fatal(&e.to_string());
                 std::process::exit(1);
+            }
+            // another ROM module was chosen: `run` has closed the window and the sound, now the game starts again
+            if RESTART.load(Ordering::SeqCst) {
+                if let Err(e) = modules::spawn_restart() {
+                    eprintln!("giana-app: could not start the game again: {e}");
+                    report_fatal(&format!("The game could not start itself again: {e}\nStart it once more by hand."));
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -435,7 +565,7 @@ where
         if choose {
             // the dialog must run on this (main) thread; it blocks the window while it is open
             text.stop();
-            let file = firstrun::choose_file();
+            let file = firstrun::choose_file(firstrun::FileKind::DiskImage);
             text.start();
             setup.picked(file);
             // keys and clicks from while the dialog was open are not meant for this page
@@ -453,12 +583,327 @@ where
         tick = tick.wrapping_add(1);
         let size = canvas.output_size().unwrap_or((WIDTH as u32, HEIGHT as u32));
         presenter.upload(&fb)?;
+        presenter.crt = settings.crt;
         presenter.present(canvas, present::layout(settings.scaling, false, size))?;
         canvas.present();
         std::thread::sleep(Duration::from_millis(8));
     };
     text.stop();
     Ok(done)
+}
+
+/// How the AUTHENTIC presentation ended.
+enum AuthenticExit {
+    Quit,
+    /// back to the modern presentation (chosen in the overlay)
+    ToModern,
+    /// the program could not be started or stopped on something the slice cannot do
+    Failed(String),
+}
+
+/// `PRESENTATION: AUTHENTIC`: runs the original program (see `giana_app::authentic`) in its own loop until the player leaves
+/// it. The picture is whole pixels with the border, 50 Hz; the only thing of this app on top is the settings overlay (F1, F10 or
+/// the controller's Back button), which stands over the paused picture.
+#[allow(clippy::too_many_arguments)]
+fn run_authentic<C>(
+    canvas: &mut Canvas<Window>,
+    presenter: &mut Presenter<'_, C>,
+    event_pump: &mut sdl2::EventPump,
+    video: &sdl2::VideoSubsystem,
+    mouse: &MouseUtil,
+    settings: &mut Settings,
+    bindings: &mut Bindings,
+    input_state: &mut InputState,
+    audio: &mut Option<sdl2::audio::AudioDevice<SidAudioCallback>>,
+    lock_factor: &mut u32,
+    data_dir: &std::path::Path,
+    pad_name: Option<String>,
+    started: Instant,
+) -> Result<AuthenticExit, Box<dyn std::error::Error>>
+where
+    Window: sdl2::render::RenderTarget<Context = C>,
+    C: 'static,
+{
+    let mut run = match AuthenticRun::new(data_dir, authentic::scores_path()) {
+        Ok(r) => r,
+        Err(e) => return Ok(AuthenticExit::Failed(e)),
+    };
+    let mut held = Held::default();
+    let mut fb = Framebuffer::new();
+    let no_scores = Scores::default();
+    let mut menu_sound = MenuSounds::new();
+    menu_sound.set_mode(menu_sound_off());
+    // the picture of the machine runs at the PAL rate; a display locked to 50 Hz gets 20 ms steps
+    const LOGIC_STEP: Duration = Duration::from_micros(19950);
+    const LOCKED_STEP: Duration = Duration::from_micros(20000);
+    const LOCKED_SLACK: Duration = Duration::from_micros(2000);
+    let mut last = Instant::now();
+    let mut accumulator = Duration::ZERO;
+    let mut pending = Pending::default();
+    println!("AUTHENTIC presentation: the original program runs from its title program");
+    loop {
+        let frame_start = Instant::now();
+        accumulator += frame_start.duration_since(last);
+        last = frame_start;
+        let (step, slack) = if *lock_factor > 0 { (LOCKED_STEP, LOCKED_SLACK.min(LOCKED_STEP / *lock_factor / 4)) } else { (LOGIC_STEP, Duration::ZERO) };
+        accumulator = accumulator.min(Duration::from_millis(100));
+
+        if let Some(m) = run.overlay.as_mut() {
+            m.settings = settings.clone();
+            m.authentic = AuthenticAvail::Ready;
+        }
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. } => return Ok(AuthenticExit::Quit),
+                Event::Window { win_event: WindowEvent::FocusLost, .. } => {
+                    held.clear();
+                    if run.overlay.is_none() {
+                        run.overlay = Some(Menu::pause());
+                    }
+                }
+                Event::KeyDown { keycode: Some(k), keymod, repeat: false, .. }
+                    if k == Keycode::F11 || (k == Keycode::Return && keymod.intersects(Mod::LALTMOD | Mod::RALTMOD)) =>
+                {
+                    pending.options.push(OptionChange::Fullscreen);
+                }
+                Event::KeyDown { keycode: Some(k), repeat, .. } => {
+                    input_state.key_used();
+                    match run.overlay.as_mut() {
+                        Some(m) if m.capturing => {
+                            if !repeat {
+                                let outcome = if k == Keycode::Escape { m.step(Nav::Back, bindings) } else { m.capture_key(k, bindings) };
+                                apply_authentic_outcome(outcome, &mut run, &mut pending, bindings);
+                            }
+                        }
+                        Some(m) => {
+                            if let Some(nav) = nav_for_key(k, repeat) {
+                                let outcome = menu_step(m, nav, bindings, &mut menu_sound);
+                                apply_authentic_outcome(outcome, &mut run, &mut pending, bindings);
+                            }
+                        }
+                        None => {
+                            // F1 is the C64 key where the program asks for it ("PRESS F1 TO SAVE HIGHSCORES"); F10 always opens the overlay
+                            if (k == Keycode::F1 && !run.f1_is_for_the_program()) || k == Keycode::F10 {
+                                if !repeat {
+                                    run.overlay = Some(Menu::pause());
+                                    held.clear();
+                                }
+                            } else if !repeat {
+                                held.press(Source::Key(k));
+                            }
+                        }
+                    }
+                }
+                Event::KeyUp { keycode: Some(k), .. } => held.release(Source::Key(k)),
+                Event::ControllerButtonDown { button, .. } => {
+                    input_state.pad_used();
+                    match run.overlay.as_mut() {
+                        Some(m) if m.capturing => {
+                            let outcome = if button == Button::Start { m.step(Nav::Back, bindings) } else { m.capture_pad(PadInput::Button(button), bindings) };
+                            apply_authentic_outcome(outcome, &mut run, &mut pending, bindings);
+                        }
+                        Some(m) => {
+                            if let Some(nav) = nav_for_button(button) {
+                                let outcome = menu_step(m, nav, bindings, &mut menu_sound);
+                                apply_authentic_outcome(outcome, &mut run, &mut pending, bindings);
+                            }
+                        }
+                        None if button == Button::Back => {
+                            run.overlay = Some(Menu::pause());
+                            held.clear();
+                        }
+                        None => held.press(Source::Pad(PadInput::Button(button))),
+                    }
+                }
+                Event::ControllerButtonUp { button, .. } => held.release(Source::Pad(PadInput::Button(button))),
+                Event::ControllerAxisMotion { axis, value, .. } => {
+                    if value.unsigned_abs() > 16000 {
+                        input_state.pad_used();
+                    }
+                    if let Some(pressed) = held.axis(axis, value) {
+                        if let Some(m) = run.overlay.as_mut() {
+                            let outcome = if m.capturing {
+                                m.capture_pad(pressed, bindings)
+                            } else if let Some(nav) = nav_for_stick(pressed) {
+                                menu_step(m, nav, bindings, &mut menu_sound)
+                            } else {
+                                Outcome::None
+                            };
+                            apply_authentic_outcome(outcome, &mut run, &mut pending, bindings);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // what the overlay asked for
+        for change in std::mem::take(&mut pending.options) {
+            match change {
+                OptionChange::Fullscreen => {
+                    settings.fullscreen = !settings.fullscreen;
+                    *lock_factor = apply_fullscreen(canvas, video, mouse, settings.fullscreen, settings.display_50);
+                }
+                OptionChange::VolumeDown | OptionChange::VolumeUp => settings.change_volume(change == OptionChange::VolumeUp),
+                OptionChange::MusicDown | OptionChange::MusicUp => settings.change_music(change == OptionChange::MusicUp),
+                OptionChange::EffectsDown | OptionChange::EffectsUp => settings.change_effects(change == OptionChange::EffectsUp),
+                OptionChange::MenuSounds(forward) => settings.menu_sounds = settings.menu_sounds.next(forward),
+                OptionChange::Scaling(forward) => settings.scaling = settings.scaling.next(forward),
+                OptionChange::Mode => settings.enhancements.enhanced = !settings.enhancements.enhanced,
+                OptionChange::SmoothMotion => settings.enhancements.smooth_motion = !settings.enhancements.smooth_motion,
+                OptionChange::Winner => settings.winner = settings.winner.other(),
+                OptionChange::Display50 => {
+                    settings.display_50 = !settings.display_50;
+                    if settings.fullscreen {
+                        *lock_factor = apply_fullscreen(canvas, video, mouse, true, settings.display_50);
+                    }
+                }
+                OptionChange::UpdateCheck => settings.update_check = !settings.update_check,
+                OptionChange::Presentation => settings.presentation = settings.presentation.next(),
+                OptionChange::Crt => settings.crt = !settings.crt,
+            }
+            if let Some(d) = audio.as_mut() {
+                apply_gains(&mut d.lock().mixer, settings);
+            }
+            if let Some(path) = settings_path() {
+                let _ = settings.save(&path);
+            }
+        }
+        if settings.presentation == Presentation::Modern {
+            return Ok(AuthenticExit::ToModern);
+        }
+        if std::mem::take(&mut pending.to_title) {
+            if let Err(e) = run.restart() {
+                return Ok(AuthenticExit::Failed(e));
+            }
+        }
+
+        // machine steps (paused while the overlay is open)
+        let mut steps = 0;
+        while run.overlay.is_none() && accumulator + slack >= step && steps < 5 {
+            accumulator = accumulator.saturating_sub(step);
+            steps += 1;
+            if let Err(e) = run.frame(&held, bindings) {
+                return Ok(AuthenticExit::Failed(e));
+            }
+            if let Some(dev) = audio.as_mut() {
+                let mut d = dev.lock();
+                d.mixer.split = false;
+                d.mixer.main.live_regs = Some(run.sid());
+                d.mixer.main.queue_timed_writes(run.take_sid_writes());
+            }
+        }
+        if run.overlay.is_some() {
+            accumulator = Duration::ZERO;
+            if let Some(dev) = audio.as_mut() {
+                let mut d = dev.lock();
+                d.mixer.split = false;
+                d.mixer.main.live_regs = Some([0; 25]);
+            }
+        }
+
+        run.draw(&mut fb);
+        let window_size = canvas.output_size().unwrap_or((WIDTH as u32, HEIGHT as u32));
+        let layout = present::layout(giana_app::settings::Scaling::Whole, false, window_size);
+        if let Some(m) = &run.overlay {
+            let nudge = (started.elapsed().as_millis() / 400) as usize & 1;
+            let ctx = DrawCtx { bindings, pad_name: pad_name.as_deref(), scores: &no_scores, input: *input_state, nudge, view: ui::View::new(false) };
+            menu_draw::draw_over(&mut fb, m, &ctx);
+        }
+        presenter.upload(&fb)?;
+        presenter.crt = settings.crt;
+        presenter.present(canvas, layout)?;
+        canvas.present();
+        if frame_start.elapsed() < Duration::from_millis(1) && accumulator + slack < step {
+            std::thread::sleep(step.saturating_sub(accumulator).min(Duration::from_millis(1)));
+        }
+    }
+}
+
+fn menu_sound_off() -> giana_app::settings::MenuSoundMode {
+    giana_app::settings::MenuSoundMode::Off
+}
+
+/// What a step of the overlay asks for.
+fn apply_authentic_outcome(outcome: Outcome, run: &mut AuthenticRun, pending: &mut Pending, bindings: &Bindings) {
+    match outcome {
+        Outcome::Resume => run.overlay = None,
+        Outcome::QuitToTitle => {
+            // "QUIT TO TITLE": the computer is switched off and on again
+            pending.to_title = true;
+            run.overlay = None;
+        }
+        Outcome::Option(change) => pending.options.push(change),
+        Outcome::AuthenticData => pending.authentic_data = true,
+        Outcome::Changed => {
+            if let Some(path) = config_path() {
+                if let Err(e) = bindings.save(&path) {
+                    eprintln!("Could not save the controls to {}: {}", path.display(), e);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// What the main loop does after AUTHENTIC.
+enum AuthenticNext {
+    Continue,
+    Quit,
+}
+
+/// Starts AUTHENTIC: asks for the disk image first when the data folder lacks the extra file, then runs the original.
+#[allow(clippy::too_many_arguments)]
+fn authentic_session<C>(
+    canvas: &mut Canvas<Window>,
+    presenter: &mut Presenter<'_, C>,
+    event_pump: &mut sdl2::EventPump,
+    video: &sdl2::VideoSubsystem,
+    mouse: &MouseUtil,
+    settings: &mut Settings,
+    bindings: &mut Bindings,
+    input_state: &mut InputState,
+    audio: &mut Option<sdl2::audio::AudioDevice<SidAudioCallback>>,
+    lock_factor: &mut u32,
+    data_dir: &std::path::Path,
+    module_active: bool,
+    pad_name: Option<String>,
+    started: Instant,
+    notice: &mut Option<String>,
+) -> Result<AuthenticNext, Box<dyn std::error::Error>>
+where
+    Window: sdl2::render::RenderTarget<Context = C>,
+    C: 'static,
+{
+    let mut leave = |settings: &mut Settings, text: &str, notice: &mut Option<String>| {
+        settings.presentation = Presentation::Modern;
+        if let Some(path) = settings_path() {
+            let _ = settings.save(&path);
+        }
+        *notice = Some(text.to_string());
+    };
+    match authentic::availability(data_dir, module_active) {
+        AuthenticAvail::Ready => {}
+        AuthenticAvail::ModuleActive => {
+            leave(settings, "AUTHENTIC NEEDS THE ORIGINAL GAME", notice);
+            return Ok(AuthenticNext::Continue);
+        }
+        AuthenticAvail::NeedsData => {
+            // the data folder was made before AUTHENTIC existed: reading the disk image once more adds the file
+            if !first_run_page(canvas, presenter, event_pump, video, settings, data_dir.to_path_buf(), None)? || authentic::availability(data_dir, false) != AuthenticAvail::Ready {
+                leave(settings, "AUTHENTIC NEEDS THE DISK IMAGE", notice);
+                return Ok(AuthenticNext::Continue);
+            }
+        }
+    }
+    match run_authentic(canvas, presenter, event_pump, video, mouse, settings, bindings, input_state, audio, lock_factor, data_dir, pad_name, started)? {
+        AuthenticExit::Quit => Ok(AuthenticNext::Quit),
+        AuthenticExit::ToModern => Ok(AuthenticNext::Continue),
+        AuthenticExit::Failed(e) => {
+            eprintln!("giana-app: AUTHENTIC stopped: {e}");
+            leave(settings, "AUTHENTIC STOPPED - SEE THE LOG", notice);
+            Ok(AuthenticNext::Continue)
+        }
+    }
 }
 
 fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -530,8 +975,80 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             dest
         }
     };
-    firstrun::load(&data_dir).map_err(|e| startup_error("Could not load the game data", e, "Delete the data folder and start the game again to extract it anew."))?;
+    // The ROM module to play: from the command line (this run only), else the one chosen in the settings. Any problem
+    // plays the original game and says so in the menu.
+    let store = Store::default_location();
+    let mut module_id = String::new();
+    let mut module_notice: Option<String> = None;
+    let wanted: Option<String> = {
+        let mut wanted = None;
+        let mut add = |file: &std::path::Path, settings: &mut Settings, remember: bool| match store.as_ref().ok_or_else(|| "there is no folder for the modules".to_string()).and_then(|s| s.add(file, &data_dir)) {
+            Ok(added) => {
+                println!("ROM module added: {} ({})", added.meta.name, added.id);
+                if remember {
+                    settings.module = added.id.clone();
+                    if let Some(path) = settings_path() {
+                        let _ = settings.save(&path);
+                    }
+                }
+                Some(added.id)
+            }
+            Err(e) => {
+                eprintln!("giana-app: could not add {}: {e}", file.display());
+                module_notice = Some("ROM MODULE COULD NOT BE LOADED".to_string());
+                None
+            }
+        };
+        if let Some(file) = options.open_module.as_deref() {
+            // "Open with" and a file dropped on the program: added and chosen for good
+            wanted = add(file, &mut settings, true);
+        } else if let Some(arg) = options.module.as_deref() {
+            let path = std::path::Path::new(arg);
+            if path.is_file() {
+                wanted = add(path, &mut settings, false);
+            } else if arg.is_empty() || arg.eq_ignore_ascii_case("original") {
+                // the original game
+            } else if let Some(found) = store.as_ref().and_then(|s| s.find(arg)) {
+                wanted = Some(found.id);
+            } else {
+                eprintln!("giana-app: there is no ROM module '{arg}'. See --list-modules.");
+                module_notice = Some("ROM MODULE COULD NOT BE LOADED".to_string());
+            }
+        } else if !settings.module.is_empty() {
+            wanted = Some(settings.module.clone());
+        }
+        wanted
+    };
+    let mut loaded = false;
+    if let (Some(id), Some(store)) = (wanted.as_deref(), store.as_ref()) {
+        match store.load_selected(id, &data_dir) {
+            Ok((data, applied, meta)) => {
+                giana_core::data::install(data);
+                giana_core::features::set_construction_kit(match applied.family {
+                    giana_module::Family::ConstructionKit1989 { variant: giana_module::CkVariant::Basic } => giana_core::features::ConstructionKit::Basic,
+                    giana_module::Family::ConstructionKit1989 { variant: giana_module::CkVariant::Full } => giana_core::features::ConstructionKit::Full,
+                    _ => giana_core::features::ConstructionKit::Off,
+                });
+                // family B (the 7A3 construction-set engine): the module's disk files go to engine B, `None` = original engine
+                giana_core::features::set_engine_b((applied.engine.as_deref() == Some("b")).then(|| applied.files.clone()));
+                // family T (TNW Giana Sisters 2): its stage files (the original stages already restored)
+                giana_core::features::set_tnw((applied.engine.as_deref() == Some("t")).then(|| applied.files.clone()));
+                println!("ROM module: {} ({id})", meta.name);
+                module_id = id.to_string();
+                loaded = true;
+            }
+            Err(e) => {
+                eprintln!("giana-app: could not load the ROM module {id}: {e}");
+                module_notice = Some("ROM MODULE COULD NOT BE LOADED".to_string());
+            }
+        }
+    }
+    if !loaded {
+        firstrun::load(&data_dir).map_err(|e| startup_error("Could not load the game data", e, "Delete the data folder and start the game again to extract it anew."))?;
+    }
     println!("Game data: {}", data_dir.display());
+    let mut module_list = module_infos(store.as_ref(), &data_dir);
+    let mut authentic_avail = authentic::availability(&data_dir, !module_id.is_empty());
 
     // Initialize Native Chris Hülsbeck Sound Synthesizer via SDL2 Audio
     let mut audio_device = if let Some(ref audio_sub) = audio_subsystem {
@@ -569,8 +1086,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut bindings = config_path().map_or_else(Bindings::default, |p| Bindings::load(&p));
     let mut held = Held::default();
     let mut open_menu = Some(Menu::main());
+    if let Some(m) = open_menu.as_mut() {
+        m.notice = module_notice.take();
+    }
     let mut pending = Pending::default();
-    let mut scores = scores_path().map_or_else(Scores::default, |p| Scores::load(&p));
+    let mut scores = scores_path(&module_id).map_or_else(Scores::default, |p| Scores::load(&p));
     let mut hosting: Option<Host> = None;
     let mut finder: Option<Finder> = None;
     let mut search_started = Instant::now();
@@ -615,6 +1135,21 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_frame_time = Instant::now();
     let mut accumulator = Duration::ZERO;
 
+    // `PRESENTATION: AUTHENTIC` in the settings: the original from its title program on, until the player leaves it
+    if settings.presentation == Presentation::Authentic {
+        let pad_name = active_controller.as_ref().map(|c| c.name());
+        let mut notice = None;
+        let next = authentic_session(&mut canvas, &mut presenter, &mut event_pump, &video_subsystem, &mouse, &mut settings, &mut bindings, &mut input_state, &mut audio_device, &mut lock_factor, &data_dir, !module_id.is_empty(), pad_name, started, &mut notice)?;
+        if let AuthenticNext::Quit = next {
+            return Ok(());
+        }
+        if let Some(m) = open_menu.as_mut() {
+            m.notice = notice.or(m.notice.take());
+        }
+        authentic_avail = authentic::availability(&data_dir, !module_id.is_empty());
+        last_frame_time = Instant::now();
+    }
+
     'running: loop {
         let frame_start = Instant::now();
         let frame_delta = frame_start.duration_since(last_frame_time);
@@ -643,6 +1178,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             m.audio_ok = audio_ok;
             m.in_network = session.is_some();
             m.update = updater.view.clone();
+            m.set_modules(&module_list, &module_id);
+            m.authentic = authentic_avail;
         }
         if let Some(change) = updater.poll() {
             settings.last_update_check = change.last_check.unwrap_or(settings.last_update_check);
@@ -656,6 +1193,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => break 'running,
+
+                // A file dropped on the window while the page of the ROM modules is open is added
+                Event::DropFile { filename, .. } if open_menu.as_ref().is_some_and(|m| m.page == menu::Page::Modules) => {
+                    add_module_file(store.as_ref(), &data_dir, std::path::Path::new(&filename), &mut open_menu, &mut module_list);
+                }
 
                 Event::Window { win_event: WindowEvent::FocusLost, .. } => {
                     // Held keys stay down for ever if the release goes to another window
@@ -794,10 +1336,15 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(m) = open_menu.as_mut() {
                 m.score_added(place);
             }
-            save_scores(&scores, &mut open_menu);
+            save_scores(&scores, &module_id, &mut open_menu);
         }
+        let mut launch_authentic = std::mem::take(&mut pending.authentic_data);
         for change in std::mem::take(&mut pending.options) {
             match change {
+                OptionChange::Presentation => {
+                    settings.presentation = settings.presentation.next();
+                    launch_authentic = settings.presentation == Presentation::Authentic;
+                }
                 OptionChange::Fullscreen => {
                     settings.fullscreen = !settings.fullscreen;
                     lock_factor = apply_fullscreen(&mut canvas, &video_subsystem, &mouse, settings.fullscreen, settings.display_50);
@@ -811,6 +1358,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     menu_sound.set_mode(settings.menu_sounds);
                 }
                 OptionChange::Scaling(forward) => settings.scaling = settings.scaling.next(forward),
+                OptionChange::Crt => settings.crt = !settings.crt,
                 OptionChange::Mode | OptionChange::SmoothMotion => {
                     if change == OptionChange::Mode {
                         settings.enhancements.enhanced = !settings.enhancements.enhanced;
@@ -846,6 +1394,72 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             }
             save_settings(&settings, &mut open_menu);
         }
+        // PRESENTATION: AUTHENTIC was chosen (or its missing data asked for): run the original until the player leaves it
+        if launch_authentic {
+            held.clear();
+            let pad_name = active_controller.as_ref().map(|c| c.name());
+            let mut notice = None;
+            if authentic_avail == AuthenticAvail::NeedsData && settings.presentation != Presentation::Authentic {
+                // the disk image is asked for first; AUTHENTIC starts when it worked
+                settings.presentation = Presentation::Authentic;
+            }
+            let next = authentic_session(&mut canvas, &mut presenter, &mut event_pump, &video_subsystem, &mouse, &mut settings, &mut bindings, &mut input_state, &mut audio_device, &mut lock_factor, &data_dir, !module_id.is_empty(), pad_name, started, &mut notice)?;
+            if let AuthenticNext::Quit = next {
+                break 'running;
+            }
+            authentic_avail = authentic::availability(&data_dir, !module_id.is_empty());
+            if let Some(m) = open_menu.as_mut() {
+                m.settings = settings.clone();
+                m.notice = notice;
+            }
+            save_settings(&settings, &mut open_menu);
+            last_frame_time = Instant::now();
+            accumulator = Duration::ZERO;
+            display_hz = canvas.window().display_mode().map_or(0, |m| m.refresh_rate);
+        }
+        if std::mem::take(&mut pending.add_module) {
+            // the dialog must run on this (main) thread; it blocks the window while it is open
+            let file = firstrun::choose_file(firstrun::FileKind::RomModule);
+            // keys and clicks from while the dialog was open are not meant for the game
+            held.clear();
+            event_pump.pump_events();
+            let mut dropped = None;
+            for e in event_pump.poll_iter() {
+                if let Event::DropFile { filename, .. } = e {
+                    dropped = Some(std::path::PathBuf::from(filename));
+                }
+            }
+            if let Some(file) = file.or(dropped) {
+                add_module_file(store.as_ref(), &data_dir, &file, &mut open_menu, &mut module_list);
+            }
+        }
+        if let Some(id) = pending.remove_module.take() {
+            if let Some(store) = store.as_ref() {
+                match store.remove(&id) {
+                    Ok(()) => {
+                        module_list = module_infos(Some(store), &data_dir);
+                        // a module that was chosen but not loaded (it failed) is not chosen any more
+                        if settings.module == id {
+                            settings.module.clear();
+                            save_settings(&settings, &mut open_menu);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Could not remove the ROM module: {e}");
+                        if let Some(m) = open_menu.as_mut() {
+                            m.module_added(None, Some(e));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(id) = pending.play_module.take() {
+            // Another module means another set of data: the game starts again with it (see `modules::spawn_restart`)
+            settings.module = id;
+            save_settings(&settings, &mut open_menu);
+            RESTART.store(true, Ordering::SeqCst);
+            break 'running;
+        }
         if pending.quit {
             if let Some(s) = session.as_mut() {
                 s.leave();
@@ -868,6 +1482,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             let host = Host::new(mode).map(|mut h| {
                 h.set_winner(settings.winner);
                 h.set_rules(settings.enhancements.rules());
+                h.set_module(&module_id);
+                if let Some(s) = store.as_ref() {
+                    h.share_module(s);
+                }
                 h
             });
             match (host, m) {
@@ -906,7 +1524,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         let mut connected = None;
         if let Some(addr) = pending.join.take().filter(|_| joining.is_none()) {
             // The connection is made on a thread: a host that does not answer must not freeze the window
-            joining = Some(Joiner::start(&addr));
+            joining = Some(Joiner::start_receiving(&addr, &module_id, store.clone().map(|store| net::ModuleSink { store, data_dir: data_dir.clone() })));
             join_address = addr;
             if let Some(m) = open_menu.as_mut() {
                 m.connecting = true;
@@ -923,6 +1541,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 Some(Err(e)) => {
                     joining = None;
                     eprintln!("Could not join {}: {}", join_address, e);
+                    // a received ROM module is only stored (checked against our own data); the player picks it under
+                    // ROM MODULES if they want to - a host must not switch our game or restart it
                     if let Some(m) = open_menu.as_mut() {
                         m.connecting = false;
                         m.notice = Some(e.text().to_string());
@@ -936,8 +1556,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 Some(Ok(s)) => connected = Some(s),
                 Some(Err(e)) => {
                     eprintln!("A connection failed: {}", e);
-                    if let (NetError::WrongVersion, Some(m)) = (&e, open_menu.as_mut()) {
-                        m.notice = Some("ANOTHER VERSION TRIED TO JOIN".to_string());
+                    match (&e, open_menu.as_mut()) {
+                        (NetError::WrongVersion, Some(m)) => m.notice = Some("ANOTHER VERSION TRIED TO JOIN".to_string()),
+                        (NetError::OtherModule, Some(m)) => m.notice = Some("ANOTHER ROM MODULE TRIED TO JOIN".to_string()),
+                        _ => {}
                     }
                 }
                 None => {}
@@ -1296,6 +1918,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         presenter.upload(&fb)?;
+        presenter.crt = settings.crt;
         presenter.present(&mut canvas, layout)?;
         canvas.present();
 
@@ -1325,7 +1948,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         for (name, score, stage) in results {
             scores.insert(Entry { name, score, stage });
         }
-        save_scores(&scores, &mut None);
+        save_scores(&scores, &module_id, &mut None);
     }
 
     Ok(())

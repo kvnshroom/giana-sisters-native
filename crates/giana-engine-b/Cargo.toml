@@ -1,0 +1,13 @@
+[package]
+name = "giana-engine-b"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Data formats of the 7A3 construction-set engine (Giana Sisters II, Power Edition, Ridley X ...): stage files, block table, enemy type records"
+
+[dependencies]
+giana-module = { path = "../giana-module" }
+
+[dev-dependencies]
+giana-render = { path = "../giana-render" }
+giana-core = { path = "../giana-core" }

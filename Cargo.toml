@@ -7,6 +7,9 @@ members = [
     "crates/giana-app",
     "crates/giana-extract",
     "crates/giana-module",
+    "crates/giana-engine-b",
+    "crates/giana-engine-c",
+    "crates/giana-authentic",
 ]
 
 [profile.release]

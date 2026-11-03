@@ -67,8 +67,20 @@ impl Scores {
     }
 }
 
-pub fn scores_path() -> Option<PathBuf> {
-    crate::bindings::config_path().map(|p| p.with_file_name("scores.txt"))
+/// `scores.txt` for the original game, `scores-<id>.txt` for the ROM module with that id.
+pub fn scores_file_name(module: &str) -> String {
+    // the id names a file: only hex digits are taken
+    let id: String = module.chars().filter(char::is_ascii_hexdigit).collect();
+    if id.is_empty() {
+        "scores.txt".to_string()
+    } else {
+        format!("scores-{}.txt", id.to_ascii_lowercase())
+    }
+}
+
+/// The table of the game that is played: `module` is the id of the active ROM module (empty: the original).
+pub fn scores_path(module: &str) -> Option<PathBuf> {
+    crate::bindings::config_path().map(|p| p.with_file_name(scores_file_name(module)))
 }
 
 #[cfg(test)]
@@ -104,6 +116,19 @@ mod tests {
         assert_eq!(s.rank(0), None);
         s.insert(e(500));
         assert_eq!(s.rank(500), Some(1));
+    }
+
+    #[test]
+    fn every_rom_module_has_its_own_table() {
+        assert_eq!(scores_file_name(""), "scores.txt");
+        assert_eq!(scores_file_name("0123456789ABCDEF"), "scores-0123456789abcdef.txt");
+        // nothing but hex digits can end up in the path
+        assert_eq!(scores_file_name("../e/x"), "scores-e.txt");
+        assert_eq!(scores_file_name("../.."), "scores.txt");
+        let a = scores_path("").unwrap();
+        let b = scores_path("00112233445566ff").unwrap();
+        assert_eq!(a.parent(), b.parent());
+        assert_ne!(a, b);
     }
 
     #[test]

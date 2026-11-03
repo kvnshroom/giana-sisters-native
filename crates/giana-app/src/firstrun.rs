@@ -248,14 +248,29 @@ const SEARCH: usize = 2;
 /// Shown when the file dialog returned without a file (cancelled, or it could not be shown at all).
 const NO_FILE: &str = "NO FILE CHOSEN. IF NO WINDOW OPENED, DROP THE .G64 FILE ON THIS WINDOW OR TYPE ITS PATH.";
 
+/// What the file dialog asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileKind {
+    /// the player's own disk image (first start)
+    DiskImage,
+    /// a ROM module (`ADD ROM MODULE...`)
+    RomModule,
+}
+
+/// Title and file filter of the dialog: the files of the kind first, then all files.
+fn dialog_texts(kind: FileKind) -> (&'static str, &'static str, &'static [&'static str]) {
+    match kind {
+        FileKind::DiskImage => ("Choose your The Great Giana Sisters disk image", "C64 disk image (.g64)", &["g64", "G64"]),
+        FileKind::RomModule => ("Choose a ROM module", "ROM module (.grom)", &["grom", "GROM"]),
+    }
+}
+
 /// Opens the system file dialog (call on the main thread; it blocks until it is closed). `None`: cancelled, or the
 /// dialog could not be shown (on Linux it needs the desktop portal or zenity, and rfd cannot tell the two apart).
-pub fn choose_file() -> Option<PathBuf> {
+pub fn choose_file(kind: FileKind) -> Option<PathBuf> {
     let start = home_dir().map(|h| h.join("Downloads")).filter(|d| d.is_dir()).or_else(home_dir);
-    let mut dialog = rfd::FileDialog::new()
-        .set_title("Choose your The Great Giana Sisters disk image")
-        .add_filter("C64 disk image (.g64)", &["g64", "G64"])
-        .add_filter("All files", &["*"]);
+    let (title, filter, extensions) = dialog_texts(kind);
+    let mut dialog = rfd::FileDialog::new().set_title(title).add_filter(filter, extensions).add_filter("All files", &["*"]);
     if let Some(dir) = start {
         dialog = dialog.set_directory(dir);
     }
@@ -469,6 +484,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("setup did not finish");
+    }
+
+    #[test]
+    fn the_dialog_offers_the_files_of_its_kind() {
+        let (_, filter, ext) = dialog_texts(FileKind::RomModule);
+        assert!(filter.contains(".grom") && ext.contains(&"grom"));
+        let (_, filter, ext) = dialog_texts(FileKind::DiskImage);
+        assert!(filter.contains(".g64") && ext.contains(&"g64"));
     }
 
     #[test]

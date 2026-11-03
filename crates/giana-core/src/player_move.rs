@@ -33,6 +33,10 @@ impl GameState {
                 }
             }
         }
+        // engine B ($11FE): no fall on a platform or in water
+        if self.engine_b.is_some() && self.b_fall_blocked() {
+            return;
+        }
         // L11EA: $0400 &= $FE; $0428 = 4; $1C = $FF; $1F = $FF; JMP sub_9F1F
         self.joystick_directions &= 0xFE;
         self.move_delta = 0x04;
@@ -119,7 +123,8 @@ impl GameState {
                     return;
                 }
                 // $11B3: LDA $0425; ORA $0426; ORA $0427; LSR A; BCC rts
-                if (f[6] | f[7] | f[8]) & 1 == 0 {
+                // engine B ($11CE): ORA $FD, standing on a platform counts as solid ground
+                if (f[6] | f[7] | f[8] | self.b_platform_flag()) & 1 == 0 {
                     return;
                 }
             }
@@ -304,6 +309,10 @@ impl GameState {
         let joy = self.joystick_directions;
         // $0F6E: AND #$0C; BNE L0F75; JMP L10FD
         if joy & 0x0C == 0 {
+            // engine B ($0F77): in water the momentum is cleared and the routine ends
+            if self.engine_b.is_some() && self.b_water_no_direction() {
+                return;
+            }
             // L10FD: SEC; LDA $040A; SBC #$01; BMI L110B
             let m = self.player_momentum.wrapping_sub(1);
             if m & 0x80 != 0 {
@@ -316,6 +325,10 @@ impl GameState {
             return;
         }
 
+        // engine B ($0F87): JSR $FFD7
+        if self.engine_b.is_some() {
+            self.b_ffd7();
+        }
         if joy & 0x04 == 0 {
             // right: $042C = 0
             self.facing_right = true;
@@ -326,7 +339,9 @@ impl GameState {
             // L0F8D: $1B = 0; $15 = $FF; $16 = ($05F4 >= $A0) ? $FF : 0
             self.brake_flag = 0;
             self.move_state = 0xFF;
-            self.move_edge_flag = if self.player_x_low >= 0xA0 { 0xFF } else { 0x00 };
+            // engine B ($0FAA): `CMP #$A4` (the hack's start offset of 5 minus 1), the original has `$A0`
+            let edge = if self.engine_b.is_some() { 0xA4 } else { 0xA0 };
+            self.move_edge_flag = if self.player_x_low >= edge { 0xFF } else { 0x00 };
         } else {
             // left: $042C = $FF
             self.facing_right = false;

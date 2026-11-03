@@ -101,6 +101,69 @@ pub enum Page {
     Result,
     /// asked in the pause menu before a game is given up: `QUIT GAME? YES / NO`
     ConfirmQuit,
+    /// `ROM MODULES`: the original game and the installed modules
+    Modules,
+    /// one entry of the modules page: its texts, and what can be done with it
+    ModuleDetail,
+    /// asked before a module is deleted: `REMOVE THIS MODULE? YES / NO`
+    ConfirmRemove,
+}
+
+/// What the menu knows about a ROM module (the app fills the list from the modules folder). The texts are ready to be
+/// drawn: capitals, only characters the font has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleInfo {
+    pub id: String,
+    pub name: String,
+    pub author: String,
+    pub version: String,
+    pub description: String,
+    /// the module changes code that the port runs itself (so it may not play as intended)
+    pub changes_code: bool,
+}
+
+/// Said on the detail page of a module that changes game code, on two lines.
+pub const CODE_NOTICE: [&str; 2] = ["CHANGES GAME CODE -", "MAY NOT PLAY AS INTENDED"];
+
+fn shown(s: &str) -> String {
+    safe_text(&s.to_ascii_uppercase())
+}
+
+impl ModuleInfo {
+    pub fn new(id: &str, name: &str, author: &str, version: &str, description: &str, changes_code: bool) -> ModuleInfo {
+        ModuleInfo { id: id.to_string(), name: shown(name), author: shown(author), version: shown(version), description: shown(description), changes_code }
+    }
+
+    /// `NAME  V1.0`, cut to `width` characters (the name gives way, the version stays).
+    pub fn list_label(&self, width: usize) -> String {
+        if self.version.is_empty() {
+            return clip(&self.name, width);
+        }
+        let tail = format!("  V{}", self.version);
+        let room = width.saturating_sub(tail.chars().count());
+        if room < 4 {
+            return clip(&self.name, width);
+        }
+        format!("{}{tail}", clip(&self.name, room))
+    }
+}
+
+/// The lines of the detail page of a module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DetailItem {
+    Play,
+    Remove,
+    Back,
+}
+
+impl DetailItem {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            DetailItem::Play => "PLAY THIS",
+            DetailItem::Remove => "REMOVE",
+            DetailItem::Back => "BACK",
+        }
+    }
 }
 
 /// How the search for games on the join page is going.
@@ -113,6 +176,16 @@ pub enum Search {
     Unavailable,
 }
 
+/// Whether `PRESENTATION: AUTHENTIC` can be used (the app sets it, see `authentic_run`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthenticAvail {
+    Ready,
+    /// the data folder was made before AUTHENTIC existed: the disk image has to be read once more
+    NeedsData,
+    /// a ROM module is played: AUTHENTIC runs the original game only
+    ModuleActive,
+}
+
 /// A setting changed on the options page; the app applies and saves it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptionChange {
@@ -121,6 +194,8 @@ pub enum OptionChange {
     VolumeUp,
     /// the next (true) or the previous way to fill the window
     Scaling(bool),
+    /// `SCREEN: SHARP / CRT`
+    Crt,
     /// the rule for the winner of a game of two players
     Winner,
     /// fullscreen at 50 Hz when the display offers it
@@ -134,6 +209,8 @@ pub enum OptionChange {
     /// `MODE: ORIGINAL / ENHANCED`
     Mode,
     SmoothMotion,
+    /// `PRESENTATION: MODERN / AUTHENTIC`
+    Presentation,
     /// `CHECK FOR UPDATES: AUTO / OFF`
     UpdateCheck,
 }
@@ -143,22 +220,26 @@ pub enum OptionChange {
 pub(crate) enum OptionItem {
     Fullscreen,
     Scaling,
+    Crt,
     Display50,
     /// opens the sound page
     Sound,
     Winner,
     Mode,
+    Presentation,
     UpdateCheck,
     Back,
 }
 
-pub(crate) const OPTION_ITEMS: [OptionItem; 8] = [
+pub(crate) const OPTION_ITEMS: [OptionItem; 10] = [
     OptionItem::Fullscreen,
     OptionItem::Scaling,
+    OptionItem::Crt,
     OptionItem::Display50,
     OptionItem::Sound,
     OptionItem::Winner,
     OptionItem::Mode,
+    OptionItem::Presentation,
     OptionItem::UpdateCheck,
     OptionItem::Back,
 ];
@@ -168,10 +249,12 @@ impl OptionItem {
         match self {
             OptionItem::Fullscreen => "FULLSCREEN",
             OptionItem::Scaling => "SCALING",
+            OptionItem::Crt => "SCREEN",
             OptionItem::Display50 => "DISPLAY 50 HZ",
             OptionItem::Sound => "SOUND",
             OptionItem::Winner => "WINNER",
             OptionItem::Mode => "MODE",
+            OptionItem::Presentation => "PRESENTATION",
             OptionItem::UpdateCheck => "UPDATE CHECK",
             OptionItem::Back => "BACK",
         }
@@ -240,6 +323,7 @@ pub(crate) enum RootItem {
     Resume,
     Network,
     HighScores,
+    Modules,
     Keyboard,
     Controller,
     Options,
@@ -255,6 +339,7 @@ impl RootItem {
             RootItem::Resume => "RESUME",
             RootItem::Network => "NETWORK",
             RootItem::HighScores => "HIGH SCORES",
+            RootItem::Modules => "ROM MODULES",
             RootItem::Keyboard => "KEYBOARD",
             RootItem::Controller => "CONTROLLER",
             RootItem::Options => "OPTIONS",
@@ -266,7 +351,7 @@ impl RootItem {
 }
 
 pub(crate) const NETWORK_ITEMS: [&str; 4] = ["HOST SAME TIME", "HOST TAKE TURNS", "JOIN GAME", "BACK"];
-const MAIN_ITEMS: [RootItem; 8] = [
+const MAIN_ITEMS: [RootItem; 9] = [
     RootItem::Start(GameMode::OnePlayer),
     RootItem::Start(GameMode::TwoPlayers),
     RootItem::Network,
@@ -274,6 +359,7 @@ const MAIN_ITEMS: [RootItem; 8] = [
     RootItem::Keyboard,
     RootItem::Controller,
     RootItem::Options,
+    RootItem::Modules,
     RootItem::Quit,
 ];
 const PAUSE_ITEMS: [RootItem; 5] = [RootItem::Resume, RootItem::Keyboard, RootItem::Controller, RootItem::Options, RootItem::QuitToTitle];
@@ -301,6 +387,14 @@ pub enum Outcome {
     AddScore(Entry),
     /// install the new version that the main menu offers
     Update,
+    /// `ADD ROM MODULE...`: the app asks for a file
+    ModuleAdd,
+    /// the options page asks for the disk image again: AUTHENTIC needs a file that older data folders lack
+    AuthenticData,
+    /// play this module (its id, empty for the original game): the app saves the choice and restarts
+    ModulePlay(String),
+    /// delete this module
+    ModuleRemove(String),
 }
 
 pub(crate) const RESET_ROW: usize = ACTIONS;
@@ -348,6 +442,16 @@ pub struct Menu {
     pub result_hold: u32,
     /// the new version notice of the main menu (see `update`)
     pub update: crate::update::View,
+    /// the installed ROM modules (the app keeps the list up to date)
+    pub modules: Vec<ModuleInfo>,
+    /// id of the module that is played now (empty: the original game)
+    pub active_module: String,
+    /// why the last module could not be added, in plain words
+    pub module_error: Option<String>,
+    /// the entry of the detail page: an index into `modules`, `None` for the original game
+    pub module_sel: Option<usize>,
+    /// can `PRESENTATION: AUTHENTIC` be used? (the app keeps it up to date)
+    pub authentic: AuthenticAvail,
 }
 
 impl Menu {
@@ -376,6 +480,11 @@ impl Menu {
             result: None,
             result_hold: 0,
             update: crate::update::View::None,
+            modules: Vec::new(),
+            active_module: String::new(),
+            module_error: None,
+            module_sel: None,
+            authentic: AuthenticAvail::Ready,
         }
     }
 
@@ -399,6 +508,7 @@ impl Menu {
             return Outcome::None;
         }
         self.notice = None;
+        self.module_error = None;
         match self.page {
             Page::Root => self.step_root(nav),
             Page::Controls(device) => self.step_controls(nav, device, b),
@@ -411,6 +521,9 @@ impl Menu {
             Page::Enhanced => self.step_enhanced(nav),
             Page::Sound => self.step_sound(nav),
             Page::ConfirmQuit => self.step_confirm_quit(nav),
+            Page::Modules => self.step_modules(nav),
+            Page::ModuleDetail => self.step_module_detail(nav),
+            Page::ConfirmRemove => self.step_confirm_remove(nav),
             Page::Result => self.step_result(nav),
         }
     }
@@ -462,6 +575,133 @@ impl Menu {
             _ => {}
         }
         Outcome::None
+    }
+
+    /// Rows of the modules page: `ORIGINAL`, the modules, `ADD ROM MODULE...`, `BACK`.
+    pub(crate) fn module_rows(&self) -> usize {
+        self.modules.len() + 3
+    }
+
+    fn leave_modules(&mut self) {
+        self.page = Page::Root;
+        self.module_error = None;
+        self.cursor = self.root_items().iter().position(|&i| i == RootItem::Modules).unwrap_or(0);
+    }
+
+    fn step_modules(&mut self, nav: Nav) -> Outcome {
+        let n = self.module_rows();
+        let m = self.modules.len();
+        match nav {
+            Nav::Up => self.cursor = (self.cursor + n - 1) % n,
+            Nav::Down => self.cursor = (self.cursor + 1) % n,
+            Nav::Back => self.leave_modules(),
+            Nav::Confirm if self.cursor == m + 1 => return Outcome::ModuleAdd,
+            Nav::Confirm if self.cursor == m + 2 => self.leave_modules(),
+            Nav::Confirm => {
+                self.module_sel = self.cursor.checked_sub(1);
+                self.page = Page::ModuleDetail;
+                self.cursor = 0;
+            }
+            _ => {}
+        }
+        Outcome::None
+    }
+
+    /// The module of the detail page, `None` for the original game.
+    pub fn selected_module(&self) -> Option<&ModuleInfo> {
+        self.module_sel.and_then(|i| self.modules.get(i))
+    }
+
+    /// The module of the detail page is the one that is played now.
+    pub fn selected_is_active(&self) -> bool {
+        self.selected_module().map_or("", |m| m.id.as_str()) == self.active_module
+    }
+
+    /// The lines of the detail page: the original game and the module that is played cannot be removed.
+    pub(crate) fn detail_items(&self) -> Vec<DetailItem> {
+        let removable = self.selected_module().is_some() && !self.selected_is_active();
+        let mut v = vec![DetailItem::Play];
+        if removable {
+            v.push(DetailItem::Remove);
+        }
+        v.push(DetailItem::Back);
+        v
+    }
+
+    fn back_to_module_list(&mut self) {
+        self.page = Page::Modules;
+        self.cursor = self.module_sel.map_or(0, |i| i + 1).min(self.modules.len());
+    }
+
+    fn step_module_detail(&mut self, nav: Nav) -> Outcome {
+        let items = self.detail_items();
+        let n = items.len();
+        match (nav, items[self.cursor.min(n - 1)]) {
+            (Nav::Up, _) => self.cursor = (self.cursor + n - 1) % n,
+            (Nav::Down, _) => self.cursor = (self.cursor + 1) % n,
+            (Nav::Back, _) | (Nav::Confirm, DetailItem::Back) => self.back_to_module_list(),
+            (Nav::Confirm, DetailItem::Play) => {
+                if self.selected_is_active() {
+                    // it is the one that is played: nothing to switch
+                    self.back_to_module_list();
+                } else {
+                    return Outcome::ModulePlay(self.selected_module().map_or(String::new(), |m| m.id.clone()));
+                }
+            }
+            (Nav::Confirm, DetailItem::Remove) => {
+                self.page = Page::ConfirmRemove;
+                self.cursor = 1;
+            }
+            _ => {}
+        }
+        Outcome::None
+    }
+
+    /// `YES` is the first line, `NO` the second and the one the cursor starts on.
+    fn step_confirm_remove(&mut self, nav: Nav) -> Outcome {
+        match nav {
+            Nav::Up | Nav::Down | Nav::Left | Nav::Right => self.cursor ^= 1,
+            Nav::Confirm if self.cursor == 0 => {
+                if let Some(id) = self.selected_module().map(|m| m.id.clone()).filter(|id| *id != self.active_module) {
+                    self.module_sel = None;
+                    self.page = Page::Modules;
+                    self.cursor = 0;
+                    return Outcome::ModuleRemove(id);
+                }
+                self.back_to_module_list();
+            }
+            Nav::Confirm | Nav::Back => {
+                self.page = Page::ModuleDetail;
+                self.cursor = 1;
+            }
+            _ => {}
+        }
+        Outcome::None
+    }
+
+    /// The app tells which modules are installed and which one is played (called every frame: nothing changes when
+    /// nothing differs). The cursor stays on the page.
+    pub fn set_modules(&mut self, modules: &[ModuleInfo], active: &str) {
+        if self.active_module != active {
+            self.active_module = active.to_string();
+        }
+        if self.modules == modules {
+            return;
+        }
+        self.modules = modules.to_vec();
+        self.module_sel = self.module_sel.filter(|&i| i < self.modules.len());
+        if self.page == Page::Modules {
+            self.cursor = self.cursor.min(self.module_rows() - 1);
+        }
+    }
+
+    /// A module was added: the cursor stands on it. Or it could not be added, and the error says why.
+    pub fn module_added(&mut self, id: Option<&str>, error: Option<String>) {
+        self.module_error = error;
+        if let Some(i) = id.and_then(|id| self.modules.iter().position(|m| m.id == id)) {
+            self.page = Page::Modules;
+            self.cursor = i + 1;
+        }
     }
 
     /// After a game the cursor stands on what was played: the mode, or `NETWORK` for `None`.
@@ -665,6 +905,11 @@ impl Menu {
                     self.cursor = 0;
                 }
                 RootItem::HighScores => self.page = Page::Scores,
+                RootItem::Modules => {
+                    self.page = Page::Modules;
+                    // the module that is played starts selected
+                    self.cursor = self.modules.iter().position(|m| m.id == self.active_module).map_or(0, |i| i + 1);
+                }
                 RootItem::Keyboard => self.open(Device::Keyboard),
                 RootItem::Controller => self.open(Device::Pad),
                 RootItem::Options => {
@@ -695,6 +940,7 @@ impl Menu {
             (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Fullscreen) => return Outcome::Option(OptionChange::Fullscreen),
             (Nav::Left, OptionItem::Scaling) => return Outcome::Option(OptionChange::Scaling(false)),
             (Nav::Right | Nav::Confirm, OptionItem::Scaling) => return Outcome::Option(OptionChange::Scaling(true)),
+            (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Crt) => return Outcome::Option(OptionChange::Crt),
             (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Display50) => return Outcome::Option(OptionChange::Display50),
             (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::UpdateCheck) => return Outcome::Option(OptionChange::UpdateCheck),
             (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Winner) => return Outcome::Option(OptionChange::Winner),
@@ -708,6 +954,13 @@ impl Menu {
                 self.page = Page::Enhanced;
                 self.cursor = 0;
             }
+            // the way out of AUTHENTIC is always open; the way in needs the data
+            (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Presentation) => match self.authentic {
+                _ if self.settings.presentation == crate::settings::Presentation::Authentic => return Outcome::Option(OptionChange::Presentation),
+                AuthenticAvail::Ready => return Outcome::Option(OptionChange::Presentation),
+                AuthenticAvail::NeedsData if nav == Nav::Confirm => return Outcome::AuthenticData,
+                _ => {}
+            },
             _ => {}
         }
         Outcome::None
@@ -938,7 +1191,7 @@ mod tests {
     fn back_returns_to_the_item_that_opened_the_page() {
         let mut b = Bindings::default();
         let mut m = Menu::main();
-        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Up, Nav::Confirm, Nav::Back]);
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Up, Nav::Up, Nav::Confirm, Nav::Back]);
         assert_eq!((m.page, m.cursor), (Page::Root, 5));
     }
 
@@ -1045,11 +1298,12 @@ mod tests {
     fn options_change_nothing_themselves_and_ask_the_app() {
         let mut b = Bindings::default();
         let mut m = Menu::main();
-        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Confirm]);
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Up, Nav::Confirm]);
         assert_eq!(m.page, Page::Options);
         assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::Option(OptionChange::Fullscreen));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::Option(OptionChange::Scaling(true)));
         assert_eq!(m.step(Nav::Left, &mut b), Outcome::Option(OptionChange::Scaling(false)));
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Right]), Outcome::Option(OptionChange::Crt));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::Option(OptionChange::Display50));
         // SOUND opens its page; left does nothing on the line itself
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Left]), Outcome::None);
@@ -1071,6 +1325,30 @@ mod tests {
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Right]), Outcome::Option(OptionChange::Mode));
         nav(&mut m, &mut b, &[Nav::Back]);
         assert_eq!((m.page, m.cursor), (Page::Root, 6));
+    }
+
+    #[test]
+    fn the_presentation_item_needs_the_data_to_switch_to_authentic_but_can_always_switch_back() {
+        use crate::settings::Presentation;
+        let mut b = Bindings::default();
+        let mut m = Menu::main();
+        m.page = Page::Options;
+        m.cursor = OPTION_ITEMS.iter().position(|&i| i == OptionItem::Presentation).unwrap();
+        // data there: left, right and confirm switch
+        m.authentic = AuthenticAvail::Ready;
+        for n in [Nav::Left, Nav::Right, Nav::Confirm] {
+            assert_eq!(m.step(n, &mut b), Outcome::Option(OptionChange::Presentation));
+        }
+        // an older data folder: nothing switches, confirm asks for the disk image
+        m.authentic = AuthenticAvail::NeedsData;
+        assert_eq!(m.step(Nav::Right, &mut b), Outcome::None);
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::AuthenticData);
+        // a ROM module: nothing
+        m.authentic = AuthenticAvail::ModuleActive;
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None);
+        // in AUTHENTIC the way out is always open
+        m.settings.presentation = Presentation::Authentic;
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::Option(OptionChange::Presentation));
     }
 
     #[test]
@@ -1115,5 +1393,135 @@ mod tests {
     #[test]
     fn texts_the_font_cannot_show_become_question_marks() {
         assert_eq!(safe_text("Pad \u{e9}\u{4e2d}-1"), "Pad ??-1");
+    }
+
+    fn two_modules() -> Vec<ModuleInfo> {
+        vec![ModuleInfo::new("aaaaaaaaaaaaaaaa", "More levels", "me", "1.0", "33 new stages", false), ModuleInfo::new("bbbbbbbbbbbbbbbb", "Hard mode", "you", "", "", true)]
+    }
+
+    fn modules_page() -> (Menu, Bindings) {
+        let mut b = Bindings::default();
+        let mut m = Menu::main();
+        m.set_modules(&two_modules(), "");
+        // ROM MODULES is the item before QUIT
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Up]);
+        assert_eq!(m.root_items()[m.cursor].label(), "ROM MODULES");
+        m.step(Nav::Confirm, &mut b);
+        assert_eq!((m.page, m.cursor), (Page::Modules, 0));
+        (m, b)
+    }
+
+    #[test]
+    fn the_pause_menu_has_no_rom_modules() {
+        assert!(!Menu::pause().root_items().iter().any(|&i| i == RootItem::Modules));
+    }
+
+    #[test]
+    fn the_modules_page_lists_original_modules_add_and_back() {
+        let (mut m, mut b) = modules_page();
+        assert_eq!(m.module_rows(), 5);
+        // ORIGINAL, the two modules, ADD ROM MODULE..., BACK
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Confirm]), Outcome::ModuleAdd);
+        assert_eq!(m.page, Page::Modules);
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::None);
+        assert_eq!((m.page, m.cursor), (Page::Root, 7), "back to the item that opened the page");
+        // back with the back key, and up wraps to BACK
+        nav(&mut m, &mut b, &[Nav::Confirm, Nav::Back]);
+        assert_eq!(m.page, Page::Root);
+        nav(&mut m, &mut b, &[Nav::Confirm, Nav::Up, Nav::Confirm]);
+        assert_eq!(m.page, Page::Root);
+    }
+
+    #[test]
+    fn a_module_opens_its_page_and_play_asks_the_app_to_switch() {
+        let (mut m, mut b) = modules_page();
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]);
+        assert_eq!((m.page, m.selected_module().map(|x| x.name.as_str())), (Page::ModuleDetail, Some("MORE LEVELS")));
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::ModulePlay("aaaaaaaaaaaaaaaa".into()));
+        // the original game: ModulePlay with an empty id
+        m.active_module = "aaaaaaaaaaaaaaaa".into();
+        m.page = Page::Modules;
+        m.cursor = 0;
+        nav(&mut m, &mut b, &[Nav::Confirm]);
+        assert!(m.selected_module().is_none());
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::ModulePlay(String::new()));
+    }
+
+    #[test]
+    fn playing_the_module_that_is_played_only_goes_back() {
+        let (mut m, mut b) = modules_page();
+        m.active_module = "bbbbbbbbbbbbbbbb".into();
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Confirm]);
+        assert!(m.selected_is_active());
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None);
+        assert_eq!((m.page, m.cursor), (Page::Modules, 2));
+        // and the original game, when no module is played
+        m.active_module.clear();
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Confirm]);
+        assert!(m.selected_is_active());
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None);
+        assert_eq!((m.page, m.cursor), (Page::Modules, 0));
+    }
+
+    #[test]
+    fn remove_asks_first_and_is_not_offered_for_the_original_or_the_active_module() {
+        let (mut m, mut b) = modules_page();
+        m.active_module = "bbbbbbbbbbbbbbbb".into();
+        // the original game: PLAY THIS, BACK
+        m.step(Nav::Confirm, &mut b);
+        assert_eq!(m.detail_items(), vec![DetailItem::Play, DetailItem::Back]);
+        m.step(Nav::Back, &mut b);
+        // the module that is played: no REMOVE either
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Confirm]);
+        assert_eq!(m.detail_items(), vec![DetailItem::Play, DetailItem::Back]);
+        m.step(Nav::Back, &mut b);
+        // any other: PLAY THIS, REMOVE, BACK; the question starts on NO
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Confirm, Nav::Down, Nav::Confirm]);
+        assert_eq!(m.page, Page::ConfirmRemove);
+        assert_eq!(m.cursor, 1);
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None, "NO");
+        assert_eq!((m.page, m.cursor), (Page::ModuleDetail, 1));
+        m.step(Nav::Confirm, &mut b);
+        assert_eq!(m.step(Nav::Back, &mut b), Outcome::None, "back is NO too");
+        assert_eq!(m.page, Page::ModuleDetail);
+        m.step(Nav::Confirm, &mut b);
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Up, Nav::Confirm]), Outcome::ModuleRemove("aaaaaaaaaaaaaaaa".into()));
+        assert_eq!(m.page, Page::Modules);
+        // the app reads the folder again
+        m.set_modules(&two_modules()[1..], "bbbbbbbbbbbbbbbb");
+        assert_eq!(m.module_rows(), 4);
+        assert!(m.cursor < m.module_rows());
+    }
+
+    #[test]
+    fn the_page_of_the_module_that_is_played_starts_on_it_and_errors_show_until_a_key() {
+        let mut b = Bindings::default();
+        let mut m = Menu::main();
+        m.set_modules(&two_modules(), "bbbbbbbbbbbbbbbb");
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Confirm]);
+        assert_eq!(m.cursor, 2);
+        m.module_added(None, Some("this is not a valid ROM module".into()));
+        assert!(m.module_error.is_some());
+        m.step(Nav::Up, &mut b);
+        assert!(m.module_error.is_none(), "the next key clears it");
+        // a module that was added gets the cursor
+        m.module_added(Some("aaaaaaaaaaaaaaaa"), None);
+        assert_eq!((m.page, m.cursor), (Page::Modules, 1));
+        // a list that shrinks keeps the cursor on the page
+        m.cursor = 4;
+        m.set_modules(&[], "");
+        assert_eq!(m.cursor, 2);
+    }
+
+    #[test]
+    fn module_texts_are_capitals_the_font_has_and_labels_are_cut() {
+        let m = ModuleInfo::new("0", "caf\u{e9} n\u{f6}", "\u{4e2d}", "1.0-b", "l\u{e4}ng", true);
+        assert_eq!((m.name.as_str(), m.author.as_str(), m.description.as_str()), ("CAF? N?", "?", "L?NG"));
+        let long = ModuleInfo::new("0", &"W".repeat(24), "", "1.0", "", false);
+        let label = long.list_label(20);
+        assert_eq!(label.chars().count(), 20);
+        assert!(label.ends_with("  V1.0"));
+        assert_eq!(ModuleInfo::new("0", "A", "", "", "", false).list_label(20), "A");
+        assert_eq!(CODE_NOTICE.join(" "), "CHANGES GAME CODE - MAY NOT PLAY AS INTENDED");
     }
 }

@@ -118,7 +118,7 @@ impl GameState {
                 }
             }
             MainLine::DeathArc(arc)
-                if arc.phase == ArcPhase::Wait(0) && !self.bonus_ran && self.restart_timing.front().map_or(false, |t| t.tail_mid) =>
+                if arc.phase == ArcPhase::Wait(0) && !self.bonus_ran && self.restart_front().map_or(false, |t| t.tail_mid) =>
             {
                 self.bonus_ran = true;
                 self.death_arc_step(arc);
@@ -190,7 +190,7 @@ impl GameState {
     fn main_timed(&mut self, pre: bool) {
         match self.main.clone() {
             MainLine::DeathArc(arc) if matches!(arc.phase, ArcPhase::Wait(_)) => {
-                let front = self.restart_timing.front();
+                let front = self.restart_front();
                 let tail_pre = front.map_or(true, |t| t.tail_pre);
                 let mid = front.map_or(false, |t| t.tail_mid);
                 // with `tail_mid` the last step runs in main_pass; the countdown before it runs here
@@ -367,7 +367,7 @@ impl GameState {
         if !self.infinite_lives {
             self.lives_c64 = self.lives_c64.wrapping_sub(1);
         }
-        if let Some(steps) = self.restart_timing.front().and_then(|t| t.death_late) {
+        if let Some(steps) = self.restart_front().and_then(|t| t.death_late) {
             // $2044: the sample line cuts the music request: the rest runs in the next frame
             self.request_music_cut(7, steps);
             self.main = MainLine::DeathLate;
@@ -439,7 +439,7 @@ impl GameState {
                     ArcPhase::Fall => {
                         // $2074: LDA $05F5; CMP #$FA; BCS L2090
                         if self.player_y_c64 >= 0xFA {
-                            arc.phase = ArcPhase::Wait(self.restart_timing.front().map_or(LONG_WAIT_CHAINS, |t| t.death_wait as u32));
+                            arc.phase = ArcPhase::Wait(self.restart_front().map_or(LONG_WAIT_CHAINS, |t| t.death_wait as u32));
                             continue;
                         }
                         // $207B: DEY; BPL L2068 (else fall through to $207E)
@@ -453,7 +453,7 @@ impl GameState {
                     ArcPhase::Drop => {
                         // $2089: LDA $05F5; CMP #$FA; BCC L2083
                         if self.player_y_c64 >= 0xFA {
-                            arc.phase = ArcPhase::Wait(self.restart_timing.front().map_or(LONG_WAIT_CHAINS, |t| t.death_wait as u32));
+                            arc.phase = ArcPhase::Wait(self.restart_front().map_or(LONG_WAIT_CHAINS, |t| t.death_wait as u32));
                         }
                     }
                     ArcPhase::Wait(_) => {}
@@ -525,9 +525,30 @@ impl GameState {
             if self.player_save[12] != 0 && self.player_save[13] != 0 {
                 self.game_over = true;
             } else {
-                self.restart_stage_l09b6();
+                self.restart_or_hold_l09b6();
             }
         }
+    }
+
+    /// The waits of the next restart: the queued measured ones, else the default of the game (see `default_restart_timing`).
+    pub(crate) fn restart_front(&self) -> Option<&crate::state::StageTiming> {
+        self.restart_timing.front().or(self.default_restart_timing.as_ref())
+    }
+
+    /// `L09B6` after `$0C4E`: the other player's turn. With `hold_for_high_score` the app shows the high score screen first
+    /// (`high_score_due`) and calls [`Self::resume_after_high_score`] afterwards.
+    pub(crate) fn restart_or_hold_l09b6(&mut self) {
+        if self.hold_for_high_score {
+            self.high_score_due = true;
+        } else {
+            self.restart_stage_l09b6();
+        }
+    }
+
+    /// The high score screen of a player who is out is over and the other player goes on (`L09B6`).
+    pub fn resume_after_high_score(&mut self) {
+        self.high_score_due = false;
+        self.restart_stage_l09b6();
     }
 
     /// L09B6: restart the current stage after a lost life (the stage setup repeats the stage start timeline)
@@ -535,6 +556,8 @@ impl GameState {
         let stage = self.stage;
         // The waits of the restart last as long as the recording says (harness) or as long as a plain restart
         if let Some(t) = self.restart_timing.pop_front() {
+            self.timing = t;
+        } else if let Some(t) = self.default_restart_timing.clone() {
             self.timing = t;
         } else {
             self.timing = crate::state::StageTiming { swap_wait: 0, ..crate::state::StageTiming::default() };
@@ -605,7 +628,7 @@ impl GameState {
                         }
                         self.start_stage_after_banner_timed(self.timing.setup_wait);
                         phase = RestartPhase::Setup(self.timing.setup_wait);
-                    } else if step >= self.timing.banner_steps.len() {
+                    } else if step >= self.timing.banner_steps.len() || (self.banner_fire_skips && self.main_fire) {
                         self.start_stage_after_banner_timed(self.timing.setup_wait);
                         phase = RestartPhase::Setup(self.timing.setup_wait);
                     } else if left > 0 {
@@ -738,13 +761,13 @@ impl GameState {
                     // $0B94: JSR sub_0C99; $0B97: $20 += 2
                     self.en.vic_bg0 = 0;
                     self.en.vic_me = 0;
-                    self.stage += 2;
+                    self.stage = self.warp_target_stage();
                     // $0B9E..$0BB6: the texts (string at $162B, string `$1568`)
                     let mut p = 0x162B;
                     self.print_string_at_sub_9881(&mut p, 0x0E, 9);
                     self.print_string_sub_9881(self.player as usize, 7, 9);
                     // $0BB9: LDX $20; INX; LDA $9FAE,X; STA $043D; sub_98D9
-                    self.warp_stage_id = crate::image::img(0x9FAE + self.stage as usize + 1);
+                    self.warp_stage_id = self.bcd_table(self.stage as usize + 1);
                     self.print_bcd_sub_98d9(&[self.warp_stage_id], 9, 0x1C);
                     // $0BD3: LDA #$06; LDY #$00; JSR sub_154F: STA $157C
                     self.banner_delay = 0x06;
@@ -783,7 +806,7 @@ impl GameState {
     }
 
     /// L0BDF..L0BE9: music request and the start of `sub_0CA2` (`sub_9F45` clears screen and colour RAM)
-    fn start_stage_exit_l0bdf(&mut self) {
+    pub(crate) fn start_stage_exit_l0bdf(&mut self) {
         // $0BE4: LDA #$07; JSR sub_150C
         self.request_music_sub_150c(7);
         // $0CA2: JSR sub_9F45
@@ -927,11 +950,19 @@ impl GameState {
 
     /// L09A3 and `$09B8`: the next stage starts after the exit
     fn stage_exit_l09a3(&mut self) {
+        if self.ck_ending_pending {
+            // fan-hack families: the bonus screen before the ending is over, the ending follows (`$302E` hook)
+            self.ck_ending_pending = false;
+            self.main = MainLine::Loop;
+            self.st_046d = 0;
+            self.en.flag_157e = 0xFF;
+            return;
+        }
         // $09A3: LDA #$00; STA $0456; STA $2169; STA $0417; STA $046D; INC $20
         self.spawn_variant = 0;
         self.st_2169 = 0;
         self.st_046d = 0;
-        if self.stage >= 33 {
+        if self.b_is_last_stage() {
             // The original continues with code from the disk (ending, high score table: `sub_325D`, `L3348`), which is not
             // part of the program image: the port returns to the title. `$0AD1` marks the player as finished ($1575,Y = $FF),
             // the other one plays on.
@@ -940,7 +971,7 @@ impl GameState {
             if self.player_save[12] != 0 && self.player_save[13] != 0 {
                 self.game_over = true;
             } else {
-                self.restart_stage_l09b6();
+                self.restart_or_hold_l09b6();
             }
             return;
         }

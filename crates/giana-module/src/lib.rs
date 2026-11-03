@@ -7,12 +7,19 @@ pub mod apply;
 pub mod bps;
 pub mod code_ranges;
 pub mod container;
+pub mod cpu;
 pub mod crc32;
+pub mod disk;
+pub mod family;
 pub mod leak;
 pub mod make;
+pub mod runner;
+pub mod runtime_ranges;
+pub mod tnw;
 
 pub use apply::{apply, Applied};
 pub use container::{Meta, Module};
+pub use family::{detect_family, CkVariant, Family};
 pub use make::{detect, make, Input};
 
 /// Tiny deterministic xorshift generator for tests (no `rand` dependency).

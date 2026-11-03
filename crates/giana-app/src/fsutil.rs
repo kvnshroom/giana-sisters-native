@@ -4,6 +4,11 @@ use std::path::Path;
 
 /// Write to a temporary file next to `path`, then rename it over `path`.
 pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    write_atomic_bytes(path, contents.as_bytes())
+}
+
+/// The same for binary contents.
+pub fn write_atomic_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

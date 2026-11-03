@@ -176,9 +176,9 @@ impl GameState {
             }
             // L1962
             self.zp_0e = self.zp_0e.wrapping_add(x).wrapping_sub(0x28);
-            let t = Self::tile_lookup_sub_9f40(self.rd0e(0x50))
-                | Self::tile_lookup_sub_9f40(self.rd0e(0x51))
-                | Self::tile_lookup_sub_9f40(self.rd0e(0x52));
+            let t = self.tile_flags(self.rd0e(0x50))
+                | self.tile_flags(self.rd0e(0x51))
+                | self.tile_flags(self.rd0e(0x52));
             if t & 1 != 0 {
                 return;
             }
@@ -190,15 +190,15 @@ impl GameState {
 
     /// L1896: the debris reached its lowest frame; check the tiles underneath
     fn debris_state_6_l1896(&mut self) {
-        let t1 = Self::tile_lookup_sub_9f40(self.rd0e(0x50));
-        let t2 = Self::tile_lookup_sub_9f40(self.rd0e(0x51));
-        let t3 = Self::tile_lookup_sub_9f40(self.rd0e(0x52));
+        let t1 = self.tile_flags(self.rd0e(0x50));
+        let t2 = self.tile_flags(self.rd0e(0x51));
+        let t3 = self.tile_flags(self.rd0e(0x52));
         let sum = t1.wrapping_add(t2).wrapping_add(t3);
         self.set_v47(0x451, sum);
         if sum == 0 {
             self.clear_19ba(); // L18EB
         } else if sum == 1 {
-            if Self::tile_lookup_sub_9f40(self.rd0e(0x50)) & 1 != 0 {
+            if self.tile_flags(self.rd0e(0x50)) & 1 != 0 {
                 self.clear_19b3();
                 self.zp_0e = self.zp_0e.wrapping_add(1);
             } else {
@@ -311,7 +311,7 @@ impl GameState {
             let y = self.slot(0x9B88 + x) as u16;
             let ch = self.slot(0x9B80 + x);
             self.wr0e(y, ch);
-            self.wr10(y, crate::tables::TABLE_AB00[ch as usize]);
+            self.wr10(y, self.char_colour(ch));
             self.set_slot(0x9B90 + x, 0);
         }
     }

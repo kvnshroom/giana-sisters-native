@@ -136,6 +136,58 @@ fn main() {
             m.update = view;
             v.push((name, m, false));
         }
+        // ROM modules: the page, the details, the question, an error; the main menu with a module that is played
+        {
+            use giana_app::menu::ModuleInfo;
+            let modules = vec![
+                ModuleInfo::new("0123456789abcdef", "More levels", "Someone", "1.2", "33 new stages for the sisters. Made for the fourth anniversary of the game.", false),
+                ModuleInfo::new("1123456789abcdef", "Hard mode with a very long name", "A very long author name", "10.20.30", "Everything is harder. The enemies move faster and there are fewer extra lives to find in the stages.", true),
+                ModuleInfo::new("2123456789abcdef", "Tiny", "", "", "", false),
+            ];
+            let with = |cursor: usize, page: Page| {
+                let mut m = main(cursor);
+                m.page = page;
+                m.modules = modules.clone();
+                m.active_module = "0123456789abcdef".into();
+                m
+            };
+            let mut m = main(7);
+            m.modules = modules.clone();
+            m.active_module = "1123456789abcdef".into();
+            v.push(("main_module", m, false));
+            let mut m = main(7);
+            m.modules = modules.clone();
+            m.active_module = "0123456789abcdef".into();
+            m.notice = Some("ROM MODULE COULD NOT BE LOADED".into());
+            v.push(("main_module_failed", m, false));
+            v.push(("modules", with(1, Page::Modules), false));
+            let mut m = with(4, Page::Modules);
+            m.module_error = Some("this module was made for a different version of the game data".into());
+            v.push(("modules_error", m, false));
+            let mut m = with(0, Page::Modules);
+            m.modules.clear();
+            m.active_module.clear();
+            v.push(("modules_none", m, false));
+            let mut m = with(0, Page::Modules);
+            m.modules = (0..12).map(|i| ModuleInfo::new(&format!("{i:016x}"), &format!("Module number {i}"), "me", "1.0", "", false)).collect();
+            m.active_module = m.modules[6].id.clone();
+            m.cursor = 11;
+            v.push(("modules_long", m, false));
+            for (name, sel, cursor) in [("module_new", Some(0), 0), ("module_code", Some(1), 1), ("module_plain", Some(2), 0), ("module_original", None, 0)] {
+                let mut m = with(cursor, Page::ModuleDetail);
+                m.module_sel = sel;
+                if sel == Some(0) {
+                    m.active_module.clear();
+                }
+                v.push((name, m, false));
+            }
+            let mut m = with(0, Page::ModuleDetail);
+            m.module_sel = Some(0);
+            v.push(("module_active", m, false));
+            let mut m = with(1, Page::ConfirmRemove);
+            m.module_sel = Some(1);
+            v.push(("module_remove", m, false));
+        }
         let mut m = Menu::pause();
         m.cursor = 0;
         v.push(("pause", m, false));

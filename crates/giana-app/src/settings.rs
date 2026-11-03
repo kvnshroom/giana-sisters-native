@@ -53,6 +53,47 @@ impl Scaling {
     }
 }
 
+/// What the player sees: the new design with menus (`MODERN`) or exactly what the C64 showed (`AUTHENTIC`): the original
+/// title sequence, high score table and name entry, no menus, no hints, and the original program running as it was.
+/// Independent of `MODE`. See `docs/authentic-mode.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Presentation {
+    #[default]
+    Modern,
+    Authentic,
+}
+
+impl Presentation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Presentation::Modern => "MODERN",
+            Presentation::Authentic => "AUTHENTIC",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Presentation::Modern => Presentation::Authentic,
+            Presentation::Authentic => Presentation::Modern,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Presentation::Modern => "modern",
+            Presentation::Authentic => "authentic",
+        }
+    }
+
+    fn from_name(s: &str) -> Option<Self> {
+        Some(match s {
+            "modern" => Presentation::Modern,
+            "authentic" => Presentation::Authentic,
+            _ => return None,
+        })
+    }
+}
+
 /// What the menus sound like (`MENU SOUNDS` on the options page).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuSoundMode {
@@ -138,10 +179,14 @@ pub struct Settings {
     pub volume: u8,
     pub muted: bool,
     pub scaling: Scaling,
+    /// `SCREEN: CRT`: the picture looks like on a tube television (scanlines, glow); off is sharp pixels
+    pub crt: bool,
     /// 0 to `MAX_VOLUME`: music and effects on their own (both at `MAX_VOLUME` is the original sound from one chip)
     pub music_volume: u8,
     pub effects_volume: u8,
     pub enhancements: Enhancements,
+    /// `PRESENTATION: MODERN / AUTHENTIC`
+    pub presentation: Presentation,
     pub menu_sounds: MenuSoundMode,
     /// the address typed last on the join page
     pub last_address: String,
@@ -155,6 +200,8 @@ pub struct Settings {
     pub last_update_check: u64,
     /// the newest version that the last check found (empty: none)
     pub update_seen: String,
+    /// id of the chosen ROM module (empty: the original game)
+    pub module: String,
 }
 
 impl Default for Settings {
@@ -164,9 +211,11 @@ impl Default for Settings {
             volume: MAX_VOLUME,
             muted: false,
             scaling: Scaling::Whole,
+            crt: false,
             music_volume: MAX_VOLUME,
             effects_volume: MAX_VOLUME,
             enhancements: Enhancements::default(),
+            presentation: Presentation::Modern,
             menu_sounds: MenuSoundMode::Soft,
             last_address: String::new(),
             winner: Winner::Score,
@@ -174,6 +223,7 @@ impl Default for Settings {
             update_check: true,
             last_update_check: 0,
             update_seen: String::new(),
+            module: String::new(),
         }
     }
 }
@@ -213,21 +263,24 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# The Great Giana Sisters: settings.\nfullscreen = {}\nvolume = {}\nmuted = {}\nscaling = {}\nwinner = {}\ndisplay_50hz = {}\nmusic_volume = {}\neffects_volume = {}\nmode = {}\nsmooth_motion = {}\nmenu_sounds = {}\nupdate_check = {}\nlast_update_check = {}\nupdate_seen = {}\nlast_address = {}\n",
+            "# The Great Giana Sisters: settings.\nfullscreen = {}\nvolume = {}\nmuted = {}\nscaling = {}\ncrt = {}\nwinner = {}\ndisplay_50hz = {}\nmusic_volume = {}\neffects_volume = {}\nmode = {}\nsmooth_motion = {}\npresentation = {}\nmenu_sounds = {}\nupdate_check = {}\nlast_update_check = {}\nupdate_seen = {}\nmodule = {}\nlast_address = {}\n",
             self.fullscreen,
             self.volume,
             self.muted,
             self.scaling.name(),
+            if self.crt { "on" } else { "off" },
             self.winner.label().to_lowercase(),
             if self.display_50 { "auto" } else { "off" },
             self.music_volume,
             self.effects_volume,
             if self.enhancements.enhanced { "enhanced" } else { "original" },
             self.enhancements.smooth_motion,
+            self.presentation.name(),
             self.menu_sounds.name(),
             if self.update_check { "auto" } else { "off" },
             self.last_update_check,
             self.update_seen,
+            self.module,
             self.last_address
         )
     }
@@ -243,14 +296,17 @@ impl Settings {
                 "muted" => s.muted = value.parse().unwrap_or(s.muted),
                 "volume" => s.volume = value.parse::<u8>().map_or(s.volume, |v| v.min(MAX_VOLUME)),
                 "scaling" => s.scaling = Scaling::from_name(value).unwrap_or(s.scaling),
+                "crt" => s.crt = value == "on",
                 "music_volume" => s.music_volume = value.parse::<u8>().map_or(s.music_volume, |v| v.min(MAX_VOLUME)),
                 "effects_volume" => s.effects_volume = value.parse::<u8>().map_or(s.effects_volume, |v| v.min(MAX_VOLUME)),
                 "mode" => s.enhancements.enhanced = value == "enhanced",
                 "smooth_motion" => s.enhancements.smooth_motion = value.parse().unwrap_or(s.enhancements.smooth_motion),
+                "presentation" => s.presentation = Presentation::from_name(value).unwrap_or(s.presentation),
                 "menu_sounds" => s.menu_sounds = MenuSoundMode::from_name(value).unwrap_or(s.menu_sounds),
                 "update_check" => s.update_check = value != "off",
                 "last_update_check" => s.last_update_check = value.parse().unwrap_or(0),
                 "update_seen" => s.update_seen = value.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')).take(32).collect(),
+                "module" => s.module = value.chars().filter(|c| c.is_ascii_hexdigit()).take(16).collect(),
                 "display_50hz" => s.display_50 = value != "off",
                 "winner" => s.winner = if value == "furthest" { Winner::Furthest } else { Winner::Score },
                 "last_address" => s.last_address = value.chars().filter(|c| c.is_ascii_digit() || *c == '.' || *c == ':').take(21).collect(),
@@ -284,9 +340,11 @@ mod tests {
             volume: 4,
             muted: true,
             scaling: Scaling::Fill,
+            crt: true,
             music_volume: 3,
             effects_volume: 0,
             enhancements: Enhancements { enhanced: true, smooth_motion: false },
+            presentation: Presentation::Authentic,
             last_address: "192.168.1.5:47064".into(),
             winner: Winner::Furthest,
             display_50: false,
@@ -294,6 +352,7 @@ mod tests {
             update_check: false,
             last_update_check: 1_790_000_000,
             update_seen: "0.2.0".into(),
+            module: "0123456789abcdef".into(),
         };
         assert_eq!(Settings::from_text(&s.to_text()), s);
         for menu_sounds in [MenuSoundMode::Off, MenuSoundMode::Soft, MenuSoundMode::Classic] {
@@ -310,6 +369,22 @@ mod tests {
             let s = Settings { scaling, ..Settings::default() };
             assert_eq!(Settings::from_text(&s.to_text()).scaling, scaling);
         }
+    }
+
+    #[test]
+    fn presentation_is_modern_by_default_and_survives_a_round_trip() {
+        assert_eq!(Settings::default().presentation, Presentation::Modern);
+        // old files and damaged values give MODERN
+        assert_eq!(Settings::from_text("volume = 3\n").presentation, Presentation::Modern);
+        assert_eq!(Settings::from_text("presentation = retro\n").presentation, Presentation::Modern);
+        for presentation in [Presentation::Modern, Presentation::Authentic] {
+            let s = Settings { presentation, ..Settings::default() };
+            assert_eq!(Settings::from_text(&s.to_text()).presentation, presentation);
+        }
+        assert_eq!(Presentation::Modern.next().next(), Presentation::Modern);
+        // independent of the mode
+        let s = Settings::from_text("mode = enhanced\npresentation = authentic\n");
+        assert!(s.enhancements.enhanced && s.presentation == Presentation::Authentic);
     }
 
     #[test]

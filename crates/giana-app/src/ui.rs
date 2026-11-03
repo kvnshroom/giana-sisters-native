@@ -351,6 +351,12 @@ impl Panel {
         draw_text_px(fb, self.col_x(2), self.row_y(row_in_panel), text, px(c::DIM));
     }
 
+    /// Like [`Panel::note`] in another colour.
+    pub fn note_colored(&self, fb: &mut Framebuffer, row_in_panel: usize, text: &str, color: u8) {
+        debug_assert!(text.chars().count() <= self.w - 4, "note {text:?} too wide for {self:?}");
+        draw_text_px(fb, self.col_x(2), self.row_y(row_in_panel), text, px(color));
+    }
+
     /// Text at a column and character row counted from the panel's top left corner.
     pub fn text_at(&self, fb: &mut Framebuffer, col_in_panel: usize, row_in_panel: usize, text: &str, color: u8) {
         debug_assert!(col_in_panel >= 1 && col_in_panel + text.chars().count() <= self.w - 1, "text {text:?} at {col_in_panel} outside {self:?}");

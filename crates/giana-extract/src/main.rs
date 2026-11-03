@@ -37,7 +37,7 @@ fn run() -> Result<(), String> {
     let g64 = std::fs::read(input).map_err(|e| format!("cannot read {input}: {e}"))?;
     let ex = giana_extract::extract(&g64)?;
     println!("input: {input}\nversion: {}", ex.version.name);
-    let files = giana_extract::derive::derive_all(ex.patched.clone(), ex.title_prg.clone())?;
+    let files = giana_extract::derive::derive_all_with(ex.patched.clone(), ex.title_prg.clone(), ex.atg.clone())?;
     giana_extract::write_data_dir(&files, Path::new(out_dir))?;
     for f in &files {
         println!("wrote {}/{} ({} bytes, sha256 ok)", out_dir, f.name, f.data.len());

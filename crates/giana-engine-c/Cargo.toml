@@ -1,0 +1,10 @@
+[package]
+name = "giana-engine-c"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Engine of the fan sequel \"Giana Sisters 30th Anniversary Extended Preview\" (family C): disk loader and decruncher, stage format, level buffer, music, frame renderer. Local only, reads the player's own .d64."
+
+[dependencies]
+giana-module = { path = "../giana-module" }
+giana-render = { path = "../giana-render" }

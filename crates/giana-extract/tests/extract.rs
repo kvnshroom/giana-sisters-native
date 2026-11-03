@@ -58,7 +58,8 @@ fn derive_files_accepts_a_modified_image_and_derive_all_rejects_it() {
     let get = |n: &str| files.iter().find(|f| f.name == n).unwrap().data.clone();
     let (ingame, f2) = (get("ingame.bin"), get("f_2.prg"));
     let same = giana_extract::derive::derive_files(ingame.clone(), f2.clone()).unwrap();
-    assert_eq!(same.iter().map(|f| f.name).collect::<Vec<_>>(), files.iter().map(|f| f.name).collect::<Vec<_>>());
+    // the optional ATG file only comes with the disk, not with derive_files
+    assert_eq!(same.iter().map(|f| f.name).collect::<Vec<_>>(), files.iter().map(|f| f.name).filter(|n| *n != "atg.prg").collect::<Vec<_>>());
     let mut hacked = ingame.clone();
     hacked[0xAC10] ^= 1;
     let out = giana_extract::derive::derive_files(hacked.clone(), f2.clone()).unwrap();

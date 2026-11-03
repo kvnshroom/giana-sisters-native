@@ -4,13 +4,13 @@
 use crate::bindings::{key_label, Action, Bindings, PadInput, SLOTS};
 use crate::hints::{fit_in, InputDevice, InputState};
 use crate::menu::{clip, safe_text, Device, Menu, Nav, Page, Search, BACK_ROW, ENHANCED_ITEMS, NETWORK_ITEMS, OPTION_ITEMS, RESET_ROW, SOUND_ITEMS};
-use crate::menu::{EnhancedItem, OptionItem, SoundItem};
+use crate::menu::{AuthenticAvail, DetailItem, EnhancedItem, OptionItem, SoundItem, CODE_NOTICE};
 use crate::padicons::Icon;
 use crate::result::Winner;
 use crate::scores::{Scores, MAX_ENTRIES, NAME_LEN};
-use crate::settings::{MenuSoundMode, Scaling, MAX_VOLUME};
+use crate::settings::{MenuSoundMode, Presentation, Scaling, MAX_VOLUME};
 use crate::ui::{self, Hint, ItemState, Panel, PillTone, Pitch, View};
-use giana_render::framebuffer::Framebuffer;
+use giana_render::framebuffer::{Framebuffer, WIDTH};
 use giana_render::palette::c64_color;
 use giana_render::text::{draw_text_px, fill_rect_px};
 
@@ -61,6 +61,12 @@ pub fn draw(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     draw_foreground(fb, menu, ctx);
 }
 
+/// A page over a picture that stays visible (dimmed), whatever the page: the settings overlay of the AUTHENTIC presentation.
+pub fn draw_over(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
+    ui::dim(fb);
+    draw_foreground(fb, menu, ctx);
+}
+
 /// The page itself and the footer, on whatever the frame buffer holds.
 pub(crate) fn draw_foreground(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     let mut strip = false;
@@ -79,6 +85,9 @@ pub(crate) fn draw_foreground(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) 
         Page::Enhanced => draw_enhanced(fb, menu, ctx),
         Page::Sound => draw_sound(fb, menu, ctx),
         Page::ConfirmQuit => draw_confirm(fb, menu, ctx),
+        Page::Modules => draw_modules(fb, menu, ctx),
+        Page::ModuleDetail => draw_module_detail(fb, menu, ctx),
+        Page::ConfirmRemove => draw_confirm_remove(fb, menu, ctx),
         Page::Result => draw_result(fb, menu, ctx),
     }
     let note = (menu.page == Page::Root && !menu.paused).then(|| format!("V{}", env!("CARGO_PKG_VERSION")));
@@ -120,7 +129,8 @@ pub fn footer_hints(menu: &Menu, ctx: &DrawCtx) -> Vec<Hint> {
         Page::EnterName if i.device == InputDevice::Keyboard => vec![Hint::new("A-Z", "TYPE"), Hint::new(key_label(sdl2::keyboard::Keycode::Backspace), "DELETE"), i.select_hint("SAVE")],
         Page::EnterName => vec![i.move_hint("LETTER"), i.dir_hint(Nav::Right, "NEXT"), i.dir_hint(Nav::Left, "DELETE"), i.select_hint("SAVE")],
         Page::Options | Page::Enhanced | Page::Sound => vec![i.move_hint("MOVE"), i.change_hint("CHANGE"), i.back_hint("BACK")],
-        Page::ConfirmQuit => vec![i.move_hint("MOVE"), i.select_hint("SELECT"), i.back_hint("NO")],
+        Page::ConfirmQuit | Page::ConfirmRemove => vec![i.move_hint("MOVE"), i.select_hint("SELECT"), i.back_hint("NO")],
+        Page::Modules | Page::ModuleDetail => vec![i.move_hint("MOVE"), i.select_hint("SELECT"), i.back_hint("BACK")],
         Page::Result if menu.result_hold == 0 => vec![i.select_hint("CONTINUE")],
         Page::Result => Vec::new(),
     };
@@ -138,10 +148,18 @@ fn draw_root(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     let title = if menu.paused { "PAUSED" } else { "MAIN MENU" };
     let p = Panel::for_list(items.len(), 20, Pitch::Roomy, true, 0);
     // the main menu sits high so that the strip of controls fits below it
-    let p = if menu.paused { p.in_view(ctx.view) } else { p.at_row(2) };
+    let p = if menu.paused { p.in_view(ctx.view) } else { p.at_row(1) };
     p.draw(fb, Some(title));
     for (n, item) in items.iter().enumerate() {
         p.item(fb, p.item_y(n), item.label(), state(n, menu.cursor), ctx.nudge);
+    }
+    // the main menu says which ROM module is played: a dim line in the empty border above the picture
+    if !menu.paused {
+        if let Some(m) = menu.modules.iter().find(|m| !menu.active_module.is_empty() && m.id == menu.active_module) {
+            let text = clip(&format!("ROM MODULE: {}", m.name), 40);
+            let x = (WIDTH as isize - 8 * text.chars().count() as isize) / 2;
+            draw_text_px(fb, x, 14, &text, px(ui::color::DIM));
+        }
     }
 }
 
@@ -156,6 +174,102 @@ fn draw_confirm(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     }
     let note = if menu.in_network { "THE OTHER PLAYER IS TOLD" } else { "THE GAME IS LOST" };
     p.message_colored(fb, 8, note, ui::color::DIM);
+}
+
+// ---------- ROM modules ----------
+
+/// Entries of the modules page that are shown at once; the list moves along with the cursor.
+const MODULE_ROWS: usize = 8;
+
+fn draw_modules(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
+    let total = menu.module_rows();
+    let rows = total.min(MODULE_ROWS);
+    let p = Panel::for_list(rows, WIDE, Pitch::Tight, true, 5);
+    p.draw(fb, Some("ROM MODULES"));
+    let first = (menu.cursor + 1).saturating_sub(MODULE_ROWS).min(total - rows);
+    let last_module = menu.modules.len();
+    for (n, i) in (first..first + rows).enumerate() {
+        let y = p.item_y(n);
+        let st = state(i, menu.cursor);
+        let (label, active) = match i {
+            0 => ("ORIGINAL".to_string(), menu.active_module.is_empty()),
+            i if i <= last_module => (menu.modules[i - 1].list_label(p.max_label_len() - 2), menu.modules[i - 1].id == menu.active_module),
+            i if i == last_module + 1 => ("ADD ROM MODULE...".to_string(), false),
+            _ => ("BACK".to_string(), false),
+        };
+        let fg = p.row_colors(fb, y, st, ctx.nudge);
+        draw_text_px(fb, p.col_x(Panel::LABEL_COL), y, &label, px(fg));
+        if active {
+            // the module that is played: a star between the marker and the name
+            draw_text_px(fb, p.col_x(Panel::LABEL_COL - 1), y, "*", px(if st == ItemState::Selected { fg } else { ui::color::YELLOW }));
+        }
+    }
+    let after = Panel::head_rows(true) + Panel::list_rows(rows, Pitch::Tight);
+    p.separator(fb, after + 1);
+    match &menu.module_error {
+        Some(e) => {
+            for (n, line) in crate::firstrun::wrap(&safe_text(&e.to_ascii_uppercase()), WIDE - 4).iter().take(3).enumerate() {
+                p.note_colored(fb, after + 2 + n, line, ui::color::YELLOW);
+            }
+        }
+        None => {
+            p.note(fb, after + 2, "* IS THE MODULE THAT IS PLAYED");
+            p.note(fb, after + 4, "DROP A .GROM FILE TO ADD IT");
+        }
+    }
+}
+
+fn draw_module_detail(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
+    let (name, byline, text, changes) = match menu.selected_module() {
+        Some(m) => {
+            let mut by = String::new();
+            if !m.author.is_empty() {
+                by = format!("BY {}", m.author);
+            }
+            if !m.version.is_empty() {
+                by = format!("{by}{}V{}", if by.is_empty() { "" } else { "  " }, m.version);
+            }
+            (m.name.clone(), by, if m.description.is_empty() { "NO DESCRIPTION".to_string() } else { m.description.clone() }, m.changes_code)
+        }
+        None => ("ORIGINAL".to_string(), String::new(), "THE GAME AS IT WAS ON THE C64".to_string(), false),
+    };
+    let lines: Vec<String> = crate::firstrun::wrap(&text, WIDE - 4).into_iter().take(6).collect();
+    let items = menu.detail_items();
+    // rows: head (3), name, blank, by line, blank, description, blank + notice, blank, separator, items
+    let notice_rows = if changes { 1 + CODE_NOTICE.len() } else { 0 };
+    let items_row = 3 + 1 + 1 + 1 + 1 + lines.len() + notice_rows + 1 + 1;
+    let item_rows = ((items.len() - 1) * 16 + 8).div_ceil(8);
+    let p = Panel::centered(WIDE, items_row + item_rows + 2, true);
+    p.draw(fb, Some("ROM MODULE"));
+    p.message_colored(fb, 3, &clip(&name, WIDE - 4), ui::color::YELLOW);
+    if !byline.is_empty() {
+        p.message_colored(fb, 5, &clip(&byline, WIDE - 4), ui::color::DIM);
+    }
+    for (n, line) in lines.iter().enumerate() {
+        p.text_at(fb, 2, 7 + n, line, ui::color::TEXT);
+    }
+    if changes {
+        for (n, line) in CODE_NOTICE.iter().enumerate() {
+            p.message_colored(fb, 7 + lines.len() + 1 + n, line, ui::color::YELLOW);
+        }
+    }
+    p.separator(fb, items_row - 1);
+    for (n, item) in items.iter().enumerate() {
+        let y = p.row_y(items_row) + (n * 16) as isize;
+        let label = if *item == DetailItem::Play && menu.selected_is_active() { "PLAYED NOW" } else { item.label() };
+        p.item(fb, y, label, state(n, menu.cursor), ctx.nudge);
+    }
+}
+
+fn draw_confirm_remove(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
+    let p = Panel::for_list(4, 30, Pitch::Roomy, false, 0).in_view(ctx.view);
+    p.draw(fb, None);
+    p.message(fb, 2, "REMOVE THIS MODULE?");
+    for (n, label) in ["YES", "NO"].iter().enumerate() {
+        p.item_centered(fb, p.item_y(1 + n), label, state(n, menu.cursor), ctx.nudge);
+    }
+    let name = menu.selected_module().map_or(String::new(), |m| clip(&m.name, 26));
+    p.message_colored(fb, 8, &name, ui::color::DIM);
 }
 
 // ---------- network ----------
@@ -324,11 +438,17 @@ fn draw_options(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         match item {
             OptionItem::Fullscreen => p.value_row(fb, y, label, on_off(s.fullscreen), VALUE_W, st, ctx.nudge),
             OptionItem::Scaling => p.value_row(fb, y, label, s.scaling.label(), VALUE_W, st, ctx.nudge),
+            OptionItem::Crt => p.value_row(fb, y, label, if s.crt { "CRT" } else { "SHARP" }, VALUE_W, st, ctx.nudge),
             OptionItem::Display50 => p.value_row(fb, y, label, if s.display_50 { "AUTO" } else { "OFF" }, VALUE_W, st, ctx.nudge),
             OptionItem::Sound => p.item(fb, y, label, st, ctx.nudge),
             OptionItem::Winner => p.value_row(fb, y, label, s.winner.label(), VALUE_W, st, ctx.nudge),
             OptionItem::UpdateCheck => p.value_row(fb, y, label, if s.update_check { "AUTO" } else { "OFF" }, VALUE_W, st, ctx.nudge),
             OptionItem::Mode => p.value_row(fb, y, label, if s.enhancements.enhanced { "ENHANCED" } else { "ORIGINAL" }, VALUE_W, st, ctx.nudge),
+            OptionItem::Presentation => {
+                // greyed out while AUTHENTIC cannot be started (it can always be left)
+                let st = if menu.authentic != AuthenticAvail::Ready && s.presentation == Presentation::Modern && st != ItemState::Selected { ItemState::Disabled } else { st };
+                p.value_row(fb, y, label, s.presentation.label(), VALUE_W, st, ctx.nudge)
+            }
             OptionItem::Back => p.item(fb, y, label, st, ctx.nudge),
         }
     }
@@ -339,6 +459,13 @@ fn draw_options(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
             Scaling::NoBorder => "CUTS THE BORDER WHILE PLAYING",
             Scaling::Fill => "FULL HEIGHT - EDGES ARE SMOOTHED",
         },
+        OptionItem::Crt => {
+            if s.crt {
+                "SCANLINES AND GLOW LIKE A TV"
+            } else {
+                "SHARP PIXELS"
+            }
+        }
         OptionItem::Display50 => {
             if s.display_50 {
                 "50-200 HZ FULLSCREEN IF POSSIBLE"
@@ -352,6 +479,12 @@ fn draw_options(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
             Winner::Furthest => "FURTHEST STAGE WINS (TIE: SCORE)",
         },
         OptionItem::Mode => "ORIGINAL OR ENHANCED GAME",
+        OptionItem::Presentation => match (s.presentation, menu.authentic) {
+            (Presentation::Authentic, _) => "EXACTLY WHAT THE C64 SHOWED",
+            (_, AuthenticAvail::Ready) => "THE ORIGINAL, AS ON THE C64",
+            (_, AuthenticAvail::NeedsData) => "NEEDS DISK IMAGE AGAIN: CONFIRM",
+            (_, AuthenticAvail::ModuleActive) => "NOT FOR ROM MODULES",
+        },
         OptionItem::UpdateCheck => {
             if s.update_check {
                 "ASKS GITHUB ONCE A DAY"
@@ -550,6 +683,23 @@ mod tests {
         full
     }
 
+    /// ROM modules with texts as long as they may be (the limits of `giana-module`), `n` of them.
+    fn sample_modules(n: usize) -> Vec<crate::menu::ModuleInfo> {
+        (0..n)
+            .map(|i| {
+                let long = i % 2 == 0;
+                crate::menu::ModuleInfo::new(
+                    &format!("{i:016x}"),
+                    &if long { "W".repeat(24) } else { "Short".into() },
+                    &if long { "W".repeat(24) } else { "me".into() },
+                    &if long { "W".repeat(12) } else { "1.0".into() },
+                    &if long { "WWWW WWWW ".repeat(20) } else { String::new() },
+                    i % 3 == 0,
+                )
+            })
+            .collect()
+    }
+
     fn all_pages() -> Vec<Menu> {
         let mut out = Vec::new();
         for paused in [false, true] {
@@ -567,6 +717,9 @@ mod tests {
                 Page::Options,
                 Page::Enhanced,
                 Page::Sound,
+                Page::Modules,
+                Page::ModuleDetail,
+                Page::ConfirmRemove,
             ] {
                 for cursor in 0..10 {
                     for capturing in [false, true] {
@@ -584,6 +737,10 @@ mod tests {
                         m.unnamed = vec![("GIANA".into(), 999_999, 33)];
                         m.name = "WWWWWWWW".into();
                         m.latest = Some(3);
+                        m.modules = sample_modules(cursor % 4 + 1 + cursor / 4 * 4);
+                        m.active_module = m.modules[cursor % m.modules.len()].id.clone();
+                        m.module_sel = if cursor % 5 == 4 { None } else { Some(cursor % m.modules.len()) };
+                        m.module_error = (cursor % 2 == 1).then(|| "this module was made for a different version of the game data, and it is quite long".to_string());
                         out.push(m);
                     }
                 }
@@ -625,6 +782,29 @@ mod tests {
     }
 
     /// Pages that can be open over a paused game.
+    /// The main menu with nine items stays above the strip of controls, the other new panels inside the grid.
+    #[test]
+    fn the_new_panels_fit_the_screen() {
+        let root = Panel::for_list(9, 20, Pitch::Roomy, true, 0).at_row(1);
+        assert!(36 + (root.row + root.h) * 8 + ui::SHADOW <= ui::NOTICE_Y as usize, "the main menu reaches the strip of controls");
+        let list = Panel::for_list(MODULE_ROWS, WIDE, Pitch::Tight, true, 5);
+        assert!(list.h <= ui::ROWS && list.row >= 1);
+        // the tallest detail page: six lines of description, the notice, three items
+        let items_row = 3 + 1 + 1 + 1 + 6 + 3 + 1 + 1;
+        let tall = Panel::centered(WIDE, items_row + (2 * 16 + 8) / 8 + 2, true);
+        assert!(tall.h <= ui::ROWS, "{} rows", tall.h);
+    }
+
+    #[test]
+    fn module_labels_are_cut_to_the_list() {
+        let m = &sample_modules(1)[0];
+        let label = m.list_label(Panel::for_list(8, WIDE, Pitch::Tight, true, 5).max_label_len() - 2);
+        assert!(label.chars().count() <= 32 && label.contains("  VWWWW"), "{label}");
+        let short = crate::menu::ModuleInfo::new("0", "Short", "me", "1.0", "", false);
+        assert_eq!(short.list_label(32), "SHORT  V1.0");
+        assert_eq!(crate::menu::ModuleInfo::new("0", "Short", "me", "", "", false).list_label(32), "SHORT");
+    }
+
     fn pause_pages() -> Vec<Menu> {
         all_pages().into_iter().filter(|m| m.paused && matches!(m.page, Page::Root | Page::ConfirmQuit | Page::Controls(_) | Page::Scores | Page::Options | Page::Enhanced | Page::Sound)).collect()
     }

@@ -1,4 +1,5 @@
 use resid::{ChipModel, Sid};
+use std::collections::VecDeque;
 
 use giana_core::sound_driver::Driver;
 
@@ -54,6 +55,11 @@ pub struct AudioEngine {
     /// SID registers of the ported sound driver (`$D400..$D418`); when set they replace the generated tune
     pub live_regs: Option<[u8; 25]>,
     last_regs: [u8; 25],
+    /// SID writes with their cycle in the frame, one list per frame (`queue_timed_writes`): the title music's 4 bit sample
+    /// plays through the volume register at about 7 kHz, which register images per frame cannot carry
+    timed_queue: VecDeque<Vec<(u32, u8, u8)>>,
+    timed: Vec<(u32, u8, u8)>,
+    timed_idx: usize,
 }
 
 impl AudioEngine {
@@ -71,6 +77,9 @@ impl AudioEngine {
             pending_cycles: 0,
             live_regs: None,
             last_regs: [0; 25],
+            timed_queue: VecDeque::new(),
+            timed: Vec::new(),
+            timed_idx: 0,
         };
         engine.load_track(MusicTrack::Title);
         engine
@@ -89,6 +98,17 @@ impl AudioEngine {
             pending_cycles: 0,
             live_regs: Some([0; 25]),
             last_regs: [0; 25],
+            timed_queue: VecDeque::new(),
+            timed: Vec::new(),
+            timed_idx: 0,
+        }
+    }
+
+    /// Queues the SID writes of one more frame (cycle in the frame, register, value). The frame is played in place of the
+    /// register image of `live_regs`; the engine does not need `live_regs` while frames are queued.
+    pub fn queue_timed_writes(&mut self, writes: Vec<(u32, u8, u8)>) {
+        if !writes.is_empty() && self.timed_queue.len() < 25 {
+            self.timed_queue.push_back(writes);
         }
     }
 
@@ -113,6 +133,19 @@ impl AudioEngine {
 
     /// Advances 1 PAL frame (at 50 Hz) and applies all SID register writes
     pub fn advance_frame(&mut self) {
+        self.timed.clear();
+        self.timed_idx = 0;
+        if let Some(w) = self.timed_queue.pop_front() {
+            // the writes are applied while the frame is sampled; `last_regs` follows them so that a switch back to
+            // register images writes only what differs
+            for &(_, r, v) in &w {
+                if (r as usize) < 25 {
+                    self.last_regs[r as usize] = v;
+                }
+            }
+            self.timed = w;
+            return;
+        }
         if let Some(regs) = self.live_regs {
             for r in 0..25 {
                 if regs[r] != self.last_regs[r] {
@@ -155,9 +188,24 @@ impl AudioEngine {
             }
 
             let slice = &mut buffer[sample_idx..];
-            let (produced, next_delta) = self.sid.sample(self.pending_cycles, slice, 1);
+            if self.timed_idx >= self.timed.len() {
+                let (produced, next_delta) = self.sid.sample(self.pending_cycles, slice, 1);
+                sample_idx += produced;
+                self.pending_cycles = next_delta;
+                continue;
+            }
+            // timed writes: sample up to the next one, write it, go on
+            let elapsed = cycles_per_frame - self.pending_cycles;
+            let (at, reg, val) = self.timed[self.timed_idx];
+            if at <= elapsed {
+                self.sid.write(reg, val);
+                self.timed_idx += 1;
+                continue;
+            }
+            let chunk = (at - elapsed).min(self.pending_cycles);
+            let (produced, left) = self.sid.sample(chunk, slice, 1);
             sample_idx += produced;
-            self.pending_cycles = next_delta;
+            self.pending_cycles -= chunk - left;
         }
     }
 }

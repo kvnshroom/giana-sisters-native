@@ -6,7 +6,7 @@
 //! executed at the beginning of the next frame, before the next IRQ chain (`column_scroll_finish_sub_9600`).
 
 use crate::state::{ControllerInput, GameState};
-use crate::tables::TABLE_AB00;
+
 
 const SLOT_BASE: usize = 0x9B02;
 /// (low byte table, high byte table) pairs decremented as 16-bit words by the $1326 handler.
@@ -83,7 +83,7 @@ impl GameState {
             for y in 0..39usize {
                 self.color_ram[base + y] = self.color_ram[base + y + 1];
             }
-            self.color_ram[base + 39] = TABLE_AB00[self.screen_ram[base + 39] as usize];
+            self.color_ram[base + 39] = self.char_colour(self.screen_ram[base + 39]);
         }
         // $987C: LDA #$00; STA $14
         self.scroll_wrap_flag = 0;
@@ -103,6 +103,10 @@ impl GameState {
         // $096F: STA $154D = 0 on fire; L09B6: sub_0D1F; L09DA: stage setup
         self.music_paused = 0;
         self.clear_entity_slots_sub_0d1f();
+        // family T (`$0996: JSR $7AC0`): the start menu comes first, the stage starts after the choice
+        if self.tnw_menu_begin() {
+            return;
+        }
         self.start_stage(self.stage);
     }
 }

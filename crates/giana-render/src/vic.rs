@@ -48,7 +48,8 @@ impl<'a> VicView<'a> {
             clouds: &game.en.vic_frame.draw_clouds,
             chars: &game.en.vic_frame.draw_chars,
             color: &game.color_ram,
-            bg: [game.en.vic_bg0, game.en.vic_bg1, img(0x609C + stage_idx)],
+            // engine B: the third background colour comes from the stage header (`vic_bg2`), not from the original's table
+            bg: [game.en.vic_bg0, game.en.vic_bg1, if game.is_engine_b() || game.tnw.is_some() || game.title_active { game.vic_bg2 } else { img(0x609C + stage_idx) }],
             xscroll: game.en.vic_frame.draw_xscroll,
             sky_xscroll: game.en.vic_frame.draw_sky_xscroll,
             me: game.en.vic_frame.draw_me,
@@ -57,7 +58,7 @@ impl<'a> VicView<'a> {
             xy: game.en.vic_frame.draw_xy,
             ptr: game.en.vic_frame.draw_ptr,
             spr_col: game.en.vic_frame.draw_col,
-            spr_mc: [10, 2],
+            spr_mc: if game.is_engine_b() { game.vic_mc } else { [10, 2] },
         }
     }
 }
@@ -158,9 +159,30 @@ pub const ORIGIN_X: usize = 32;
 pub const ORIGIN_Y: usize = 36;
 
 /// 38 columns x 25 rows window of the border (`$D016` bit 3 clear, `$D011` bit 3 set).
-fn visible(x: isize, y: isize) -> bool {
-    (8..312).contains(&x) && (0..200).contains(&y)
+fn visible(x: isize, y: isize, g: &Geometry) -> bool {
+    (g.left..g.right).contains(&x) && (0..200).contains(&y)
 }
+
+/// Where the lines and columns of the picture are: the oracle recordings (`render_vic`) and the raster beam of the AUTHENTIC
+/// slice (`render_vic_authentic`) differ by a line at the top, and the slice latches `$D016` for a whole line.
+#[derive(Clone, Copy)]
+pub struct Geometry {
+    /// picture line of text line 0
+    pub oy: usize,
+    /// first text line of the cloud band and of the playfield
+    pub sky: usize,
+    pub play: usize,
+    /// first and one past the last visible column (the 38 column window), in text columns
+    pub left: isize,
+    pub right: isize,
+}
+
+/// Geometry of the 30A preview as VICE x64sc shows it (measured against screenshots, `giana-engine-c`): text line 0 at
+/// picture line 35, the cloud band from text line 16, the playfield from 39, the plain 38 column window 7..311.
+pub const GEOMETRY_30A: Geometry = Geometry { oy: ORIGIN_Y - 1, sky: STATUS_LINES, play: SKY_LINES - 1, left: 7, right: 311 };
+
+const ORACLE: Geometry = Geometry { oy: ORIGIN_Y, sky: STATUS_LINES, play: SKY_LINES, left: 8, right: 312 };
+const SLICE: Geometry = Geometry { oy: ORIGIN_Y - 1, sky: STATUS_LINES - 1, play: SKY_LINES - 1, left: 7, right: 313 };
 
 /// One sprite as it is drawn: its shape and colours come from one frame, its position can be anywhere in between.
 struct SpriteDraw<'a> {
@@ -180,16 +202,53 @@ struct SpriteDraw<'a> {
 struct Band<'a> {
     view: &'a VicView<'a>,
     xscroll: i32,
+    /// text mode without multicolour (`$D016` bit 4 clear): every cell is drawn hi-res in its full colour nibble
+    hires: bool,
 }
 
 pub fn render_vic(fb: &mut Framebuffer, v: &VicView) {
     let bands = [
-        Band { view: v, xscroll: 0 },
-        Band { view: v, xscroll: (v.sky_xscroll & 7) as i32 },
-        Band { view: v, xscroll: (v.xscroll & 7) as i32 },
+        Band { view: v, xscroll: 0, hires: false },
+        Band { view: v, xscroll: (v.sky_xscroll & 7) as i32, hires: false },
+        Band { view: v, xscroll: (v.xscroll & 7) as i32, hires: false },
     ];
     let sprites: Vec<SpriteDraw> = (0..8usize).filter(|&s| v.me >> s & 1 != 0).map(|s| sprite_of(v, s, sprite_x(v, s), v.xy[2 * s + 1] as isize)).collect();
-    draw(fb, &bands, &sprites);
+    draw(fb, &bands, &sprites, ORACLE);
+}
+
+/// The same picture in the geometry of the AUTHENTIC presentation (the raster beam of `giana_authentic`: text row 0 starts at
+/// picture line 35, one line above the oracle recordings that `render_vic` is calibrated to).
+pub fn render_vic_authentic(fb: &mut Framebuffer, v: &VicView) {
+    let bands = [
+        Band { view: v, xscroll: 0, hires: false },
+        Band { view: v, xscroll: (v.sky_xscroll & 7) as i32, hires: false },
+        Band { view: v, xscroll: (v.xscroll & 7) as i32, hires: false },
+    ];
+    let sprites: Vec<SpriteDraw> = (0..8usize).filter(|&s| v.me >> s & 1 != 0).map(|s| sprite_of(v, s, sprite_x(v, s), v.xy[2 * s + 1] as isize)).collect();
+    draw(fb, &bands, &sprites, SLICE);
+}
+
+/// What differs between the three bands of a frame when the raster IRQs rewrite the video chip between them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BandSpec {
+    /// fine scroll (`$D016` bits 0..2)
+    pub xscroll: u8,
+    /// `$D021`, `$D022`, `$D023` while the band is drawn
+    pub bg: [u8; 3],
+    /// `$D016` bit 4 clear: hi-res text, a cell's colour is its whole colour nibble and there is no multicolour cell
+    pub hires: bool,
+}
+
+/// Draws a frame whose three bands (status bar, cloud band, playfield) each have their own fine scroll and background colours,
+/// in the given geometry (`SLICE` like `render_vic_authentic` uses, or [`GEOMETRY_30A`]). The original keeps the status bar
+/// at scroll 0 and one set of colours; the 30A preview's raster chain (family C, `giana-engine-c`) writes `$D016 = $17`
+/// (scroll 7) and `$D022/$D023 = $0A/$02` there and the stage's colours from the cloud band on. Characters, colours and
+/// sprites come from `v`; its `xscroll`/`sky_xscroll`/`bg` are not used.
+pub fn render_vic_bands(fb: &mut Framebuffer, v: &VicView, specs: [BandSpec; 3], geo: Geometry) {
+    let views = [0, 1, 2].map(|i| VicView { bg: specs[i].bg, ..*v });
+    let bands = [0, 1, 2].map(|i| Band { view: &views[i], xscroll: (specs[i].xscroll & 7) as i32, hires: specs[i].hires });
+    let sprites: Vec<SpriteDraw> = (0..8usize).filter(|&s| v.me >> s & 1 != 0).map(|s| sprite_of(v, s, sprite_x(v, s), v.xy[2 * s + 1] as isize)).collect();
+    draw(fb, &bands, &sprites, geo);
 }
 
 fn sprite_x(v: &VicView, s: usize) -> isize {
@@ -227,8 +286,8 @@ fn lerp_round(delta: i32, t: f64) -> i32 {
 fn band_between<'a>(a: &'a VicView<'a>, b: &'a VicView<'a>, xa: u8, xb: u8, t: f64) -> Band<'a> {
     let d = fine_delta(xa & 7, xb & 7);
     let o = lerp_round(d, t);
-    let from_a = Band { view: a, xscroll: (xa & 7) as i32 - o };
-    let from_b = Band { view: b, xscroll: (xb & 7) as i32 + (d - o) };
+    let from_a = Band { view: a, xscroll: (xa & 7) as i32 - o, hires: false };
+    let from_b = Band { view: b, xscroll: (xb & 7) as i32 + (d - o), hires: false };
     let ok = |band: &Band| (-8..=8).contains(&band.xscroll);
     let (first, second) = if t < 0.5 { (from_a, from_b) } else { (from_b, from_a) };
     if ok(&first) || !ok(&second) {
@@ -247,7 +306,7 @@ const MAX_SPRITE_STEP: isize = 40;
 pub fn render_vic_between(fb: &mut Framebuffer, a: &VicView, b: &VicView, t: f64) {
     let t = t.clamp(0.0, 1.0);
     let bands = [
-        Band { view: if t < 0.5 { a } else { b }, xscroll: 0 },
+        Band { view: if t < 0.5 { a } else { b }, xscroll: 0, hires: false },
         band_between(a, b, a.sky_xscroll, b.sky_xscroll, t),
         band_between(a, b, a.xscroll, b.xscroll, t),
     ];
@@ -281,18 +340,19 @@ pub fn render_vic_between(fb: &mut Framebuffer, a: &VicView, b: &VicView, t: f64
             }
         }
     }
-    draw(fb, &bands, &sprites);
+    draw(fb, &bands, &sprites, ORACLE);
 }
 
 /// `bands`: status bar, cloud band, playfield. Sprites in the order of their numbers; number 7 is drawn first so that number 0
 /// ends up on top.
-fn draw(fb: &mut Framebuffer, bands: &[Band; 3], sprites: &[SpriteDraw]) {
+fn draw(fb: &mut Framebuffer, bands: &[Band; 3], sprites: &[SpriteDraw], geo: Geometry) {
+    let oy = geo.oy;
     fb.clear(c64_color(0));
     let mut fg = vec![false; 320 * 200];
     for y in 0..200usize {
-        let band = if y < STATUS_LINES {
+        let band = if y < geo.sky {
             bands[0]
-        } else if y < SKY_LINES {
+        } else if y < geo.play {
             bands[1]
         } else {
             bands[2]
@@ -305,7 +365,7 @@ fn draw(fb: &mut Framebuffer, bands: &[Band; 3], sprites: &[SpriteDraw]) {
             let ch = if (80..200).contains(&i) { v.clouds.get(i - 80) } else { v.screen.get(i) }.copied().unwrap_or(0) as usize;
             let cc = v.color.get(i).copied().unwrap_or(0) & 0x0F;
             let bits = v.chars.get(ch * 8 + line).copied().unwrap_or(0);
-            if cc & 8 != 0 {
+            if !band.hires && cc & 8 != 0 {
                 for p in 0..4 {
                     let pair = (bits >> (6 - 2 * p)) & 3;
                     let colr = match pair {
@@ -317,7 +377,7 @@ fn draw(fb: &mut Framebuffer, bands: &[Band; 3], sprites: &[SpriteDraw]) {
                     for k in 0..2 {
                         let x = (col * 8 + p * 2 + k) as isize + xs;
                         if (0..320).contains(&x) {
-                            fb.pixels[(ORIGIN_Y + y) * WIDTH + ORIGIN_X + x as usize] = c64_color(colr);
+                            fb.pixels[(oy + y) * WIDTH + ORIGIN_X + x as usize] = c64_color(colr);
                             fg[y * 320 + x as usize] = pair >= 2;
                         }
                     }
@@ -327,15 +387,15 @@ fn draw(fb: &mut Framebuffer, bands: &[Band; 3], sprites: &[SpriteDraw]) {
                     let on = bits >> (7 - p) & 1 != 0;
                     let x = (col * 8 + p) as isize + xs;
                     if (0..320).contains(&x) {
-                        fb.pixels[(ORIGIN_Y + y) * WIDTH + ORIGIN_X + x as usize] = c64_color(if on { cc & 7 } else { v.bg[0] });
+                        fb.pixels[(oy + y) * WIDTH + ORIGIN_X + x as usize] = c64_color(if on { if band.hires { cc } else { cc & 7 } } else { v.bg[0] });
                         fg[y * 320 + x as usize] = on;
                     }
                 }
             }
         }
         for x in 0..320usize {
-            if !visible(x as isize, y as isize) {
-                fb.pixels[(ORIGIN_Y + y) * WIDTH + ORIGIN_X + x] = c64_color(0);
+            if !visible(x as isize, y as isize, &geo) {
+                fb.pixels[(oy + y) * WIDTH + ORIGIN_X + x] = c64_color(0);
             }
         }
     }
@@ -349,13 +409,13 @@ fn draw(fb: &mut Framebuffer, bands: &[Band; 3], sprites: &[SpriteDraw]) {
                     for k in 0..w {
                         let dx = sp.x - 24 + px + k;
                         let dy = sp.y - 50 + r as isize; // the first sprite line is raster line Y + 1, text starts at line 51
-                        if !visible(dx, dy) {
+                        if !visible(dx, dy, &geo) {
                             continue;
                         }
                         if sp.behind && fg[dy as usize * 320 + dx as usize] {
                             continue;
                         }
-                        fb.pixels[(ORIGIN_Y + dy as usize) * WIDTH + ORIGIN_X + dx as usize] = c64_color(c);
+                        fb.pixels[(oy + dy as usize) * WIDTH + ORIGIN_X + dx as usize] = c64_color(c);
                     }
                 };
                 if sp.multi {

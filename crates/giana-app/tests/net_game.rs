@@ -234,7 +234,7 @@ fn a_silent_client_does_not_hold_up_the_host() {
 fn the_joiner_connects_in_the_background() {
     use giana_app::net::Joiner;
     let mut host = Host::on_port(NetMode::SameTime, 47109).unwrap();
-    let mut j = Joiner::start("127.0.0.1:47109");
+    let mut j = Joiner::start("127.0.0.1:47109", "");
     let (mut a, mut b) = (None, None);
     let deadline = Instant::now() + Duration::from_secs(5);
     while (a.is_none() || b.is_none()) && Instant::now() < deadline {
@@ -299,4 +299,170 @@ fn the_rules_of_the_host_reach_the_other_side_and_unknown_ones_are_refused() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(matches!(client.join().unwrap(), Err(NetError::WrongVersion)));
+}
+
+// ---- ROM modules over the network ----
+
+mod module_transfer {
+    use giana_app::modules::{Base, Store};
+    use giana_app::net::{join_receiving, Host, ModuleSink, NetError, NetMode};
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("giana-nettest-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn sink(tag: &str, data_dir: PathBuf) -> (ModuleSink, PathBuf) {
+        let dir = scratch(tag);
+        (ModuleSink { store: Store::new(dir.join("modules")), data_dir }, dir)
+    }
+
+    fn stored(s: &ModuleSink) -> usize {
+        s.store.list(None).len()
+    }
+
+    /// A host that is a plain socket: reads the hello, answers with a module offer, and sends `payload` if asked.
+    /// The thread returns whether the guest asked for the file.
+    fn fake_host(announced_size: u32, sha: [u8; 32], payload: Vec<u8>) -> (u16, std::thread::JoinHandle<bool>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut hello = [0u8; 20];
+            c.read_exact(&mut hello).unwrap();
+            let mut msg = vec![0xFE];
+            msg.extend_from_slice(&announced_size.to_be_bytes());
+            msg.extend_from_slice(&0x0123_4567_89ab_cdefu64.to_be_bytes());
+            msg.extend_from_slice(&sha);
+            c.write_all(&msg).unwrap();
+            let mut ask = [0u8; 1];
+            if c.read_exact(&mut ask).is_err() || ask[0] != 1 {
+                return false;
+            }
+            let _ = c.write_all(&payload);
+            let mut end = [0u8; 1];
+            let _ = c.read(&mut end);
+            true
+        });
+        (port, t)
+    }
+
+    #[test]
+    fn an_oversized_offer_is_refused_without_asking_for_the_file() {
+        let (s, dir) = sink("big", PathBuf::from("/nonexistent"));
+        let (port, host) = fake_host((1 << 20) + 1, [0; 32], vec![]);
+        let r = join_receiving(&format!("127.0.0.1:{port}"), "", Some(&s));
+        assert!(matches!(r, Err(NetError::OtherModule)));
+        assert!(!host.join().unwrap(), "the guest must not ask for it");
+        assert_eq!(stored(&s), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn corrupted_bytes_are_refused_and_not_stored() {
+        let (s, dir) = sink("bad", PathBuf::from("/nonexistent"));
+        let good = vec![7u8; 5000];
+        let sha: [u8; 32] = Sha256::digest(&good).into();
+        let mut corrupt = good.clone();
+        corrupt[100] ^= 1;
+        let (port, host) = fake_host(good.len() as u32, sha, corrupt);
+        let r = join_receiving(&format!("127.0.0.1:{port}"), "", Some(&s));
+        assert!(matches!(r, Err(NetError::BadModule)));
+        assert!(host.join().unwrap());
+        assert_eq!(stored(&s), 0);
+        // intact bytes that are not a module at all are refused too
+        let (port, host) = fake_host(good.len() as u32, sha, good);
+        assert!(matches!(join_receiving(&format!("127.0.0.1:{port}"), "", Some(&s)), Err(NetError::BadModule)));
+        host.join().unwrap();
+        assert_eq!(stored(&s), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_transfer_that_ends_early_is_refused() {
+        // the host announces 4000 bytes, sends 10 and closes
+        let (s, dir) = sink("stall", PathBuf::from("/nonexistent"));
+        let (port, host) = fake_host(4000, [0; 32], vec![1; 10]);
+        assert!(matches!(join_receiving(&format!("127.0.0.1:{port}"), "", Some(&s)), Err(NetError::BadModule)));
+        host.join().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn host_original_and_guest_module_is_a_plain_refusal() {
+        let (s, dir) = sink("orig", PathBuf::from("/nonexistent"));
+        let mut host = Host::on_port(NetMode::TakeTurns, 47131).unwrap();
+        host.set_module("");
+        let c = std::thread::spawn({
+            let s = s.clone();
+            move || join_receiving("127.0.0.1:47131", "0123456789abcdef", Some(&s))
+        });
+        let h = loop {
+            if let Some(r) = host.poll() {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(matches!(h, Err(NetError::OtherModule)));
+        assert!(matches!(c.join().unwrap(), Err(NetError::OtherModule)));
+        assert_eq!(stored(&s), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_host_sends_its_module_and_the_guest_stores_it() {
+        giana_core::skip_without_data!();
+        let Some(data_dir) = giana_core::data::candidate_dirs(None).into_iter().find(|d| giana_extract::verify_dir(d).is_empty()) else { return };
+        let base = Base::read(&data_dir).unwrap();
+        let work = scratch("ok");
+        let mut hack = base.ingame.clone();
+        hack[0xAC10] ^= 0x55;
+        let image = work.join("net hack.bin");
+        std::fs::write(&image, &hack).unwrap();
+        let host_store = Store::new(work.join("host"));
+        let added = host_store.add(&image, &data_dir).unwrap();
+
+        let mut host = Host::on_port(NetMode::TakeTurns, 47132).unwrap();
+        host.set_module(&added.id);
+        host.share_module(&host_store);
+        let (s, dir) = sink("guest", data_dir.clone());
+        let c = std::thread::spawn({
+            let s = s.clone();
+            move || join_receiving("127.0.0.1:47132", "", Some(&s))
+        });
+        let h = loop {
+            if let Some(r) = host.poll() {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(matches!(h, Err(NetError::OtherModule)));
+        match c.join().unwrap() {
+            Err(NetError::ModuleReceived(id)) => assert_eq!(id, added.id),
+            other => panic!("unexpected {:?}", other.map(|_| ())),
+        }
+        let list = s.store.list(Some(&data_dir));
+        assert_eq!((list.len(), list[0].id.as_str()), (1, added.id.as_str()));
+        assert_eq!(s.store.read_module(&added.id), host_store.read_module(&added.id));
+        // now both play it: the join works
+        let id = added.id.clone();
+        let c = std::thread::spawn(move || join_receiving("127.0.0.1:47132", &id, Some(&s)));
+        let h = loop {
+            if let Some(r) = host.poll() {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(h.is_ok() && c.join().unwrap().is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(work);
+    }
 }

@@ -6,6 +6,7 @@ pub mod tiles;
 pub mod parallax;
 pub mod sprites;
 pub mod text;
+pub mod title;
 mod fallback_font;
 pub mod vic;
 
@@ -77,3 +78,4 @@ mod tests {
         save_ppm(&fb, "/tmp/stage1_verification.ppm");
     }
 }
+pub mod highscore;

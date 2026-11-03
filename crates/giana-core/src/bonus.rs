@@ -92,12 +92,25 @@ impl GameState {
                     self.flag_0431 = 0xFF;
                     self.player_momentum = 0;
                     // $1E57: the room: $21 for stage $20, else $045B counts up through $22..$26
-                    let a = if self.stage == 0x20 {
-                        0x21
+                    let a = if self.engine_b.is_some() {
+                        // family B (`$1E55..$1E72`): rooms `$65..$78`; the hack compares the map column `$21` (not the stage)
+                        // with the operand of `CMP #imm` at `$1E57`; limits are the operands at `$1E65`, `$1E68`, `$1E6E`
+                        if self.map_column == img(0x1E58) {
+                            img(0x1E5C)
+                        } else {
+                            self.stage_cycle_counter = self.stage_cycle_counter.wrapping_add(1);
+                            if self.stage_cycle_counter >= img(0x1E66) || self.stage_cycle_counter < img(0x1E6F) {
+                                self.stage_cycle_counter = img(0x1E6A);
+                            }
+                            self.stage_cycle_counter
+                        }
+                    } else if self.stage == self.tnw_room_numbers().0 {
+                        self.tnw_room_numbers().1 as u8
                     } else {
+                        let (_, _, limit, first) = self.tnw_room_numbers();
                         self.stage_cycle_counter = self.stage_cycle_counter.wrapping_add(1);
-                        if self.stage_cycle_counter >= 0x27 || self.stage_cycle_counter < 0x22 {
-                            self.stage_cycle_counter = 0x22;
+                        if self.stage_cycle_counter >= limit || self.stage_cycle_counter < first {
+                            self.stage_cycle_counter = first;
                         }
                         self.stage_cycle_counter
                     };
@@ -196,6 +209,8 @@ impl GameState {
                     }
                     // $1F4E: LDA $045C; STA $21; $1F5A: LDA #$00; STA $044B; LDA #$01; STA $0457
                     self.map_column = self.chk[4];
+                    // family T (`$1F4E: JSR $60C0`): the colours of the stage that was just loaded again
+                    self.tnw_colours();
                     // $1F53: CMP #$FF; BNE L1F5A; LDA #$FF; BIT $00A9: with $21 = $FF the `LDA #$00` of L1F5A is skipped
                     // (it is the operand of the BIT), so `$044B` gets $FF instead of 0
                     self.time_warning = if self.chk[4] == 0xFF { 0xFF } else { 0 };
@@ -329,7 +344,7 @@ impl GameState {
                     self.swap_state = (done, 2, hold_m, hold_s);
                 }
                 _ => {
-                    self.color_ram[si] = crate::tables::TABLE_AB00[hold_m as usize];
+                    self.color_ram[si] = self.char_colour(hold_m);
                     self.swap_state = (done + 1, 0, 0, 0);
                 }
             }

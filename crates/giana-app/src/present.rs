@@ -10,7 +10,7 @@ use giana_render::framebuffer::{Framebuffer, HEIGHT, WIDTH};
 use giana_render::vic::{ORIGIN_X, ORIGIN_Y};
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect as SdlRect;
-use sdl2::render::{Canvas, RenderTarget, ScaleMode, Texture, TextureCreator};
+use sdl2::render::{BlendMode, Canvas, RenderTarget, ScaleMode, Texture, TextureCreator};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
@@ -76,13 +76,19 @@ pub struct Presenter<'r, C> {
     creator: &'r TextureCreator<C>,
     frame: Texture<'r>,
     enlarged: Option<(u32, u32, Texture<'r>)>,
+    /// `SCREEN: CRT`: soft pixels, scanlines, a shadow mask, glow and a vignette (see `draw_crt`)
+    pub crt: bool,
+    /// the scanline and mask picture of the CRT look, for one layout
+    crt_mask: Option<(Layout, Texture<'r>)>,
+    /// a small blurred copy of the frame for the glow of the CRT look
+    crt_glow: Option<Texture<'r>>,
 }
 
 impl<'r, C> Presenter<'r, C> {
     pub fn new(creator: &'r TextureCreator<C>) -> Result<Self, String> {
         let mut frame = creator.create_texture_streaming(PixelFormatEnum::ARGB8888, WIDTH as u32, HEIGHT as u32).map_err(|e| e.to_string())?;
         frame.set_scale_mode(ScaleMode::Nearest);
-        Ok(Self { creator, frame, enlarged: None })
+        Ok(Self { creator, frame, enlarged: None, crt: false, crt_mask: None, crt_glow: None })
     }
 
     /// Copy the frame buffer to the texture.
@@ -102,10 +108,70 @@ impl<'r, C> Presenter<'r, C> {
         canvas.set_draw_color(Color::RGB(0, 0, 0));
         canvas.clear();
         let (src, dst) = (layout.src.sdl(), layout.dst.sdl());
+        if self.crt && self.draw_crt(canvas, layout, src, dst) {
+            return Ok(());
+        }
         if layout.is_fractional() && self.draw_enlarged(canvas, layout, src, dst) {
             return Ok(());
         }
         canvas.copy(&self.frame, src, dst)
+    }
+
+    /// The CRT look without shaders, only with what every SDL renderer can do: the frame is drawn smoothed (soft
+    /// pixels), a small blurred copy is added on top (glow), and a precomputed picture of scanlines (aligned to the C64
+    /// rows), an aperture grille and a vignette darkens it (multiplied). False when the renderer cannot do it.
+    fn draw_crt<T: RenderTarget<Context = C>>(&mut self, canvas: &mut Canvas<T>, layout: Layout, src: SdlRect, dst: SdlRect) -> bool {
+        if self.crt_mask.as_ref().map_or(true, |(l, _)| *l != layout) {
+            let Some(mask) = self.make_crt_mask(layout) else { return false };
+            self.crt_mask = Some((layout, mask));
+        }
+        if self.crt_glow.is_none() {
+            if let Ok(mut g) = self.creator.create_texture_target(PixelFormatEnum::ARGB8888, WIDTH as u32 / 4, HEIGHT as u32 / 4) {
+                g.set_scale_mode(ScaleMode::Linear);
+                g.set_blend_mode(BlendMode::Add);
+                g.set_alpha_mod(70);
+                self.crt_glow = Some(g);
+            }
+        }
+        self.frame.set_scale_mode(ScaleMode::Linear);
+        let drawn = canvas.copy(&self.frame, src, dst).is_ok();
+        if drawn {
+            if let Some(glow) = self.crt_glow.as_mut() {
+                let frame = &self.frame;
+                if canvas.with_texture_canvas(glow, |c| {
+                    let _ = c.copy(frame, src, None);
+                })
+                .is_ok()
+                {
+                    let _ = canvas.copy(glow, None, dst);
+                }
+            }
+        }
+        self.frame.set_scale_mode(ScaleMode::Nearest);
+        if !drawn {
+            return false;
+        }
+        if let Some((_, mask)) = self.crt_mask.as_ref() {
+            let _ = canvas.copy(mask, None, dst);
+        }
+        true
+    }
+
+    fn make_crt_mask(&self, layout: Layout) -> Option<Texture<'r>> {
+        let (w, h) = (layout.dst.w, layout.dst.h);
+        let mut t = self.creator.create_texture_streaming(PixelFormatEnum::ARGB8888, w, h).ok()?;
+        t.set_blend_mode(BlendMode::Mod);
+        let pixels = crt_mask_pixels(layout);
+        t.with_lock(None, |buffer: &mut [u8], pitch: usize| {
+            for y in 0..h as usize {
+                let row = &mut buffer[y * pitch..y * pitch + w as usize * 4];
+                for x in 0..w as usize {
+                    row[x * 4..x * 4 + 4].copy_from_slice(&pixels[y * w as usize + x].to_ne_bytes());
+                }
+            }
+        })
+        .ok()?;
+        Some(t)
     }
 
     /// The sharp-bilinear way; false when this renderer cannot draw into a texture (then the plain copy is used).
@@ -131,8 +197,57 @@ impl<'r, C> Presenter<'r, C> {
     }
 }
 
+/// The multiplier picture of the CRT look for `layout` (ARGB, one value per window pixel of the picture): scanlines
+/// that follow the rows of the C64 picture, an aperture grille of red, green and blue columns, and darker edges. The
+/// effects grow with the size of a C64 pixel in window pixels, so a small window does not turn grey and stripy.
+pub fn crt_mask_pixels(layout: Layout) -> Vec<u32> {
+    let (w, h) = (layout.dst.w as usize, layout.dst.h as usize);
+    let rows = layout.src.h as f64;
+    let scale = h as f64 / rows;
+    // 0 at 1.5 window pixels per C64 pixel or less, full at 4 or more
+    let strength = ((scale - 1.5) / 2.5).clamp(0.0, 1.0);
+    let scan_depth = 0.45 * strength;
+    let grille = 0.18 * strength;
+    let mut out = vec![0u32; w * h];
+    for y in 0..h {
+        // where in its C64 row this window row lies, 0..1; the middle is brightest
+        let phase = ((y as f64 + 0.5) * rows / h as f64).fract();
+        let scan = 1.0 - scan_depth * (1.0 - (std::f64::consts::PI * phase).sin());
+        let dy = (y as f64 + 0.5) / h as f64 * 2.0 - 1.0;
+        for x in 0..w {
+            let dx = (x as f64 + 0.5) / w as f64 * 2.0 - 1.0;
+            let vignette = 1.0 - 0.22 * (dx * dx * 0.6 + dy * dy).powf(1.5);
+            let base = scan * vignette;
+            let mut c = [base * (1.0 - grille); 3];
+            c[x % 3] = base;
+            let b = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+            out[y * w + x] = 0xFF00_0000 | b(c[0]) << 16 | b(c[1]) << 8 | b(c[2]);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_crt_mask_follows_the_rows_and_fades_out_in_small_windows() {
+        use super::*;
+        let big = layout(Scaling::Whole, false, (1920, 1080)); // 3 x
+        let m = crt_mask_pixels(big);
+        let px = |x: usize, y: usize| m[y * big.dst.w as usize + x];
+        let green = |p: u32| (p >> 8) & 0xFF;
+        // in the middle of the picture: the middle row of a C64 row is brighter than its edge rows
+        let (cx, cy) = (big.dst.w as usize / 2 / 3 * 3 + 1, big.dst.h as usize / 2 / 3 * 3);
+        assert!(green(px(cx, cy + 1)) > green(px(cx, cy)), "{:x} {:x}", px(cx, cy + 1), px(cx, cy));
+        // edges are darker than the middle
+        assert!(green(px(1, cy + 1)) < green(px(cx, cy + 1)));
+        // a 1 x picture gets no scanlines or grille, only the vignette
+        let small = layout(Scaling::Whole, false, (384, 272));
+        let s = crt_mask_pixels(small);
+        let mid = s[136 * 384 + 192];
+        assert_eq!(((mid >> 16) & 0xFF, (mid >> 8) & 0xFF, mid & 0xFF), (255, 255, 255));
+    }
+
     use super::*;
 
     #[test]

@@ -267,25 +267,28 @@ impl GameState {
     pub fn decompress_stage_sub_9936(&mut self) {
         // $9936..$9948: clear $AC00..$BFFF
         self.current_map = vec![0; 5120];
-        let mut rec = img_word(0x6000 + ((self.stage as usize).wrapping_sub(1) << 1));
+        let mut rec = match self.tnw_stream() {
+            Some(s) => s,
+            None => img_word(0x6000 + ((self.stage as usize).wrapping_sub(1) << 1)),
+        };
         loop {
             // L995D
-            let id = img(rec);
+            let id = self.stage_byte(rec);
             if id == 0xFF {
                 self.map_column = 0x27;
                 return;
             }
             let mut src = img_word(0x9200 + ((id as usize) << 1));
-            self.dec[0] = img(rec + 3); // $040C
-            self.dec[1] = img(rec + 3); // $040D
-            self.dec[2] = img(rec + 4); // $040E
-            self.dec[3] = img(rec + 4); // $040F
+            self.dec[0] = self.stage_byte(rec + 3); // $040C
+            self.dec[1] = self.stage_byte(rec + 3); // $040D
+            self.dec[2] = self.stage_byte(rec + 4); // $040E
+            self.dec[3] = self.stage_byte(rec + 4); // $040F
             self.dec[4] = img(src); // $0410
             self.dec[5] = img(src); // $0411
             self.dec[6] = img(src + 1); // $0412
             self.dec[7] = img(src + 1); // $0413
             src += 2;
-            let mut dest = 0xAC00usize + img_word(rec + 1);
+            let mut dest = 0xAC00usize + self.stage_byte(rec + 1) as usize + ((self.stage_byte(rec + 2) as usize) << 8);
             let row_lo = dest & 0xFF;
             let mut row_hi = dest >> 8;
             let src_start = src;
@@ -350,7 +353,7 @@ impl GameState {
     /// sub_0E1F ($0E1F..$0E38): show the lives counter (`$9FAE[$043C]` converted to BCD) in the status bar
     pub fn draw_lives_sub_0e1f(&mut self) {
         let x = self.lives_c64 as usize;
-        let v = img(0x9FAE + x);
+        let v = self.bcd_table(x);
         self.stage_text_157b = v;
         self.print_bcd_sub_98d9(&[v], 0, 0x3D);
     }
@@ -472,6 +475,11 @@ impl GameState {
                     if !self.joystick_enabled {
                         // LDA sub_9F77 == $60 -> JMP L2D41
                         self.cutscene_walk_l2d41();
+                    } else if self.engine_b.is_some() {
+                        // family B (`$776E`): the new sprite program replaces the original's routines
+                        if self.flag_0431 == 0 && self.music_paused == 0 {
+                            self.b_sprite_frame();
+                        }
                     } else if self.flag_0431 == 0 && self.music_paused == 0 {
                         // L2213..: CLI; JSR sub_2276, 288A, 255A, 24FA, 251F, 2A69
                         self.spawner_sub_2276();
@@ -485,8 +493,12 @@ impl GameState {
                     }
                 }
             } else {
-                // L2230 (BNE L2230 when $14 != 0)
-                self.fireball_sub_2ad5();
+                // L2230 (BNE L2230 when $14 != 0); family B (`$7801`): the shot flies on
+                if self.engine_b.is_some() {
+                    self.b_shot_flight();
+                } else {
+                    self.fireball_sub_2ad5();
+                }
             }
         }
         // L2233: LDA $1D; BEQ L223C; LDX #0; JSR sub_2F6E
@@ -535,11 +547,16 @@ impl GameState {
         }
         // $2296: LDY $20; DEY; TYA; ASL A; TAY; pointer from $3D20,Y
         let y = ((stage.wrapping_sub(1)) << 1) as usize;
-        let list = img_word(0x3D20 + y);
-        loop {
+        let list = match self.tnw_enemy_list() {
+            Some(l) => l,
+            None => img_word(0x3D20 + y),
+        };
+        // The index is 8 bits and steps by 3, so after 86 steps it has seen every entry: a list without its $FF end (a
+        // broken or hostile module's stage file) would loop forever, which a real list never needs.
+        for _ in 0..86 {
             // L22A6
             let y = self.v47(0x474) as usize;
-            let a = img(list + y);
+            let a = self.stage_byte(list + y);
             if a == 0xFF {
                 return;
             }
@@ -567,9 +584,9 @@ impl GameState {
         let h = self.v47(0x475).wrapping_add(c as u8);
         self.set_v47(0x475, h);
         // $3221 = list[y], $3222 = list[y+1], third byte = enemy kind ($0B -> $3032,$22)
-        self.set_d32(0x3221, img(list + y));
-        self.set_d32(0x3222, img(list + y + 1));
-        let mut a = img(list + y + 2);
+        self.set_d32(0x3221, self.stage_byte(list + y));
+        self.set_d32(0x3222, self.stage_byte(list + y + 1));
+        let mut a = self.stage_byte(list + y + 2);
         if a == 0x0B {
             a = img(0x3032 + self.anim_counter as usize);
         }
@@ -1249,6 +1266,7 @@ impl GameState {
                     self.set_d32(0x325A, 0x0F);
                 }
                 // L291B
+                self.ck_boss_bonus(); // fan-hack families: `$291B` hook
                 let b = self.ep(0x76B);
                 if b != 0 {
                     self.en.spr_ptr[4] = b;
@@ -1384,8 +1402,11 @@ impl GameState {
         let (d, borrow) = self.en.spr_xy[0x0602 - 0x05FA].overflowing_sub(self.player_x_low);
         let _ = d;
         if borrow && self.sprite_x_msb & 0x80 == 0 {
-            self.en.flag_157e = 0xFF;
             self.flag_0431 = 0xFF;
+            if self.ck_final_bonus() {
+                return; // fan-hack families: `$302E` hook
+            }
+            self.en.flag_157e = 0xFF;
         }
     }
 
