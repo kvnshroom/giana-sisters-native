@@ -5,6 +5,8 @@ on:
 permissions:
   contents: read
 env:
+  # SDL 2 (built from source for the static Windows/macOS builds) still declares an old CMake minimum, which CMake 4 refuses
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   CARGO_TERM_COLOR: always
 jobs:
   build:
