@@ -31,7 +31,9 @@ use sdl2::event::{Event, WindowEvent};
 use sdl2::controller::GameController;
 use sdl2::keyboard::{Keycode, Mod};
 use sdl2::mouse::MouseUtil;
+use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::Canvas;
+use sdl2::surface::Surface;
 use sdl2::video::{FullscreenType, Window};
 use std::time::{Duration, Instant};
 
@@ -445,6 +447,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .map_err(|e| startup_error("Could not open the window", e, DISPLAY_HINT))?;
     let _ = window.set_minimum_size(WIDTH as u32, HEIGHT as u32);
+    // window and taskbar icon (64x64 RGBA, drawn by assets/icon/make_icon.py)
+    let mut icon = include_bytes!("../../../assets/icon/window-icon.rgba").to_vec();
+    if let Ok(surface) = Surface::from_data(&mut icon, 64, 64, 64 * 4, PixelFormatEnum::RGBA32) {
+        window.set_icon(surface);
+    }
 
     // No `accelerated()`: SDL takes the best renderer it finds, also the software one on computers without a working GPU driver
     let mut canvas = window

@@ -1,5 +1,5 @@
 //! Gives every build an identity for the network game: a hash of the game logic (`giana-core`). Two computers with different
-//! logic would drift apart, so they must refuse to play together.
+//! logic would drift apart, so they must refuse to play together. On Windows it also embeds the program icon.
 
 use std::path::{Path, PathBuf};
 
@@ -33,4 +33,11 @@ fn main() {
     println!("cargo:rustc-env=GIANA_CORE_HASH={:08x}", (h ^ (h >> 32)) as u32);
     println!("cargo:rerun-if-changed=../giana-core/src");
     println!("cargo:rerun-if-changed=../giana-core/Cargo.toml");
+
+    // the icon of giana-app.exe in Explorer (the window icon is set at run time in main.rs)
+    #[cfg(windows)]
+    {
+        println!("cargo:rerun-if-changed=../../assets/icon/icon.ico");
+        winresource::WindowsResource::new().set_icon("../../assets/icon/icon.ico").compile().expect("embed the icon");
+    }
 }
