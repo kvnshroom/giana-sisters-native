@@ -22,6 +22,7 @@ case "$os" in
     d="$stage/$base-linux-x86_64"
     mkdir "$d"
     install -m 755 "$bin" "$d/giana-app"
+    cp "$root/assets/icon/icon.png" "$d/giana-sisters.png"
     cat >"$d/INSTALL.txt" <<'TXT'
 The Great Giana Sisters - native port (Linux x86_64)
 
@@ -48,8 +49,9 @@ TXT
     d="$stage/$base-macos-universal"
     mkdir "$d"
     app="$d/Giana Sisters.app"
-    mkdir -p "$app/Contents/MacOS"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     install -m 755 "$bin" "$app/Contents/MacOS/giana-app"
+    cp "$root/assets/icon/icon.icns" "$app/Contents/Resources/icon.icns"
     cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -59,6 +61,7 @@ TXT
   <key>CFBundleDisplayName</key><string>Giana Sisters</string>
   <key>CFBundleIdentifier</key><string>io.github.kvnshroom.giana-sisters-native</string>
   <key>CFBundleExecutable</key><string>giana-app</string>
+  <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>$version</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
