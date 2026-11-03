@@ -11,6 +11,7 @@ pub mod cpu;
 pub mod crc32;
 pub mod disk;
 pub mod family;
+pub mod gem;
 pub mod leak;
 pub mod make;
 pub mod runner;

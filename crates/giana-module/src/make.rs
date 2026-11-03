@@ -47,7 +47,39 @@ pub fn engine_tag(img: &[u8]) -> Option<&'static str> {
     if crate::tnw::signature(img) {
         return Some(crate::tnw::ENGINE_T);
     }
-    FAMILY_B_SIGNATURE.iter().all(|(a, sig)| &img[*a..*a + sig.len()] == *sig).then_some(ENGINE_B)
+    // the other engines' builders end in `JMP $9010`; Gem Nightmare's (the older variant of the same engine, which
+    // keeps the original game's tables) has its own hook, see `gem.rs`
+    (FAMILY_B_SIGNATURE.iter().all(|(a, sig)| &img[*a..*a + sig.len()] == *sig) || crate::gem::is_gem(img)).then_some(ENGINE_B)
+}
+
+/// The disk files the engine of `img` loads while playing: [`collect_family_b_files`] by load address for the hacks
+/// with stage files (`$83F0`, `$7505`, `$FB80`); for Gem Nightmare the files whose names the loader builds (stage and
+/// sprite files; the disk also holds editor files with similar load addresses).
+pub fn collect_engine_b_files(img: &[u8], disk_image: &[u8]) -> Result<Vec<ModFile>, String> {
+    if !crate::gem::is_gem(img) {
+        return collect_family_b_files(disk_image);
+    }
+    let wanted = crate::gem::GemLayout::read(img).wanted_names(img);
+    let disk = Disk::parse(disk_image)?;
+    let mut files = Vec::new();
+    for e in disk.prgs()? {
+        let name: Vec<u8> = e.name.chars().map(|c| c as u32 as u8).collect();
+        if !wanted.contains(&name) {
+            continue;
+        }
+        let data = disk.read_entry(&e)?;
+        if data.len() < 2 || data.len() > crate::container::MAX_FILE_SIZE {
+            return Err(format!("disk file {:?} cannot be stored", e.name));
+        }
+        files.push(ModFile { name, data });
+    }
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    files.dedup_by(|a, b| a.name == b.name);
+    let total: usize = files.iter().map(|f| f.data.len()).sum();
+    if files.len() > crate::container::MAX_FILES || total > crate::container::MAX_FILES_TOTAL {
+        return Err(format!("the disk has too many stage files ({} files, {total} bytes)", files.len()));
+    }
+    Ok(files)
 }
 
 /// The disk files of a family B hack: every PRG of the directory whose load address is one of
@@ -163,8 +195,10 @@ pub fn clean_boot(base: &[u8], last: &[u8]) -> Vec<u8> {
 /// The run-time ranges that go with the engine of `img`: the 7A3 engine (family B) has its own layout.
 fn runtime_ranges_for(img: &[u8]) -> &'static [(u16, u16)] {
     // family T keeps the layout of the original game (and its table and loader at `$6F00..`): the ranges of the 7A3 engine
-    // would wipe them; its own extras come in `reset_runtime`
-    if engine_tag(img).is_some_and(|e| e != crate::tnw::ENGINE_T) {
+    // would wipe them; its own extras come in `reset_runtime`. Gem Nightmare (an older 7A3 engine) has its own ranges.
+    if crate::gem::is_gem(img) {
+        crate::runtime_ranges::RUNTIME_RANGES_GEM
+    } else if engine_tag(img).is_some_and(|e| e != crate::tnw::ENGINE_T) {
         crate::runtime_ranges::RUNTIME_RANGES_B
     } else {
         crate::runtime_ranges::RUNTIME_RANGES
@@ -377,7 +411,7 @@ pub fn make_from_file(
     let files = match &kind {
         Input::Boot(ram) => match engine_tag(&normalize_image(&clean_boot(base_ingame, ram))?) {
             Some(crate::tnw::ENGINE_T) => crate::tnw::collect_files(bytes, base_ingame)?,
-            Some(_) => collect_family_b_files(bytes)?,
+            Some(_) => collect_engine_b_files(&normalize_image(&clean_boot(base_ingame, ram))?, bytes)?,
             None => Vec::new(),
         },
         _ => Vec::new(),

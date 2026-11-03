@@ -861,7 +861,7 @@ impl GameState {
                     match step {
                         0 | 1 => {
                             // L0CD3: LDA $0449; BNE L0CD9; RTS
-                            if self.timer_seconds_low == 0 {
+                            if self.timer_seconds_low == 0 && !self.exit_borrow_hundreds() {
                                 phase = ExitPhase::Count(self.exit_timing_front().count_wait);
                                 continue;
                             }
@@ -869,7 +869,7 @@ impl GameState {
                         }
                         2 => {
                             // L0CD9: SED; $0449 = $0449 - 1; CLD
-                            self.timer_seconds_low = bcd_sub_one(self.timer_seconds_low);
+                            self.timer_seconds_low = if self.timer_seconds_low == 0 { 0x99 } else { bcd_sub_one(self.timer_seconds_low) };
                             // $0CE4: LDA #$0A; LDX #$00; JSR sub_991D
                             self.add_score_sub_991d(0x0A, 0x00);
                             // $0CEB: JSR sub_9F77
@@ -935,6 +935,23 @@ impl GameState {
                 }
             }
         }
+    }
+
+    /// Engine B (`$0CC3..$0CCB`): the seconds are used up, so the bonus count takes one from the hundreds (`$044A`) and goes
+    /// on counting from 99 while that stays positive; the original ends here. The hacks of the 7A3 engine count the hundreds
+    /// as BCD (`$915D`, ends at `$99`), Gem Nightmare as a binary byte (`DEC $044A`, ends at `$FF`). Returns true when the
+    /// count goes on.
+    fn exit_borrow_hundreds(&mut self) -> bool {
+        let Some(b) = self.engine_b.as_ref() else { return false };
+        let h = if b.gem.is_some() {
+            self.timer_seconds_high.wrapping_sub(1)
+        } else if self.timer_seconds_high == 0 {
+            0x99
+        } else {
+            bcd_sub_one(self.timer_seconds_high)
+        };
+        self.timer_seconds_high = h;
+        h & 0x80 == 0
     }
 
     fn exit_timing_front(&self) -> crate::state::ExitTiming {

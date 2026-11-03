@@ -15,6 +15,7 @@ OPTIONS:
     --module FILE|ID   play this ROM module in this run only (a .grom file is added first; an ID is the start of
                        the id that --list-modules shows)
     --list-modules     list the installed ROM modules and exit
+    --add-module FILE  add a ROM module (or a hack's disk image) to the list and exit, without playing it
     --make-module INPUT -o OUT.grom --name NAME [--author A] [--version V] [--description D] [--title F_2.PRG]
                        make a ROM module from a modified game: a disk image of a hack (.d64/.g64; a hack of the
                        7A3 construction-set engine brings its stage files along), a 64K image or RAM dump, a PRG
@@ -77,6 +78,8 @@ pub enum Command {
     MakeModule(MakeModule),
     /// `--list-modules` (with the data folder of `--data`)
     ListModules(Option<std::path::PathBuf>),
+    /// `--add-module FILE`: add it to the module store and exit (with the data folder of `--data`)
+    AddModule(std::path::PathBuf, Option<std::path::PathBuf>),
 }
 
 /// The text of `--version`.
@@ -130,6 +133,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
     let mut make: Option<std::path::PathBuf> = None;
     let mut mk = MakeModule::default();
     let mut list = false;
+    let mut add: Option<std::path::PathBuf> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
@@ -143,6 +147,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
             "--import" => import = Some(args.next().filter(|v| !v.is_empty()).ok_or("--import needs the path of a .g64 file")?.into()),
             "--module" => opts.module = Some(value(&mut args, &arg)?),
             "--list-modules" => list = true,
+            "--add-module" => add = Some(value(&mut args, &arg)?.into()),
             "--make-module" => make = Some(value(&mut args, &arg)?.into()),
             "-o" | "--output" => mk.out = value(&mut args, &arg)?.into(),
             "--name" => mk.name = value(&mut args, &arg)?,
@@ -170,6 +175,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
     }
     if mk != MakeModule::default() {
         return Err("-o, --name, --author, --version, --description and --title belong to --make-module".into());
+    }
+    if let Some(file) = add {
+        return Ok(Command::AddModule(file, opts.data));
     }
     if list {
         return Ok(Command::ListModules(opts.data));
@@ -241,6 +249,8 @@ mod tests {
         assert!(p(&["a.grom", "b.grom"]).is_err());
         assert_eq!(p(&["--list-modules", "--data", "d"]), Ok(Command::ListModules(Some("d".into()))));
         assert_eq!(p(&["--list-modules"]), Ok(Command::ListModules(None)));
+        assert_eq!(p(&["--add-module", "x.grom"]), Ok(Command::AddModule("x.grom".into(), None)));
+        assert_eq!(p(&["--add-module", "h.d64", "--data", "d"]), Ok(Command::AddModule("h.d64".into(), Some("d".into()))));
     }
 
     #[test]

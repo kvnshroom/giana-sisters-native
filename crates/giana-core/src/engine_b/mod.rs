@@ -34,6 +34,7 @@ pub mod platform;
 pub mod water;
 
 use giana_engine_b::files::{self, ModFile};
+use giana_engine_b::gem::{self, GemMemory};
 use giana_engine_b::hooks::{apply_stage_constants, StageTables};
 use giana_engine_b::stage::{room_address, FIRST_ROOM};
 use giana_engine_b::types::{type_record, MonsterFile, MONSTER_TYPE, TYPE_COUNT};
@@ -60,6 +61,8 @@ pub struct Built {
     pub map: Vec<u8>,
     /// sprite shapes of a monster file that was just loaded: load address and data (`$FB80`)
     pub sprites: Option<(u16, Vec<u8>)>,
+    /// Giana Sisters II (Gem Nightmare): the builder hook raised Giana's power to at least this (`$22`)
+    pub min_power: Option<u8>,
 }
 
 #[derive(Clone)]
@@ -97,6 +100,10 @@ pub struct EngineB {
     pub water: water::Water,
     /// moving platforms and the zero page items `$F8..$FD`, see `platform.rs`
     pub plat: platform::Platforms,
+    /// The older variant of the engine (Giana Sisters II, Gem Nightmare): the program's memory with the stage files
+    /// dropped in; stage data and per-stage values come from the tables of the image instead of a stage file header
+    /// (`giana_engine_b::gem`). `None` for the other hacks of the family.
+    pub gem: Option<GemMemory>,
 }
 
 impl EngineB {
@@ -124,6 +131,15 @@ impl EngineB {
             sprites: sprites::Sprites::new(),
             water: water::Water::default(),
             plat: platform::Platforms::default(),
+            gem: gem::is_gem(img).then(|| GemMemory::new(img)),
+        }
+    }
+
+    /// True for a stage number that is a resident room (title backdrop, treasure and bonus rooms): no object list.
+    pub fn is_room(&self, number: u8) -> bool {
+        match &self.gem {
+            Some(g) => g.layout.is_room(number),
+            None => number >= FIRST_ROOM,
         }
     }
 
@@ -139,6 +155,9 @@ impl EngineB {
 
     /// True when the module has a stage file for `stage` (1..=99).
     pub fn has_stage(&self, img: &[u8], stage: u8) -> bool {
+        if let Some(g) = &self.gem {
+            return g.has_stage(&self.files, stage);
+        }
         files::stage_pattern(img, stage).is_some_and(|p| files::find(&self.files, &p).is_some())
     }
 
@@ -148,6 +167,9 @@ impl EngineB {
     /// files are looked up with the pattern of the image), sets `current` (header and object list) and expands the map.
     /// Stage numbers `>= $64` are the resident rooms of the image.
     pub fn build(&mut self, img: &[u8], charset: &mut [u8], stage: u8) -> Built {
+        if self.gem.is_some() {
+            return self.build_gem(img, charset, stage);
+        }
         let mut s = stage;
         let mut lives = None;
         // `$2F81`/`$3090`: the trainer start stage replaces a normal stage (once, see the field)
@@ -188,7 +210,55 @@ impl EngineB {
         // the stage hook (`$2F5D`, `$2F77`): `$FD = 0`, the ladder patch of the water code is undone
         self.water.reset();
         self.plat.reset();
-        Built { stage: s, lives, map, sprites }
+        Built { stage: s, lives, map, sprites, min_power: None }
+    }
+
+    /// The stage builder of Gem Nightmare: `$9936` with its hook `$9A2C`, the stage hook `$2F54`/`$306A`/`$312B`, the
+    /// loader `$3147` and the tables (`giana_engine_b::gem`). Same steps as [`EngineB::build`], other sources.
+    fn build_gem(&mut self, img: &[u8], charset: &mut [u8], stage: u8) -> Built {
+        let mut g = self.gem.take().expect("gem");
+        let layout = g.layout.clone();
+        // `$9A2C`: runs first, with the stage number the caller asked for
+        let min_power = g.builder_hook(stage);
+        let mut s = stage;
+        let mut lives = None;
+        // `$2F81`: the trainer start stage replaces a normal stage (once)
+        if s < layout.first_room && self.trainer_start_stage != 0 {
+            s = std::mem::take(&mut self.trainer_start_stage);
+            lives = Some(1);
+        }
+        // `$2F8D`: the hook `$306A` runs for the title backdrop and normal stages when the stage number changed
+        if (s < layout.first_room || s == layout.title_stage) && self.last_hook != Some(s) {
+            self.last_hook = Some(s);
+            if s < layout.highest_cap && s >= self.highest_stage {
+                self.highest_stage = s;
+            }
+        }
+        let mut t = StageTables { colours: &mut self.colours, classes: &mut self.classes, charset };
+        apply_stage_constants(img, s, &mut t);
+        // `$312B`: the loader
+        let rep = g.load_for_stage(&self.files, s);
+        self.error = rep.error.clone();
+        let stage_data = match g.stage(s) {
+            Ok(st) if rep.error.is_none() => st,
+            Ok(_) => blank_stage(),
+            Err(e) => {
+                self.error = Some(format!("stage {s}: {e}"));
+                blank_stage()
+            }
+        };
+        // the loaded monster (type `$32`) is the record at `$2914`
+        let rec = giana_engine_b::TypeRecord { raw: g.monster_record() };
+        self.monster = Some(rec);
+        self.types[MONSTER_TYPE as usize] = Some(rec);
+        let map = expand_map(img, &stage_data);
+        self.current = Current { number: s, header: stage_data.header.clone(), spawns: stage_data.spawns };
+        self.spawn_next = 0;
+        self.sprites = sprites::Sprites::new();
+        self.water.reset();
+        self.plat.reset();
+        self.gem = Some(g);
+        Built { stage: s, lives, map, sprites: rep.sprites, min_power }
     }
 
     /// The loader `$9053`: the stage file of `stage`, then the monster record and shapes named by the header. A file that

@@ -4,7 +4,7 @@
 use crate::bindings::{key_label, Action, Bindings, PadInput, SLOTS};
 use crate::hints::{fit_in, InputDevice, InputState};
 use crate::menu::{clip, safe_text, Device, Menu, Nav, Page, Search, BACK_ROW, ENHANCED_ITEMS, NETWORK_ITEMS, OPTION_ITEMS, RESET_ROW, SOUND_ITEMS};
-use crate::menu::{AuthenticAvail, DetailItem, EnhancedItem, OptionItem, SoundItem, CODE_NOTICE};
+use crate::menu::{label_room, progress_text, AuthenticAvail, DetailItem, EnhancedItem, OptionItem, SoundItem, CODE_NOTICE};
 use crate::padicons::Icon;
 use crate::result::Winner;
 use crate::scores::{Scores, MAX_ENTRIES, NAME_LEN};
@@ -130,7 +130,9 @@ pub fn footer_hints(menu: &Menu, ctx: &DrawCtx) -> Vec<Hint> {
         Page::EnterName => vec![i.move_hint("LETTER"), i.dir_hint(Nav::Right, "NEXT"), i.dir_hint(Nav::Left, "DELETE"), i.select_hint("SAVE")],
         Page::Options | Page::Enhanced | Page::Sound => vec![i.move_hint("MOVE"), i.change_hint("CHANGE"), i.back_hint("BACK")],
         Page::ConfirmQuit | Page::ConfirmRemove => vec![i.move_hint("MOVE"), i.select_hint("SELECT"), i.back_hint("NO")],
-        Page::Modules | Page::ModuleDetail => vec![i.move_hint("MOVE"), i.select_hint("SELECT"), i.back_hint("BACK")],
+        Page::Modules => vec![i.move_hint("MOVE"), i.select_hint("SELECT"), i.favorite_hint("FAV"), i.sort_hint("SORT"), i.back_hint("BACK")],
+        Page::ModuleDetail if menu.module_sel.is_some() => vec![i.move_hint("MOVE"), i.select_hint("SELECT"), i.favorite_hint("FAV"), i.back_hint("BACK")],
+        Page::ModuleDetail => vec![i.move_hint("MOVE"), i.select_hint("SELECT"), i.back_hint("BACK")],
         Page::Result if menu.result_hold == 0 => vec![i.select_hint("CONTINUE")],
         Page::Result => Vec::new(),
     };
@@ -184,16 +186,19 @@ const MODULE_ROWS: usize = 8;
 fn draw_modules(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     let total = menu.module_rows();
     let rows = total.min(MODULE_ROWS);
-    let p = Panel::for_list(rows, WIDE, Pitch::Tight, true, 5);
+    let p = Panel::for_list(rows, WIDE, Pitch::Tight, true, 7);
     p.draw(fb, Some("ROM MODULES"));
     let first = (menu.cursor + 1).saturating_sub(MODULE_ROWS).min(total - rows);
     let last_module = menu.modules.len();
     for (n, i) in (first..first + rows).enumerate() {
         let y = p.item_y(n);
         let st = state(i, menu.cursor);
+        // the module of this row (None: the original game and the rows below the modules)
+        let module = i.checked_sub(1).and_then(|m| menu.modules.get(m));
+        let stage = (i <= last_module).then(|| menu.settings.stage_reached(module.map_or("", |m| m.id.as_str()))).flatten();
         let (label, active) = match i {
             0 => ("ORIGINAL".to_string(), menu.active_module.is_empty()),
-            i if i <= last_module => (menu.modules[i - 1].list_label(p.max_label_len() - 2), menu.modules[i - 1].id == menu.active_module),
+            i if i <= last_module => (menu.modules[i - 1].list_label(label_room(stage)), menu.modules[i - 1].id == menu.active_module),
             i if i == last_module + 1 => ("ADD ROM MODULE...".to_string(), false),
             _ => ("BACK".to_string(), false),
         };
@@ -203,18 +208,28 @@ fn draw_modules(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
             // the module that is played: a star between the marker and the name
             draw_text_px(fb, p.col_x(Panel::LABEL_COL - 1), y, "*", px(if st == ItemState::Selected { fg } else { ui::color::YELLOW }));
         }
+        // the right end of a row: the stage reached (dim), the favorite star in the last column
+        if module.is_some_and(|m| menu.settings.is_favorite(&m.id)) {
+            draw_text_px(fb, p.col_x(p.w - 3), y, "\u{2605}", px(if st == ItemState::Selected { fg } else { ui::color::YELLOW }));
+        }
+        let text = progress_text(stage);
+        if !text.is_empty() {
+            let col = p.w - 4 - text.chars().count();
+            draw_text_px(fb, p.col_x(col), y, &text, px(if st == ItemState::Selected { ui::color::SELECT_DIM } else { ui::color::DIM }));
+        }
     }
     let after = Panel::head_rows(true) + Panel::list_rows(rows, Pitch::Tight);
     p.separator(fb, after + 1);
+    p.note(fb, after + 2, &format!("SORT: {}", menu.settings.module_sort.label()));
     match &menu.module_error {
         Some(e) => {
             for (n, line) in crate::firstrun::wrap(&safe_text(&e.to_ascii_uppercase()), WIDE - 4).iter().take(3).enumerate() {
-                p.note_colored(fb, after + 2 + n, line, ui::color::YELLOW);
+                p.note_colored(fb, after + 4 + n, line, ui::color::YELLOW);
             }
         }
         None => {
-            p.note(fb, after + 2, "* IS THE MODULE THAT IS PLAYED");
-            p.note(fb, after + 4, "DROP A .GROM FILE TO ADD IT");
+            p.note(fb, after + 4, "* PLAYED NOW   \u{2605} FAVORITE");
+            p.note(fb, after + 6, "DROP A .GROM FILE TO ADD IT");
         }
     }
 }
@@ -256,8 +271,13 @@ fn draw_module_detail(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     p.separator(fb, items_row - 1);
     for (n, item) in items.iter().enumerate() {
         let y = p.row_y(items_row) + (n * 16) as isize;
-        let label = if *item == DetailItem::Play && menu.selected_is_active() { "PLAYED NOW" } else { item.label() };
-        p.item(fb, y, label, state(n, menu.cursor), ctx.nudge);
+        let favorite = menu.selected_module().is_some_and(|m| menu.settings.is_favorite(&m.id));
+        let label = match item {
+            DetailItem::Play if menu.selected_is_active() => "PLAYED NOW".to_string(),
+            DetailItem::Favorite => format!("FAVORITE: {}", if favorite { "ON" } else { "OFF" }),
+            _ => item.label().to_string(),
+        };
+        p.item(fb, y, &label, state(n, menu.cursor), ctx.nudge);
     }
 }
 

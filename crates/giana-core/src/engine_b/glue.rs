@@ -60,6 +60,10 @@ impl GameState {
         let Some(mut b) = self.engine_b.take() else { return };
         let built = b.build(image(), &mut self.sprite_mem[..0x800], self.stage as u8);
         self.stage = built.stage as u32;
+        if let Some(p) = built.min_power {
+            // Gem Nightmare's builder hook (`$9A38`: `LDX #2; STX $22`): at least this power-up level
+            self.anim_counter = self.anim_counter.max(p);
+        }
         if let Some(l) = built.lives {
             self.lives_c64 = l;
             self.lives = l as u32;
@@ -85,8 +89,16 @@ impl GameState {
         self.en.vic_bg0 = h.bg[0] & 0x0F;
         self.en.vic_bg1 = h.bg[1] & 0x0F;
         self.vic_bg2 = h.bg[2] & 0x0F;
-        let d = giana_engine_b::hooks::diamond_colours(image(), h.diamond_scheme);
-        b.colours[0xA6..=0xA9].copy_from_slice(&d);
+        if b.gem.is_some() {
+            // Gem Nightmare (`$0D3F`, `$0D52`): the diamond colours are the high nibbles of the background colour bytes
+            let (d0, d2) = (h.bg[0] >> 4, h.bg[2] >> 4);
+            b.colours[0xA9] = d0;
+            b.colours[0xA7] = d2;
+            b.colours[0xA8] = d2;
+        } else {
+            let d = giana_engine_b::hooks::diamond_colours(image(), h.diamond_scheme);
+            b.colours[0xA6..=0xA9].copy_from_slice(&d);
+        }
     }
 
     /// Engine B: `$0AD9..$0AF0` after the builder: the 4-digit time of the header and the stage number for the banner.

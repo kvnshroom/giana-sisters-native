@@ -9,6 +9,7 @@ members = [
     "crates/giana-module",
     "crates/giana-engine-b",
     "crates/giana-engine-c",
+    "crates/giana-c30-oracle",
     "crates/giana-authentic",
 ]
 

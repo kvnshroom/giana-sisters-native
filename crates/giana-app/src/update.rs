@@ -93,6 +93,17 @@ impl Release {
     pub fn asset(&self, name: &str) -> Option<&Asset> {
         self.assets.iter().find(|a| a.name == name)
     }
+
+    /// The release has the package for `os`/`arch` and the checksum file. The packages of a release are uploaded one
+    /// after the other (macOS is often the last), so a release without them is not offered yet.
+    pub fn has_package_for(&self, os: &str, arch: &str) -> bool {
+        asset_name(&self.version, os, arch).is_some_and(|n| self.asset(&n).is_some()) && self.asset(SUMS_NAME).is_some()
+    }
+
+    /// [`Release::has_package_for`] for the system this program runs on.
+    pub fn has_package(&self) -> bool {
+        self.has_package_for(std::env::consts::OS, std::env::consts::ARCH)
+    }
 }
 
 /// The answer of `releases/latest`. Drafts and pre-releases are not offered.
@@ -475,7 +486,7 @@ impl Updater {
                 Ok((release, checked)) => {
                     self.work = None;
                     let seen = release.as_ref().map(|r| r.version.clone());
-                    if let Some(r) = release.filter(|r| is_newer(&r.version, env!("CARGO_PKG_VERSION"))) {
+                    if let Some(r) = release.filter(|r| is_newer(&r.version, env!("CARGO_PKG_VERSION")) && r.has_package()) {
                         if !matches!(self.view, View::Installing | View::Done | View::Manual) {
                             self.view = View::Available(r.version);
                         }
@@ -545,7 +556,9 @@ impl Updater {
 pub fn check_report() -> (String, bool) {
     let current = env!("CARGO_PKG_VERSION");
     match fetch_latest() {
-        Ok(r) if is_newer(&r.version, current) => (format!("A new version is available: {} (you have {current})\n{}", r.version, r.page), true),
+        Ok(r) if is_newer(&r.version, current) && r.has_package() => (format!("A new version is available: {} (you have {current})\n{}", r.version, r.page), true),
+        Ok(r) if is_newer(&r.version, current) => (format!("Version {} is out, its package for this system is still being uploaded (you have {current})", r.version), true),
+        // (a newer release whose package for this system is not uploaded yet is reported as such)
         Ok(r) => (format!("Up to date: {current} (latest release: {})", r.version), true),
         Err(CheckError::Status(404)) => (format!("No release found (you have {current}). {RELEASES_URL}"), true),
         Err(CheckError::Status(code)) => (format!("The update check failed: the server answered {code}"), false),
@@ -642,6 +655,19 @@ mod tests {
         assert_eq!(parse_release("not json"), None);
         assert_eq!(parse_release(r#"{"message":"Not Found","status":"404"}"#), None);
         assert_eq!(parse_release(&SAMPLE.replace("v0.2.0\", \"name", "latest\", \"name")), None);
+    }
+
+    #[test]
+    fn a_release_is_offered_only_where_its_package_is_uploaded() {
+        // the sample has the Linux package and the checksums, the others are still being built
+        let r = parse_release(SAMPLE).unwrap();
+        assert!(r.has_package_for("linux", "x86_64"));
+        assert!(!r.has_package_for("windows", "x86_64"));
+        assert!(!r.has_package_for("macos", "aarch64"));
+        assert!(!r.has_package_for("linux", "aarch64"), "no package for that system at all");
+        // without the checksum file nothing can be installed
+        let no_sums = parse_release(&SAMPLE.replace("\"name\": \"SHA256SUMS.txt\"", "\"name\": \"other.txt\"")).unwrap();
+        assert!(!no_sums.has_package_for("linux", "x86_64"));
     }
 
     #[test]

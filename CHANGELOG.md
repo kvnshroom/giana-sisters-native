@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.1]
+
+- Giana Sisters II "Gem Nightmare" (The Seven-A-Three, 1993) plays: an older version of the construction-set engine,
+  its stages from the image and its own stage files.
+- ROM MODULES: favorites (F / controller Y) stay on top; sort by POPULAR (default, by how often the hacks were
+  downloaded on CSDb), NAME or LAST PLAYED (O / controller X); the highest stage reached is shown per module.
+- Linux: the package runs on nearly every current distribution (glibc 2.34 or newer, SDL built in, nothing to install)
+  and comes with `install.sh` (start menu entry, no root needed, `--modules DIR`, `--g64 FILE`) and `uninstall.sh`.
+- `giana-app --add-module FILE` adds a module or a hack's disk image without playing it.
+- The sound pauses while the file dialog of ADD ROM MODULE is open (the music looped).
+- The update check offers a new version only once its package for your system is uploaded; releases upload each
+  system's package as soon as it is built.
+
 ## [0.2.0]
 
 Supported fan hacks (load your own disk image under ROM MODULES; a hack that needs an engine of its own runs on a native

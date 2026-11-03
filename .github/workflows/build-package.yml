@@ -1,0 +1,89 @@
+name: Build a release package
+# Called by release.yml for one system. Read-only: the build runs third-party build scripts, so it gets no token that
+# can write; the package goes on as a workflow artifact and a separate job uploads it.
+on:
+  workflow_call:
+    inputs:
+      kind: { required: true, type: string }
+      os: { required: true, type: string }
+permissions:
+  contents: read
+env:
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  CARGO_TERM_COLOR: always
+jobs:
+  build:
+    # Linux builds on the oldest supported runner (glibc 2.35) so that the package runs on old and new distributions
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.kind == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - name: Version from tag
+        id: v
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/giana-app/Cargo.toml | head -1)"
+          if [ "$version" != "$cargo_version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match crates/giana-app/Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install build libraries (Linux; SDL2 itself is built in, it loads these at run time)
+        if: inputs.kind == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake pkg-config \
+            libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxss-dev libxfixes-dev libxinerama-dev \
+            libxxf86vm-dev libxkbcommon-dev libwayland-dev wayland-protocols libpulse-dev libpipewire-0.3-dev \
+            libasound2-dev libdrm-dev libgbm-dev libegl1-mesa-dev libgl1-mesa-dev libudev-dev libdbus-1-dev libibus-1.0-dev
+      - name: Build (Linux, SDL2 built in)
+        if: inputs.kind == 'linux'
+        run: |
+          cargo build --release --locked -p giana-app --features bundled-sdl
+          echo "highest GLIBC symbol version: $(objdump -T target/release/giana-app | grep -o 'GLIBC_[0-9.]*' | sort -V -u | tail -1)"
+          readelf -d target/release/giana-app | grep NEEDED
+      - name: Build (Windows, SDL2 built in)
+        if: inputs.kind == 'windows'
+        run: cargo build --release --locked -p giana-app --features bundled-sdl
+      - name: Build (macOS, both architectures, SDL2 built in)
+        if: inputs.kind == 'macos'
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p giana-app --features bundled-sdl --target "$t"
+          done
+          mkdir -p target/universal
+          lipo -create -output target/universal/giana-app \
+            target/aarch64-apple-darwin/release/giana-app target/x86_64-apple-darwin/release/giana-app
+          lipo -info target/universal/giana-app
+      - name: Locate binary
+        id: bin
+        shell: bash
+        run: |
+          case "${{ inputs.kind }}" in
+            linux) p=target/release/giana-app ;;
+            windows) p=target/release/giana-app.exe ;;
+            macos) p=target/universal/giana-app ;;
+          esac
+          echo "path=$p" >> "$GITHUB_OUTPUT"
+      - name: Sanity checks (size, starts)
+        shell: bash
+        run: |
+          size=$(wc -c < "${{ steps.bin.outputs.path }}")
+          echo "binary size: $size bytes"
+          # A binary with game data inside would be far bigger. The real comparison with the original files is
+          # tools/release/check_binary.sh in the private repository, run before tagging.
+          if [ "$size" -gt 40000000 ]; then echo "binary is suspiciously large" >&2; exit 1; fi
+          "${{ steps.bin.outputs.path }}" --version
+      - name: Package
+        shell: bash
+        run: .github/scripts/package.sh "${{ inputs.kind }}" "${{ steps.v.outputs.version }}" "${{ steps.bin.outputs.path }}" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ inputs.kind }}
+          path: dist/*
+          if-no-files-found: error

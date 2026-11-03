@@ -1,6 +1,7 @@
 //! Window, sound and network settings in `settings.conf` next to `controls.conf`.
 
 use crate::result::Winner;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const MAX_VOLUME: u8 = 10;
@@ -140,6 +141,55 @@ impl MenuSoundMode {
     }
 }
 
+/// How the ROM modules are ordered below the favorites (`SORT` on the modules page).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ModuleSort {
+    /// by how often the modules were downloaded, unknown ones after the known ones by name
+    #[default]
+    Popular,
+    Name,
+    /// the module played last first, modules never played after the others
+    LastPlayed,
+}
+
+impl ModuleSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            ModuleSort::Popular => "POPULAR",
+            ModuleSort::Name => "NAME",
+            ModuleSort::LastPlayed => "LAST PLAYED",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            ModuleSort::Popular => ModuleSort::Name,
+            ModuleSort::Name => ModuleSort::LastPlayed,
+            ModuleSort::LastPlayed => ModuleSort::Popular,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            ModuleSort::Popular => "popular",
+            ModuleSort::Name => "name",
+            ModuleSort::LastPlayed => "last_played",
+        }
+    }
+
+    fn from_name(s: &str) -> Option<Self> {
+        Some(match s {
+            "popular" => ModuleSort::Popular,
+            "name" => ModuleSort::Name,
+            "last_played" => ModuleSort::LastPlayed,
+            _ => return None,
+        })
+    }
+}
+
+/// The key of the original game in `Settings::progress` (it has no module id).
+pub const ORIGINAL_KEY: &str = "original";
+
 /// Changes that are not part of the original game: `MODE: ORIGINAL / ENHANCED` on the options page. In `ORIGINAL` mode
 /// everything is as it always was, whatever the single switches say.
 ///
@@ -202,6 +252,14 @@ pub struct Settings {
     pub update_seen: String,
     /// id of the chosen ROM module (empty: the original game)
     pub module: String,
+    /// ids of the favorite ROM modules (shown first on the modules page)
+    pub favorites: Vec<String>,
+    /// `SORT` on the modules page
+    pub module_sort: ModuleSort,
+    /// seconds since 1970 when a module was started, by module id
+    pub last_played: BTreeMap<String, u64>,
+    /// the highest stage reached with a module, by module id (`ORIGINAL_KEY` for the original game)
+    pub progress: BTreeMap<String, u32>,
 }
 
 impl Default for Settings {
@@ -224,8 +282,27 @@ impl Default for Settings {
             last_update_check: 0,
             update_seen: String::new(),
             module: String::new(),
+            favorites: Vec::new(),
+            module_sort: ModuleSort::Popular,
+            last_played: BTreeMap::new(),
+            progress: BTreeMap::new(),
         }
     }
+}
+
+/// A module id as the files write it: 16 lowercase hex digits (or `ORIGINAL_KEY`), anything else is dropped.
+fn clean_key(s: &str) -> Option<String> {
+    let s = s.trim().to_ascii_lowercase();
+    (s == ORIGINAL_KEY || (s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit()))).then_some(s)
+}
+
+/// `id:number,id:number`
+fn map_text<V: std::fmt::Display>(map: &BTreeMap<String, V>) -> String {
+    map.iter().map(|(k, v)| format!("{k}:{v}")).collect::<Vec<_>>().join(",")
+}
+
+fn parse_map<V: std::str::FromStr>(value: &str) -> BTreeMap<String, V> {
+    value.split(',').filter_map(|pair| pair.split_once(':')).filter_map(|(k, v)| Some((clean_key(k)?, v.trim().parse().ok()?))).collect()
 }
 
 impl Settings {
@@ -261,9 +338,47 @@ impl Settings {
         self.volume = if up { (self.volume + 1).min(MAX_VOLUME) } else { self.volume.saturating_sub(1) };
     }
 
+    pub fn is_favorite(&self, id: &str) -> bool {
+        self.favorites.iter().any(|f| f == id)
+    }
+
+    /// Adds the module to the favorites or takes it out; the original game is no favorite (it is always first).
+    pub fn toggle_favorite(&mut self, id: &str) {
+        if id == ORIGINAL_KEY || clean_key(id).as_deref() != Some(id) {
+            return;
+        }
+        if self.is_favorite(id) {
+            self.favorites.retain(|f| f != id);
+        } else {
+            self.favorites.push(id.to_string());
+        }
+    }
+
+    /// The stage that was reached most far with a module (empty id: the original game).
+    pub fn stage_reached(&self, id: &str) -> Option<u32> {
+        self.progress.get(if id.is_empty() { ORIGINAL_KEY } else { id }).copied()
+    }
+
+    /// Notes a stage reached while playing. Returns true when it is a new best (the settings then want saving).
+    pub fn note_stage(&mut self, id: &str, stage: u32) -> bool {
+        let key = if id.is_empty() { ORIGINAL_KEY } else { id };
+        if stage == 0 || self.progress.get(key).is_some_and(|&s| s >= stage) {
+            return false;
+        }
+        self.progress.insert(key.to_string(), stage);
+        true
+    }
+
+    /// Notes that a module was started now (seconds since 1970). The original game is always first, no time is kept for it.
+    pub fn note_played(&mut self, id: &str, now: u64) {
+        if !id.is_empty() {
+            self.last_played.insert(id.to_string(), now);
+        }
+    }
+
     pub fn to_text(&self) -> String {
         format!(
-            "# The Great Giana Sisters: settings.\nfullscreen = {}\nvolume = {}\nmuted = {}\nscaling = {}\ncrt = {}\nwinner = {}\ndisplay_50hz = {}\nmusic_volume = {}\neffects_volume = {}\nmode = {}\nsmooth_motion = {}\npresentation = {}\nmenu_sounds = {}\nupdate_check = {}\nlast_update_check = {}\nupdate_seen = {}\nmodule = {}\nlast_address = {}\n",
+            "# The Great Giana Sisters: settings.\nfullscreen = {}\nvolume = {}\nmuted = {}\nscaling = {}\ncrt = {}\nwinner = {}\ndisplay_50hz = {}\nmusic_volume = {}\neffects_volume = {}\nmode = {}\nsmooth_motion = {}\npresentation = {}\nmenu_sounds = {}\nupdate_check = {}\nlast_update_check = {}\nupdate_seen = {}\nmodule = {}\nfavorites = {}\nmodule_sort = {}\nlast_played = {}\nprogress = {}\nlast_address = {}\n",
             self.fullscreen,
             self.volume,
             self.muted,
@@ -281,6 +396,10 @@ impl Settings {
             self.last_update_check,
             self.update_seen,
             self.module,
+            self.favorites.join(","),
+            self.module_sort.name(),
+            map_text(&self.last_played),
+            map_text(&self.progress),
             self.last_address
         )
     }
@@ -307,6 +426,17 @@ impl Settings {
                 "last_update_check" => s.last_update_check = value.parse().unwrap_or(0),
                 "update_seen" => s.update_seen = value.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')).take(32).collect(),
                 "module" => s.module = value.chars().filter(|c| c.is_ascii_hexdigit()).take(16).collect(),
+                "favorites" => {
+                    s.favorites.clear();
+                    for id in value.split(',').filter_map(clean_key).filter(|k| k != ORIGINAL_KEY) {
+                        if !s.favorites.contains(&id) {
+                            s.favorites.push(id);
+                        }
+                    }
+                }
+                "module_sort" => s.module_sort = ModuleSort::from_name(value).unwrap_or(s.module_sort),
+                "last_played" => s.last_played = parse_map(value),
+                "progress" => s.progress = parse_map(value),
                 "display_50hz" => s.display_50 = value != "off",
                 "winner" => s.winner = if value == "furthest" { Winner::Furthest } else { Winner::Score },
                 "last_address" => s.last_address = value.chars().filter(|c| c.is_ascii_digit() || *c == '.' || *c == ':').take(21).collect(),
@@ -353,6 +483,10 @@ mod tests {
             last_update_check: 1_790_000_000,
             update_seen: "0.2.0".into(),
             module: "0123456789abcdef".into(),
+            favorites: vec!["0123456789abcdef".into(), "fedcba9876543210".into()],
+            module_sort: ModuleSort::LastPlayed,
+            last_played: BTreeMap::from([("0123456789abcdef".to_string(), 1_790_000_000), ("fedcba9876543210".to_string(), 5)]),
+            progress: BTreeMap::from([("original".to_string(), 12), ("0123456789abcdef".to_string(), 3)]),
         };
         assert_eq!(Settings::from_text(&s.to_text()), s);
         for menu_sounds in [MenuSoundMode::Off, MenuSoundMode::Soft, MenuSoundMode::Classic] {
@@ -369,6 +503,44 @@ mod tests {
             let s = Settings { scaling, ..Settings::default() };
             assert_eq!(Settings::from_text(&s.to_text()).scaling, scaling);
         }
+    }
+
+    #[test]
+    fn bad_favorites_sorting_and_progress_values_are_dropped() {
+        let d = Settings::default();
+        assert_eq!((d.module_sort, d.favorites.len(), d.last_played.len(), d.progress.len()), (ModuleSort::Popular, 0, 0, 0));
+        let s = Settings::from_text("favorites = 0123456789abcdef,nonsense,0123456789ABCDEF,original\nmodule_sort = sideways\nlast_played = 0123456789abcdef:x,fedcba9876543210:7\nprogress = original:4,short:3\n");
+        assert_eq!(s.favorites, vec!["0123456789abcdef".to_string()]);
+        assert_eq!(s.module_sort, ModuleSort::Popular);
+        assert_eq!(s.last_played, BTreeMap::from([("fedcba9876543210".to_string(), 7)]));
+        assert_eq!(s.progress, BTreeMap::from([("original".to_string(), 4)]));
+        for sort in [ModuleSort::Popular, ModuleSort::Name, ModuleSort::LastPlayed] {
+            assert_eq!(Settings::from_text(&Settings { module_sort: sort, ..Settings::default() }.to_text()).module_sort, sort);
+            assert_eq!(sort.next().next().next(), sort);
+        }
+    }
+
+    #[test]
+    fn toggling_a_favorite_and_noting_progress() {
+        let mut s = Settings::default();
+        s.toggle_favorite("0123456789abcdef");
+        assert!(s.is_favorite("0123456789abcdef"));
+        s.toggle_favorite("0123456789abcdef");
+        assert!(!s.is_favorite("0123456789abcdef"));
+        // neither the original game nor a bad id is a favorite
+        s.toggle_favorite("original");
+        s.toggle_favorite("");
+        s.toggle_favorite("zz");
+        assert!(s.favorites.is_empty());
+        // the best stage only goes up
+        assert!(s.note_stage("", 5));
+        assert!(!s.note_stage("", 4) && !s.note_stage("", 5) && !s.note_stage("", 0));
+        assert!(s.note_stage("", 6));
+        assert_eq!(s.stage_reached(""), Some(6));
+        assert_eq!(s.stage_reached("0123456789abcdef"), None);
+        s.note_played("0123456789abcdef", 99);
+        s.note_played("", 100);
+        assert_eq!(s.last_played.len(), 1);
     }
 
     #[test]

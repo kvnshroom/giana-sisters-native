@@ -22,14 +22,21 @@ case "$os" in
     d="$stage/$base-linux-x86_64"
     mkdir "$d"
     install -m 755 "$bin" "$d/giana-app"
-    cp "$root/assets/icon/icon.png" "$d/giana-sisters.png"
+    cp "$root/assets/icon/icon-128.png" "$d/giana-sisters.png"
+    install -m 755 "$root/tools/install/install.sh" "$root/tools/install/uninstall.sh" "$d/"
     cat >"$d/INSTALL.txt" <<'TXT'
 The Great Giana Sisters - native port (Linux x86_64)
 
-Needs SDL2:  apt install libsdl2-2.0-0     or     dnf install SDL2
+Nothing else to install (SDL2 is built in). In this folder run:
 
-Start ./giana-app. On the first start it asks for your own copy of the game as a .g64 disk image
-(no game data is included). See README.md.
+    ./install.sh
+
+It installs for your user only (no root needed): the game appears in your applications menu and as the command
+"giana-sisters". To remove it again: ./uninstall.sh   (add --purge to also delete settings, high scores and game data).
+Options: --g64 FILE imports your disk image right away, --modules DIR copies ROM modules (*.grom).
+
+Or just start ./giana-app without installing. On the first start it asks for your own copy of the game as a .g64
+disk image (no game data is included). See README.md.
 TXT
     ;;
   windows)

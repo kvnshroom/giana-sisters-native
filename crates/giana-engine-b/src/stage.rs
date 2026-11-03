@@ -65,8 +65,9 @@ pub struct MapRecord {
     pub vrep: u8,
 }
 
-/// Rows of the object Y table `$3205` (25 entries; the map has 20 rows).
-pub const MAX_SPAWN_ROW: u8 = 25;
+/// Rows of the object Y table `$3205`: 28 entries (`Y = 8 * row`, `$00..$D8`), then the spawner scratch `$3221`. The last stage of
+/// Gem Nightmare puts its boss in row 25; rows above 27 would read the scratch bytes and are dropped (untrusted files).
+pub const MAX_SPAWN_ROW: u8 = 28;
 
 /// An enemy/object of the stage. `trigger` is stored as column + 1: the object appears when the scroll column
 /// (`$21`) reaches `trigger - 1`.

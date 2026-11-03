@@ -46,6 +46,7 @@ pub fn cue_for(nav: Nav) -> Option<Cue> {
         Nav::Confirm => Some(Cue::Confirm),
         Nav::Back => Some(Cue::Back),
         Nav::Clear => None,
+        Nav::Favorite | Nav::Sort => Some(Cue::Confirm),
     }
 }
 

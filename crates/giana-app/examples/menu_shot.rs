@@ -149,6 +149,11 @@ fn main() {
                 m.page = page;
                 m.modules = modules.clone();
                 m.active_module = "0123456789abcdef".into();
+                // a favorite, and stages reached (the original game, a module with a long name, a long label)
+                m.settings.favorites = vec!["1123456789abcdef".into()];
+                m.settings.progress.insert("original".into(), 12);
+                m.settings.progress.insert("0123456789abcdef".into(), 33);
+                m.settings.progress.insert("1123456789abcdef".into(), 7);
                 m
             };
             let mut m = main(7);
@@ -168,9 +173,24 @@ fn main() {
             m.modules.clear();
             m.active_module.clear();
             v.push(("modules_none", m, false));
+            let mut m = with(2, Page::Modules);
+            m.modules = vec![
+                ModuleInfo::new("da6409a65d5d148d", "Power Edition 2023", "Someone", "1.0", "", false),
+                ModuleInfo::new("41220fc5c98bafe3", "Gem Nightmare", "Someone", "", "", false),
+                ModuleInfo::new("d4c6852c767aa63d", "The Furry Knibble Girls", "Someone", "1.04", "", false),
+                ModuleInfo::new("99bee9fb6d14e7d1", "Frankie's Horror Trip 1", "Someone", "", "", false),
+            ];
+            m.settings.favorites = vec!["41220fc5c98bafe3".into(), "d4c6852c767aa63d".into()];
+            m.settings.progress.insert("d4c6852c767aa63d".into(), 20);
+            m.settings.module_sort = giana_app::settings::ModuleSort::Name;
+            m.active_module = "41220fc5c98bafe3".into();
+            v.push(("modules_names", m, false));
             let mut m = with(0, Page::Modules);
             m.modules = (0..12).map(|i| ModuleInfo::new(&format!("{i:016x}"), &format!("Module number {i}"), "me", "1.0", "", false)).collect();
             m.active_module = m.modules[6].id.clone();
+            m.settings.favorites = vec![m.modules[2].id.clone(), m.modules[9].id.clone()];
+            m.settings.progress.insert(m.modules[9].id.clone(), 99);
+            m.settings.module_sort = giana_app::settings::ModuleSort::LastPlayed;
             m.cursor = 11;
             v.push(("modules_long", m, false));
             for (name, sel, cursor) in [("module_new", Some(0), 0), ("module_code", Some(1), 1), ("module_plain", Some(2), 0), ("module_original", None, 0)] {

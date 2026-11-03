@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "giana-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "giana-audio",
@@ -293,11 +293,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "giana-c30-oracle"
+version = "0.1.0"
+dependencies = [
+ "giana-engine-c",
+ "giana-module",
+ "giana-render",
+]
+
+[[package]]
 name = "giana-core"
 version = "0.1.0"
 dependencies = [
  "giana-engine-b",
  "giana-extract",
+ "giana-module",
  "giana-render",
 ]
 

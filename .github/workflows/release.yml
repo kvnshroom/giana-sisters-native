@@ -9,23 +9,16 @@ env:
   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   CARGO_TERM_COLOR: always
 jobs:
-  build:
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - { os: ubuntu-latest, kind: linux }
-          - { os: windows-latest, kind: windows }
-          - { os: macos-latest, kind: macos }
-    runs-on: ${{ matrix.os }}
+  # The release is created first, without packages; every system uploads its package as soon as it is built, so Linux
+  # and Windows do not wait for a slow macOS runner. The game offers an update only once the package for its own system
+  # and SHA256SUMS.txt are there (update.rs, Release::has_package).
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.kind == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - name: Version from tag
-        id: v
-        shell: bash
+      - name: Version and release notes
         run: |
           version="${GITHUB_REF_NAME#v}"
           cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/giana-app/Cargo.toml | head -1)"
@@ -33,87 +26,127 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match crates/giana-app/Cargo.toml version $cargo_version" >&2
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Install SDL2 (Linux, linked dynamically)
-        if: matrix.kind == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
-      - name: Build (Linux)
-        if: matrix.kind == 'linux'
-        run: cargo build --release --locked -p giana-app
-      - name: Build (Windows, SDL2 built in)
-        if: matrix.kind == 'windows'
-        run: cargo build --release --locked -p giana-app --features bundled-sdl
-      - name: Build (macOS, both architectures, SDL2 built in)
-        if: matrix.kind == 'macos'
-        run: |
-          for t in aarch64-apple-darwin x86_64-apple-darwin; do
-            cargo build --release --locked -p giana-app --features bundled-sdl --target "$t"
-          done
-          mkdir -p target/universal
-          lipo -create -output target/universal/giana-app \
-            target/aarch64-apple-darwin/release/giana-app target/x86_64-apple-darwin/release/giana-app
-          lipo -info target/universal/giana-app
-      - name: Locate binary
-        id: bin
-        shell: bash
-        run: |
-          case "${{ matrix.kind }}" in
-            linux) p=target/release/giana-app ;;
-            windows) p=target/release/giana-app.exe ;;
-            macos) p=target/universal/giana-app ;;
-          esac
-          echo "path=$p" >> "$GITHUB_OUTPUT"
-      - name: Sanity checks (size, starts)
-        shell: bash
-        run: |
-          size=$(wc -c < "${{ steps.bin.outputs.path }}")
-          echo "binary size: $size bytes"
-          # A binary with game data inside would be far bigger. The real comparison with the original files is
-          # tools/release/check_binary.sh in the private repository, run before tagging.
-          if [ "$size" -gt 40000000 ]; then echo "binary is suspiciously large" >&2; exit 1; fi
-          "${{ steps.bin.outputs.path }}" --version
-      - name: Package
-        shell: bash
-        run: .github/scripts/package.sh "${{ matrix.kind }}" "${{ steps.v.outputs.version }}" "${{ steps.bin.outputs.path }}" dist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.kind }}
-          path: dist/*
-          if-no-files-found: error
-
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: dist-*
-          merge-multiple: true
-          path: dist
-      - name: Checksums and release notes
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          cd dist
-          ls -l
-          for f in "giana-sisters-native-$version-linux-x86_64.tar.gz" \
-                   "giana-sisters-native-$version-windows-x86_64.zip" \
-                   "giana-sisters-native-$version-macos-universal.tar.gz"; do
-            test -f "$f" || { echo "missing $f" >&2; exit 1; }
-          done
-          sha256sum giana-sisters-native-* > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-          cd ..
           awk -v v="$version" '
             $0 ~ "^## \\[?" v "\\]?([ ]|$)" { on=1; next }
             on && /^## / { exit }
             on { print }' CHANGELOG.md > notes.md
           test -s notes.md || { echo "no CHANGELOG.md section for $version" >&2; exit 1; }
-      - name: Create GitHub release
+      - name: Create the GitHub release (packages follow)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME exists (a re-run)"
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          fi
+
+  build-linux:
+    needs: release
+    uses: ./.github/workflows/build-package.yml
+    with: { kind: linux, os: ubuntu-22.04 }
+
+  upload-linux:
+    # only this small job can write to the release: it uploads the package built read-only above
+    needs: build-linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux
+          path: dist
+      - name: Upload the package and refresh SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" dist/giana-sisters-native-* --clobber
+          # the checksum file lists every package uploaded so far; two uploads at once may each miss the other's
+          # line, the `checksums` job at the end writes the complete file
+          mkdir sums && cd sums
+          gh release download "$GITHUB_REF_NAME" -p 'giana-sisters-native-*'
+          sha256sum giana-sisters-native-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber
+
+  build-windows:
+    needs: release
+    uses: ./.github/workflows/build-package.yml
+    with: { kind: windows, os: windows-latest }
+
+  upload-windows:
+    # only this small job can write to the release: it uploads the package built read-only above
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-windows
+          path: dist
+      - name: Upload the package and refresh SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" dist/giana-sisters-native-* --clobber
+          # the checksum file lists every package uploaded so far; two uploads at once may each miss the other's
+          # line, the `checksums` job at the end writes the complete file
+          mkdir sums && cd sums
+          gh release download "$GITHUB_REF_NAME" -p 'giana-sisters-native-*'
+          sha256sum giana-sisters-native-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber
+
+  build-macos:
+    needs: release
+    uses: ./.github/workflows/build-package.yml
+    with: { kind: macos, os: macos-latest }
+
+  upload-macos:
+    # only this small job can write to the release: it uploads the package built read-only above
+    needs: build-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-macos
+          path: dist
+      - name: Upload the package and refresh SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" dist/giana-sisters-native-* --clobber
+          # the checksum file lists every package uploaded so far; two uploads at once may each miss the other's
+          # line, the `checksums` job at the end writes the complete file
+          mkdir sums && cd sums
+          gh release download "$GITHUB_REF_NAME" -p 'giana-sisters-native-*'
+          sha256sum giana-sisters-native-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber
+
+  checksums:
+    # after all uploads, also when one failed: the final checksum file from the packages that are really there
+    needs: [upload-linux, upload-windows, upload-macos]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: SHA256SUMS.txt from the uploaded packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir sums && cd sums
+          gh release download "$GITHUB_REF_NAME" -p 'giana-sisters-native-*'
+          ls -l
+          sha256sum giana-sisters-native-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber

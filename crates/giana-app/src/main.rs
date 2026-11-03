@@ -186,6 +186,10 @@ struct Pending {
     /// play this ROM module (its id, empty for the original game): save the choice and start again
     play_module: Option<String>,
     remove_module: Option<String>,
+    /// `F` / `Y` on a module: favorite on or off (module ids)
+    favorite_modules: Vec<String>,
+    /// the next order of the modules page
+    sort_modules: bool,
     /// `PRESENTATION` on the options page asked for the disk image (AUTHENTIC needs a file older data folders lack)
     authentic_data: bool,
 }
@@ -214,6 +218,8 @@ fn apply_outcome(outcome: Outcome, open: &mut Option<Menu>, pending: &mut Pendin
         Outcome::ModuleAdd => pending.add_module = true,
         Outcome::ModulePlay(id) => pending.play_module = Some(id),
         Outcome::ModuleRemove(id) => pending.remove_module = Some(id),
+        Outcome::ModuleFavorite(id) => pending.favorite_modules.push(id),
+        Outcome::ModuleSort => pending.sort_modules = true,
         Outcome::AuthenticData => pending.authentic_data = true,
         Outcome::AddScore(entry) => pending.new_score = Some(entry),
         Outcome::Changed => {
@@ -340,17 +346,17 @@ fn address_char(key: Keycode) -> Option<char> {
 }
 
 /// The modules for the menu.
-fn module_infos(store: Option<&Store>, data_dir: &std::path::Path) -> Vec<ModuleInfo> {
+fn module_infos(store: Option<&Store>, data_dir: &std::path::Path, settings: &Settings) -> Vec<ModuleInfo> {
     let Some(store) = store else { return Vec::new() };
-    store
-        .list(Some(data_dir))
-        .iter()
+    let mut list = store.list(Some(data_dir));
+    modules::order(&mut list, settings.module_sort, &settings.favorites, &settings.last_played);
+    list.iter()
         .map(|i| ModuleInfo::new(&i.id, &i.meta.name, &i.meta.author, &i.meta.version, &i.meta.description, i.code_changes.unwrap_or(0) > 0))
         .collect()
 }
 
 /// Adds a file to the modules. The menu shows the module, or says in plain words why it could not be added.
-fn add_module_file(store: Option<&Store>, data_dir: &std::path::Path, file: &std::path::Path, open: &mut Option<Menu>, infos: &mut Vec<ModuleInfo>) {
+fn add_module_file(store: Option<&Store>, data_dir: &std::path::Path, file: &std::path::Path, settings: &Settings, open: &mut Option<Menu>, infos: &mut Vec<ModuleInfo>) {
     let Some(store) = store else {
         if let Some(m) = open.as_mut() {
             m.module_added(None, Some("there is no folder for the modules".to_string()));
@@ -360,7 +366,7 @@ fn add_module_file(store: Option<&Store>, data_dir: &std::path::Path, file: &std
     match store.add(file, data_dir) {
         Ok(added) => {
             println!("ROM module added: {} ({})", added.meta.name, added.id);
-            *infos = module_infos(Some(store), data_dir);
+            *infos = module_infos(Some(store), data_dir, settings);
             if let Some(m) = open.as_mut() {
                 let active = m.active_module.clone();
                 m.set_modules(infos, &active);
@@ -377,6 +383,25 @@ fn add_module_file(store: Option<&Store>, data_dir: &std::path::Path, file: &std
 }
 
 /// `--list-modules`
+/// `--add-module FILE`: checks the module (or turns a hack's disk image into one) against the game data and stores it.
+fn add_module_command(file: &std::path::Path, data: Option<&std::path::Path>) {
+    let Some(store) = Store::default_location() else {
+        eprintln!("giana-app: there is no folder for the modules.");
+        std::process::exit(1);
+    };
+    let Some(data_dir) = firstrun::locate(data) else {
+        eprintln!("giana-app: the game data is not there yet: import your .g64 first (giana-app --import FILE.g64).");
+        std::process::exit(1);
+    };
+    match store.add(file, &data_dir) {
+        Ok(m) => println!("Added ROM module {} ({})", m.meta.name, m.id),
+        Err(e) => {
+            eprintln!("giana-app: {}: {e}", file.display());
+            std::process::exit(1);
+        }
+    }
+}
+
 fn list_modules(data: Option<&std::path::Path>) {
     let Some(store) = Store::default_location() else {
         eprintln!("giana-app: there is no folder for the modules.");
@@ -397,7 +422,8 @@ fn list_modules(data: Option<&std::path::Path>) {
             k if k.is_empty() => String::new(),
             k => format!("  ({k})"),
         };
-        println!("  {}  {}  V{}  by {}{notes}{kind}", m.id, m.meta.name, m.meta.version, m.meta.author);
+        let version = if m.meta.version.is_empty() { String::new() } else { format!("  V{}", m.meta.version) };
+        println!("  {}  {}{version}  by {}{notes}{kind}", m.id, m.meta.name, m.meta.author);
     }
 }
 
@@ -422,7 +448,7 @@ fn make_module_command(m: cli::MakeModule) {
     if applied.engine.is_some() && applied.family != giana_module::Family::Tnw1989 {
         println!(
             "It is a game of the 7A3 construction-set engine, with {} stage, monster and treasure room files from the disk. \
-             Its own engine plays it; until that engine is part of this program the game does not play as intended.",
+             The port plays it with its native version of that engine.",
             applied.files.len()
         );
     } else if applied.code_changes.is_empty() {
@@ -451,6 +477,7 @@ fn main() {
         Command::Help => println!("{}", cli::HELP),
         Command::Version => println!("{}", cli::version_text()),
         Command::ListModules(data) => list_modules(data.as_deref()),
+        Command::AddModule(file, data) => add_module_command(&file, data.as_deref()),
         Command::MakeModule(m) => make_module_command(m),
         Command::CheckUpdate => {
             let (text, ok) = giana_app::update::check_report();
@@ -1035,6 +1062,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 giana_core::features::set_tnw((applied.engine.as_deref() == Some("t")).then(|| applied.files.clone()));
                 println!("ROM module: {} ({id})", meta.name);
                 module_id = id.to_string();
+                // LAST PLAYED on the modules page
+                settings.note_played(id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+                if let Some(path) = settings_path() {
+                    let _ = settings.save(&path);
+                }
                 loaded = true;
             }
             Err(e) => {
@@ -1047,7 +1079,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         firstrun::load(&data_dir).map_err(|e| startup_error("Could not load the game data", e, "Delete the data folder and start the game again to extract it anew."))?;
     }
     println!("Game data: {}", data_dir.display());
-    let mut module_list = module_infos(store.as_ref(), &data_dir);
+    let mut module_list = module_infos(store.as_ref(), &data_dir, &settings);
     let mut authentic_avail = authentic::availability(&data_dir, !module_id.is_empty());
 
     // Initialize Native Chris Hülsbeck Sound Synthesizer via SDL2 Audio
@@ -1196,7 +1228,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
 
                 // A file dropped on the window while the page of the ROM modules is open is added
                 Event::DropFile { filename, .. } if open_menu.as_ref().is_some_and(|m| m.page == menu::Page::Modules) => {
-                    add_module_file(store.as_ref(), &data_dir, std::path::Path::new(&filename), &mut open_menu, &mut module_list);
+                    add_module_file(store.as_ref(), &data_dir, std::path::Path::new(&filename), &settings, &mut open_menu, &mut module_list);
                 }
 
                 Event::Window { win_event: WindowEvent::FocusLost, .. } => {
@@ -1418,8 +1450,15 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             display_hz = canvas.window().display_mode().map_or(0, |m| m.refresh_rate);
         }
         if std::mem::take(&mut pending.add_module) {
-            // the dialog must run on this (main) thread; it blocks the window while it is open
+            // the dialog must run on this (main) thread; it blocks the window while it is open. The music is driven by
+            // the game's frames, so without new frames the sound device would loop its last notes: it pauses meanwhile.
+            if let Some(d) = audio_device.as_mut() {
+                d.pause();
+            }
             let file = firstrun::choose_file(firstrun::FileKind::RomModule);
+            if let Some(d) = audio_device.as_mut() {
+                d.resume();
+            }
             // keys and clicks from while the dialog was open are not meant for the game
             held.clear();
             event_pump.pump_events();
@@ -1430,14 +1469,14 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             if let Some(file) = file.or(dropped) {
-                add_module_file(store.as_ref(), &data_dir, &file, &mut open_menu, &mut module_list);
+                add_module_file(store.as_ref(), &data_dir, &file, &settings, &mut open_menu, &mut module_list);
             }
         }
         if let Some(id) = pending.remove_module.take() {
             if let Some(store) = store.as_ref() {
                 match store.remove(&id) {
                     Ok(()) => {
-                        module_list = module_infos(Some(store), &data_dir);
+                        module_list = module_infos(Some(store), &data_dir, &settings);
                         // a module that was chosen but not loaded (it failed) is not chosen any more
                         if settings.module == id {
                             settings.module.clear();
@@ -1452,6 +1491,18 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+        }
+        let favorites = std::mem::take(&mut pending.favorite_modules);
+        let sort = std::mem::take(&mut pending.sort_modules);
+        if sort || !favorites.is_empty() {
+            for id in &favorites {
+                settings.toggle_favorite(id);
+            }
+            if sort {
+                settings.module_sort = settings.module_sort.next();
+            }
+            module_list = module_infos(store.as_ref(), &data_dir, &settings);
+            save_settings(&settings, &mut open_menu);
         }
         if let Some(id) = pending.play_module.take() {
             // Another module means another set of data: the game starts again with it (see `modules::spawn_restart`)
@@ -1600,6 +1651,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 };
             } else if open_menu.is_none() {
                 game.update(&input);
+            }
+            // The best stage reached with this module (or the original game) for the modules page. A game started
+            // with `--stage` or played with the debug keys says nothing about how far the player got.
+            if game.screen == GameScreen::InGame && !options.debug && options.stage.is_none() && settings.note_stage(&module_id, game.stage) {
+                save_settings(&settings, &mut open_menu);
             }
 
             let ended = session.as_ref().and_then(|s| s.ended);

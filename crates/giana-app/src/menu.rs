@@ -19,10 +19,14 @@ pub enum Nav {
     Confirm,
     Back,
     Clear,
+    /// the modules page: add the module to the favorites or take it out
+    Favorite,
+    /// the modules page: the next way to order the list
+    Sort,
 }
 
 /// Fixed menu keys, whatever the bindings say: the first one of each is the one the hints show.
-const MENU_KEYS: [(Nav, &[Keycode]); 7] = [
+const MENU_KEYS: [(Nav, &[Keycode]); 9] = [
     (Nav::Up, &[Keycode::Up, Keycode::W]),
     (Nav::Down, &[Keycode::Down, Keycode::S]),
     (Nav::Left, &[Keycode::Left, Keycode::A]),
@@ -30,17 +34,21 @@ const MENU_KEYS: [(Nav, &[Keycode]); 7] = [
     (Nav::Confirm, &[Keycode::Return, Keycode::KpEnter, Keycode::Space]),
     (Nav::Back, &[Keycode::Escape, Keycode::Backspace]),
     (Nav::Clear, &[Keycode::Delete]),
+    (Nav::Favorite, &[Keycode::F]),
+    (Nav::Sort, &[Keycode::O]),
 ];
 
 /// Fixed menu buttons.
-const MENU_BUTTONS: [(Nav, &[Button]); 7] = [
+const MENU_BUTTONS: [(Nav, &[Button]); 8] = [
     (Nav::Up, &[Button::DPadUp]),
     (Nav::Down, &[Button::DPadDown]),
     (Nav::Left, &[Button::DPadLeft]),
     (Nav::Right, &[Button::DPadRight]),
     (Nav::Confirm, &[Button::A]),
     (Nav::Back, &[Button::B, Button::Start]),
+    // Y is `Clear` everywhere, and `Favorite` on the modules page (see `step_modules`)
     (Nav::Clear, &[Button::Y]),
+    (Nav::Sort, &[Button::X]),
 ];
 
 /// The keys that do `nav` in the menus.
@@ -148,10 +156,30 @@ impl ModuleInfo {
     }
 }
 
+/// Characters of the list label of a module (name and version, see `ModuleInfo::list_label`) on the modules page when
+/// the row has nothing else on it. The right end of a row holds the favorite star in the last column and, before it,
+/// the stage reached (`label_room` takes that room from the label).
+pub const LIST_LABEL_MAX: usize = 30;
+
+/// Characters left for the list label of a module that has reached `stage`: a row with a stage on it is cut shorter.
+pub fn label_room(stage: Option<u32>) -> usize {
+    match progress_text(stage).chars().count() {
+        0 => LIST_LABEL_MAX,
+        n => LIST_LABEL_MAX - n - 2,
+    }
+}
+
+/// The stage that was reached, for a row of the modules page (dim, right aligned): `STAGE 12`; empty when never played.
+pub fn progress_text(stage: Option<u32>) -> String {
+    stage.map(|s| format!("STAGE {}", s.min(99))).unwrap_or_default()
+}
+
 /// The lines of the detail page of a module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DetailItem {
     Play,
+    /// `FAVORITE: ON / OFF` (modules only, not the original game)
+    Favorite,
     Remove,
     Back,
 }
@@ -160,6 +188,7 @@ impl DetailItem {
     pub(crate) fn label(self) -> &'static str {
         match self {
             DetailItem::Play => "PLAY THIS",
+            DetailItem::Favorite => "FAVORITE",
             DetailItem::Remove => "REMOVE",
             DetailItem::Back => "BACK",
         }
@@ -395,6 +424,10 @@ pub enum Outcome {
     ModulePlay(String),
     /// delete this module
     ModuleRemove(String),
+    /// add the module to the favorites or take it out (its id)
+    ModuleFavorite(String),
+    /// the next way to order the modules
+    ModuleSort,
 }
 
 pub(crate) const RESET_ROW: usize = ACTIONS;
@@ -595,6 +628,9 @@ impl Menu {
             Nav::Up => self.cursor = (self.cursor + n - 1) % n,
             Nav::Down => self.cursor = (self.cursor + 1) % n,
             Nav::Back => self.leave_modules(),
+            Nav::Sort => return Outcome::ModuleSort,
+            // Y on the controller is `Clear`: on this page it marks a favorite
+            Nav::Favorite | Nav::Clear if (1..=m).contains(&self.cursor) => return Outcome::ModuleFavorite(self.modules[self.cursor - 1].id.clone()),
             Nav::Confirm if self.cursor == m + 1 => return Outcome::ModuleAdd,
             Nav::Confirm if self.cursor == m + 2 => self.leave_modules(),
             Nav::Confirm => {
@@ -621,6 +657,9 @@ impl Menu {
     pub(crate) fn detail_items(&self) -> Vec<DetailItem> {
         let removable = self.selected_module().is_some() && !self.selected_is_active();
         let mut v = vec![DetailItem::Play];
+        if self.selected_module().is_some() {
+            v.push(DetailItem::Favorite);
+        }
         if removable {
             v.push(DetailItem::Remove);
         }
@@ -648,6 +687,9 @@ impl Menu {
                     return Outcome::ModulePlay(self.selected_module().map_or(String::new(), |m| m.id.clone()));
                 }
             }
+            (Nav::Confirm, DetailItem::Favorite) | (Nav::Favorite | Nav::Clear, _) if self.selected_module().is_some() => {
+                return Outcome::ModuleFavorite(self.selected_module().map_or(String::new(), |m| m.id.clone()));
+            }
             (Nav::Confirm, DetailItem::Remove) => {
                 self.page = Page::ConfirmRemove;
                 self.cursor = 1;
@@ -672,7 +714,7 @@ impl Menu {
             }
             Nav::Confirm | Nav::Back => {
                 self.page = Page::ModuleDetail;
-                self.cursor = 1;
+                self.cursor = self.detail_items().iter().position(|&i| i == DetailItem::Remove).unwrap_or(0);
             }
             _ => {}
         }
@@ -688,9 +730,20 @@ impl Menu {
         if self.modules == modules {
             return;
         }
+        // a new order (favorites, sorting) keeps the cursor and the open page on the same module
+        let on_list = |this: &Self| (this.page == Page::Modules && this.cursor >= 1).then(|| this.modules.get(this.cursor - 1).map(|m| m.id.clone())).flatten();
+        let list_id = on_list(self);
+        let sel_id = self.selected_module().map(|m| m.id.clone());
         self.modules = modules.to_vec();
-        self.module_sel = self.module_sel.filter(|&i| i < self.modules.len());
+        let find = |this: &Self, id: &Option<String>| id.as_ref().and_then(|id| this.modules.iter().position(|m| m.id == *id));
+        self.module_sel = match (&sel_id, find(self, &sel_id)) {
+            (Some(_), found) => found,
+            (None, _) => None,
+        };
         if self.page == Page::Modules {
+            if let Some(i) = find(self, &list_id) {
+                self.cursor = i + 1;
+            }
             self.cursor = self.cursor.min(self.module_rows() - 1);
         }
     }
@@ -1473,14 +1526,14 @@ mod tests {
         m.step(Nav::Back, &mut b);
         // the module that is played: no REMOVE either
         nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Confirm]);
-        assert_eq!(m.detail_items(), vec![DetailItem::Play, DetailItem::Back]);
+        assert_eq!(m.detail_items(), vec![DetailItem::Play, DetailItem::Favorite, DetailItem::Back]);
         m.step(Nav::Back, &mut b);
-        // any other: PLAY THIS, REMOVE, BACK; the question starts on NO
-        nav(&mut m, &mut b, &[Nav::Up, Nav::Confirm, Nav::Down, Nav::Confirm]);
+        // any other: PLAY THIS, FAVORITE, REMOVE, BACK; the question starts on NO
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Confirm, Nav::Down, Nav::Down, Nav::Confirm]);
         assert_eq!(m.page, Page::ConfirmRemove);
         assert_eq!(m.cursor, 1);
         assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None, "NO");
-        assert_eq!((m.page, m.cursor), (Page::ModuleDetail, 1));
+        assert_eq!((m.page, m.cursor), (Page::ModuleDetail, 2));
         m.step(Nav::Confirm, &mut b);
         assert_eq!(m.step(Nav::Back, &mut b), Outcome::None, "back is NO too");
         assert_eq!(m.page, Page::ModuleDetail);
@@ -1491,6 +1544,102 @@ mod tests {
         m.set_modules(&two_modules()[1..], "bbbbbbbbbbbbbbbb");
         assert_eq!(m.module_rows(), 4);
         assert!(m.cursor < m.module_rows());
+    }
+
+    const ID_A: &str = "aaaaaaaaaaaaaaaa";
+    const ID_B: &str = "bbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn f_and_y_mark_a_favorite_on_a_module_row_but_not_on_the_original_game() {
+        let (mut m, mut b) = modules_page();
+        assert_eq!(m.step(Nav::Favorite, &mut b), Outcome::None, "the original game is no favorite");
+        m.step(Nav::Down, &mut b);
+        assert_eq!(m.step(Nav::Favorite, &mut b), Outcome::ModuleFavorite(ID_A.into()));
+        // Y on the controller is `Clear`
+        m.step(Nav::Down, &mut b);
+        assert_eq!(m.step(Nav::Clear, &mut b), Outcome::ModuleFavorite(ID_B.into()));
+        // ADD and BACK rows do nothing
+        nav(&mut m, &mut b, &[Nav::Down]);
+        assert_eq!(m.step(Nav::Favorite, &mut b), Outcome::None);
+        assert_eq!(m.step(Nav::Sort, &mut b), Outcome::ModuleSort, "sorting works from every row");
+        assert_eq!(nav_for_key(Keycode::F, false), Some(Nav::Favorite));
+        assert_eq!(nav_for_key(Keycode::O, false), Some(Nav::Sort));
+        assert_eq!(nav_for_button(Button::X), Some(Nav::Sort));
+        assert_eq!(nav_for_button(Button::Y), Some(Nav::Clear));
+        // S moves down, so sorting is not on S
+        assert_eq!(nav_for_key(Keycode::S, false), Some(Nav::Down));
+    }
+
+    #[test]
+    fn the_detail_page_has_a_favorite_item_for_modules_only() {
+        let (mut m, mut b) = modules_page();
+        m.step(Nav::Confirm, &mut b);
+        assert!(!m.detail_items().contains(&DetailItem::Favorite), "not for the original game");
+        assert_eq!(m.step(Nav::Favorite, &mut b), Outcome::None);
+        m.step(Nav::Back, &mut b);
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]);
+        assert_eq!(m.detail_items(), vec![DetailItem::Play, DetailItem::Favorite, DetailItem::Remove, DetailItem::Back]);
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::ModuleFavorite(ID_A.into()));
+        assert_eq!((m.page, m.cursor), (Page::ModuleDetail, 1), "the cursor stays on the item");
+        assert_eq!(m.step(Nav::Favorite, &mut b), Outcome::ModuleFavorite(ID_A.into()), "F works on every item");
+    }
+
+    #[test]
+    fn a_new_order_keeps_the_cursor_and_the_detail_page_on_the_same_module() {
+        let (mut m, mut b) = modules_page();
+        nav(&mut m, &mut b, &[Nav::Down]);
+        assert_eq!(m.cursor, 1);
+        // the app puts the other module first (it became a favorite)
+        let mut flipped = two_modules();
+        flipped.reverse();
+        m.set_modules(&flipped, "");
+        assert_eq!((m.cursor, m.modules[m.cursor - 1].id.as_str()), (2, ID_A), "the cursor follows the module");
+        // on the detail page the selected module stays selected
+        m.step(Nav::Confirm, &mut b);
+        assert_eq!(m.selected_module().map(|x| x.id.as_str()), Some(ID_A));
+        m.set_modules(&two_modules(), "");
+        assert_eq!(m.selected_module().map(|x| x.id.as_str()), Some(ID_A));
+        // the original game stays selected as well
+        m.step(Nav::Back, &mut b);
+        m.cursor = 0;
+        m.step(Nav::Confirm, &mut b);
+        m.set_modules(&flipped, "");
+        assert!(m.selected_module().is_none() && m.page == Page::ModuleDetail);
+    }
+
+    #[test]
+    fn a_row_with_star_and_progress_fits_the_panel() {
+        // the columns of `draw_modules`: label, a gap, the stage, a gap, the star in the last column
+        let panel_w = 38;
+        let star = panel_w - 3;
+        for stage in [None, Some(1), Some(12), Some(99)] {
+            let label_end = crate::ui::Panel::LABEL_COL + label_room(stage);
+            let progress = progress_text(stage).chars().count();
+            let progress_start = panel_w - 4 - progress;
+            if progress > 0 {
+                assert!(label_end < progress_start, "label of {stage:?} reaches the stage");
+                assert_eq!(progress_start - label_end, 2, "two gaps between label and stage");
+            } else {
+                assert!(label_end < star, "label reaches the star");
+            }
+        }
+        assert_eq!(label_room(None), LIST_LABEL_MAX);
+        assert!(progress_text(Some(12)).starts_with("STAGE 12") && progress_text(None).is_empty());
+        assert_eq!(progress_text(Some(250)), "STAGE 99", "never wider than two digits");
+        // long names are cut, the version stays
+        let long = ModuleInfo::new("0", &"W".repeat(24), "", "1.0", "", false);
+        for stage in [None, Some(7), Some(99)] {
+            let room = label_room(stage);
+            let label = long.list_label(room);
+            assert!(label.chars().count() <= room && label.ends_with("  V1.0"), "{label:?}");
+            let fav = ModuleInfo::new("0", "Frankie's Horror Trip 2", "", "12.34", "", false);
+            assert!(fav.list_label(room).chars().count() <= room);
+        }
+        // a module that was not played keeps all of its name
+        let trip = ModuleInfo::new("0", "Frankie's Horror Trip 2", "", "", "", false);
+        assert_eq!(trip.list_label(label_room(None)), "FRANKIE'S HORROR TRIP 2");
+        // the star is no character a name can bring along
+        assert_eq!(safe_text("\u{2605}"), "?");
     }
 
     #[test]

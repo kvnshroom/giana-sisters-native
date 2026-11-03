@@ -71,6 +71,9 @@ impl GameState {
     /// A byte of the program's memory as the sprite program sees it: the loaded monster file lives at `$7505` (its record is
     /// followed by the movement script), everything else comes from the image.
     pub(super) fn b_mem(&self, a: usize) -> u8 {
+        if let Some(g) = &self.eb().gem {
+            return g.byte(a);
+        }
         let m = &self.eb().monster_mem;
         match a.checked_sub(0x7505).and_then(|i| m.get(i)) {
             Some(&v) => v,
@@ -179,7 +182,7 @@ impl GameState {
             return;
         }
         // treasure rooms: their object list is not known (see the doc, 5.4)
-        if self.eb().current.number >= giana_engine_b::FIRST_ROOM {
+        if self.eb().is_room(self.eb().current.number) {
             return;
         }
         // The hack indexes the object list with the byte `$0474` (offset of an entry, +3 per object): lists of more than 85
@@ -576,13 +579,15 @@ impl GameState {
         if self.bm(0x754 + x) & 0x80 != 0 && self.bm(0x7F4 + x) & 0x80 == 0 {
             let ys = 2 * x;
             if self.player_y_c64 >= self.spr(ys + 1) {
-                // Giana is lower
-                if self.bm(0x7D0 + x) != 0 {
-                    self.set_bm(0x7D0 + x, 0);
-                    if self.bm(0x774 + x) == 0 {
-                        let p = self.bm(0x724 + x);
-                        self.set_sptr(x, p);
-                    }
+                // Giana is lower (`$8CA3`: already falling goes on to `$8C9D`, which clears `$07F4`)
+                if self.bm(0x7D0 + x) == 0 {
+                    self.set_bm(0x7F4 + x, 0);
+                    return;
+                }
+                self.set_bm(0x7D0 + x, 0);
+                if self.bm(0x774 + x) == 0 {
+                    let p = self.bm(0x724 + x);
+                    self.set_sptr(x, p);
                 }
                 return;
             }
@@ -614,8 +619,11 @@ impl GameState {
         let f1 = self.bm(0x754 + x) & 0x7F;
         self.set_bz(0xF1, f1);
         let mode = self.bm(0x784 + x);
+        // `$7CEC`: the branch is chosen first, then the chase code `$8C6F` runs in either of them (it may switch `$07D0`,
+        // which only matters from the next frame on, and the falling code below reads it as its step)
+        let rising = self.bm(0x7D0 + x) != 0;
         self.b_chase_jump(x); // $8C6F
-        if self.bm(0x7D0 + x) == 0 {
+        if !rising {
             // falling (the arc table is walked backwards)
             let a;
             if mode == 1 {

@@ -1,0 +1,12 @@
+[package]
+name = "giana-c30-oracle"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "TEST/DEV ORACLE ONLY: runs the original code of the 30A preview (engine family C) on a 6502 with a raster-line VIC model, so that native ports can be hooked in and diffed per frame. Never a dependency of giana-app."
+publish = false
+
+[dependencies]
+giana-module = { path = "../giana-module" }
+giana-engine-c = { path = "../giana-engine-c" }
+giana-render = { path = "../giana-render" }

@@ -4,6 +4,7 @@
 //! Listing needs no game data (the names are in the files); everything that applies a module reads `ingame.bin` and
 //! `f_2.prg` from the data folder.
 
+use crate::settings::ModuleSort;
 use giana_core::data::GameData;
 use giana_module::{Applied, Meta, Module};
 use std::path::{Path, PathBuf};
@@ -35,6 +36,7 @@ impl Installed {
         match (self.engine.as_deref(), self.files) {
             (None, 0) => String::new(),
             (None, n) => format!("{n} files"),
+            (Some(e), n) if e == giana_module::tnw::ENGINE_T => format!("TNW game, {n} stage files"),
             (Some(_), n) => format!("construction-set game, {n} stage and monster files"),
         }
     }
@@ -128,6 +130,48 @@ fn in_words(e: &str) -> String {
 pub fn spawn_restart() -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     std::process::Command::new(exe).args(crate::cli::restart_args(std::env::args().skip(1))).spawn().map(|_| ())
+}
+
+/// How popular the known modules are, for `SORT: POPULAR`: the number of downloads on CSDb (checked 2026-11-03). The
+/// 1989 Construction Kit hacks have no download numbers there; they come after the others in the order the scene
+/// rates them, with made-up weights below the smallest real count. The 30th Anniversary preview (4208 downloads) has no
+/// module id yet.
+const POPULARITY: [(&str, u32); 14] = [
+    ("da6409a65d5d148d", 3118), // Power Edition 2023
+    ("41220fc5c98bafe3", 2851), // Gem Nightmare
+    ("f6d968ea0fe0aaf0", 1974), // construction-set game
+    ("389365968042ca20", 1364), // Super Marioahner Sisters
+    ("078bcb477d8ea024", 1082), // Giana Sisters Junior
+    ("6c4f772fd8d56dea", 716),  // Ridley X
+    ("5430d50d3b6dc351", 646),  // TNW Giana Sisters 2
+    ("d4c6852c767aa63d", 600),  // The Furry Knibble Girls
+    ("f932c6d7d251cfa5", 550),  // Power Sisters
+    ("99bee9fb6d14e7d1", 500),  // Frankie's Horror Trip 1
+    ("15a0495c23074971", 450),  // Frankie's Horror Trip 2
+    ("a42d3adbef5a03c3", 400),  // Gitty's Dreams 2
+    ("fe3765783b2ed064", 350),  // The Gitty's News
+    ("b8227c4074989ca7", 300),  // Gitty's Dreams 1
+];
+
+/// The popularity weight of a module (bigger is more popular), `None` for a module the table does not know.
+pub fn popularity(id: &str) -> Option<u32> {
+    POPULARITY.iter().find(|(known, _)| *known == id).map(|&(_, w)| w)
+}
+
+/// Puts the modules in the order of the modules page: favorites first (in the order of the sort), then the rest.
+/// `Popular`: known modules by weight, unknown ones after them by name. `Name`: by name. `LastPlayed`: the one started
+/// last first, never played ones after them by name.
+pub fn order(list: &mut [Installed], sort: ModuleSort, favorites: &[String], last_played: &std::collections::BTreeMap<String, u64>) {
+    let name = |m: &Installed| m.meta.name.to_ascii_uppercase();
+    list.sort_by(|a, b| {
+        let fav = |m: &Installed| favorites.contains(&m.id);
+        let by_name = || name(a).cmp(&name(b)).then(a.id.cmp(&b.id));
+        fav(b).cmp(&fav(a)).then_with(|| match sort {
+            ModuleSort::Name => by_name(),
+            ModuleSort::Popular => popularity(&b.id).cmp(&popularity(&a.id)).then_with(by_name),
+            ModuleSort::LastPlayed => last_played.get(&b.id).cmp(&last_played.get(&a.id)).then_with(by_name),
+        })
+    });
 }
 
 /// The folder with the modules.
@@ -277,6 +321,67 @@ mod tests {
         std::fs::write(dir.join("ingame.bin"), &ingame).unwrap();
         std::fs::write(dir.join("f_2.prg"), &f2).unwrap();
         Base { ingame, f2 }
+    }
+
+    fn entry(id: &str, name: &str) -> Installed {
+        Installed { id: id.into(), meta: Meta::new(name, "A", "", ""), path: PathBuf::new(), code_changes: None, files: 0, engine: None }
+    }
+
+    fn ids(list: &[Installed]) -> Vec<&str> {
+        list.iter().map(|m| m.id.as_str()).collect()
+    }
+
+    fn sample() -> Vec<Installed> {
+        vec![
+            entry("0000000000000001", "ZED UNKNOWN"),
+            entry("b8227c4074989ca7", "GITTY'S DREAMS 1"),
+            entry("0000000000000002", "ALPHA UNKNOWN"),
+            entry("da6409a65d5d148d", "POWER EDITION 2023"),
+            entry("41220fc5c98bafe3", "GEM NIGHTMARE"),
+        ]
+    }
+
+    #[test]
+    fn popular_order_puts_known_modules_by_weight_and_unknown_ones_last_by_name() {
+        let mut l = sample();
+        order(&mut l, ModuleSort::Popular, &[], &Default::default());
+        assert_eq!(ids(&l), ["da6409a65d5d148d", "41220fc5c98bafe3", "b8227c4074989ca7", "0000000000000002", "0000000000000001"]);
+        // every id of the table is a module id and the weights go down in the order written
+        assert!(POPULARITY.iter().all(|(id, _)| is_id(id)));
+        assert!(POPULARITY.windows(2).all(|w| w[0].1 > w[1].1));
+        assert_eq!(popularity("da6409a65d5d148d"), Some(3118));
+        assert_eq!(popularity("0000000000000001"), None);
+    }
+
+    #[test]
+    fn name_order_ignores_the_popularity() {
+        let mut l = sample();
+        order(&mut l, ModuleSort::Name, &[], &Default::default());
+        let names: Vec<&str> = l.iter().map(|m| m.meta.name.as_str()).collect();
+        assert_eq!(names, ["ALPHA UNKNOWN", "GEM NIGHTMARE", "GITTY'S DREAMS 1", "POWER EDITION 2023", "ZED UNKNOWN"]);
+    }
+
+    #[test]
+    fn last_played_order_puts_never_played_modules_last_by_name() {
+        let mut l = sample();
+        let played = std::collections::BTreeMap::from([("b8227c4074989ca7".to_string(), 50), ("0000000000000001".to_string(), 90)]);
+        order(&mut l, ModuleSort::LastPlayed, &[], &played);
+        assert_eq!(ids(&l), ["0000000000000001", "b8227c4074989ca7", "0000000000000002", "41220fc5c98bafe3", "da6409a65d5d148d"]);
+    }
+
+    #[test]
+    fn favorites_come_first_in_every_sort() {
+        let fav = vec!["0000000000000001".to_string(), "b8227c4074989ca7".to_string()];
+        for sort in [ModuleSort::Popular, ModuleSort::Name, ModuleSort::LastPlayed] {
+            let mut l = sample();
+            order(&mut l, sort, &fav, &Default::default());
+            assert!(l[..2].iter().all(|m| fav.contains(&m.id)), "{sort:?}: {:?}", ids(&l));
+            assert!(l[2..].iter().all(|m| !fav.contains(&m.id)));
+        }
+        // inside the favorites the sort still decides
+        let mut l = sample();
+        order(&mut l, ModuleSort::Popular, &fav, &Default::default());
+        assert_eq!(ids(&l)[..2], ["b8227c4074989ca7", "0000000000000001"]);
     }
 
     #[test]

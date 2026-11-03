@@ -51,6 +51,8 @@ fn extra_glyph(c: char) -> Option<[u8; 8]> {
         '■' => [0, 0x7E, 0x7E, 0x7E, 0x7E, 0x7E, 0x7E, 0],
         '□' => [0, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x7E, 0],
         '█' => [0xFF; 8],
+        // A small five-pointed star: the favorite mark of the ROM modules page
+        '★' => [0x18, 0x18, 0xFF, 0x7E, 0x3C, 0x7E, 0x66, 0x42],
         _ => return None,
     })
 }
@@ -129,4 +131,20 @@ pub fn cell_px(col: usize, row: usize) -> (isize, isize) {
 pub fn draw_text(fb: &mut Framebuffer, col: usize, row: usize, text: &str, color: u32) {
     let (x, y) = cell_px(col, row);
     draw_text_px(fb, x, y, text, color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_star_is_a_glyph_of_its_own_and_symmetric() {
+        let star = extra_glyph('\u{2605}').expect("star glyph");
+        assert_ne!(star, extra_glyph('*').unwrap());
+        assert!(star.iter().any(|&row| row != 0));
+        // the arms are mirrored left and right
+        for row in star {
+            assert_eq!(row.reverse_bits(), row, "row {row:#04x} is not symmetric");
+        }
+    }
 }

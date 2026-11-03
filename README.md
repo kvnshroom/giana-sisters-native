@@ -42,9 +42,31 @@ Download the package for your system from the [Releases](../../releases) page:
 
 | System | File | Notes |
 |---|---|---|
-| Linux (x86_64) | `giana-sisters-native-<version>-linux-x86_64.tar.gz` | needs SDL2: `sudo apt install libsdl2-2.0-0` or `sudo dnf install SDL2` |
+| Linux (x86_64) | `giana-sisters-native-<version>-linux-x86_64.tar.gz` | nothing else to install (SDL2 is built in); see "Linux" below |
 | Windows (x86_64) | `giana-sisters-native-<version>-windows-x86_64.zip` | unsigned: in SmartScreen click "More info" → "Run anyway" |
 | macOS (Apple Silicon and Intel) | `giana-sisters-native-<version>-macos-universal.tar.gz` | not notarized: open it once, then System Settings → Privacy & Security → "Open Anyway" (macOS 15 and later; older: right-click → Open), or `xattr -dr com.apple.quarantine "Giana Sisters.app"` |
+
+### Linux
+
+The package works on current and older distributions (needs glibc 2.34 or newer: Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9
+and newer) and needs no extra packages: SDL2 is built in and picks X11, Wayland, PipeWire, PulseAudio or ALSA at run time.
+Unpack it, open a terminal in the folder and run:
+
+```sh
+./install.sh
+```
+
+No root needed. This puts the game in `~/.local/opt/giana-sisters`, adds the command `giana-sisters` and an entry
+"Giana Sisters" in your applications menu, and registers `.g64` and `.grom` files so "Open with" works. Running it again
+updates in place; the in-game updater works too. Optional: `./install.sh --g64 /path/to/disk.g64` imports your disk image
+right away, `./install.sh --modules DIR` copies ROM modules (`*.grom`).
+
+To uninstall, run `~/.local/opt/giana-sisters/uninstall.sh` (or `./uninstall.sh` from the unpacked folder). It removes exactly
+what the installer created (listed in `~/.local/share/giana-native/install-manifest`) and keeps your settings, high scores,
+modules and game data; add `--purge` to delete those too (it asks first, `--yes` skips the question).
+You can also skip the installer and just start `./giana-app`.
+
+### All systems
 
 Unpack it and start the game. On the first start it asks for your disk image: click **CHOOSE FILE...** (or just press Enter) and pick the `.g64`, or
 drag it onto the window (or onto the app icon), type or paste its path, or let it search the usual folders (Downloads,

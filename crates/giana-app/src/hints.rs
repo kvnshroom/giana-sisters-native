@@ -115,6 +115,20 @@ impl InputState {
         self.nav_hint(&[Nav::Clear], action)
     }
 
+    /// Favorite on the modules page: `F` on the keyboard, the button of `Clear` (Y) on the controller.
+    pub fn favorite_hint(&self, action: &str) -> Hint {
+        if self.on_pad() {
+            self.nav_hint(&[Nav::Clear], action)
+        } else {
+            self.nav_hint(&[Nav::Favorite], action)
+        }
+    }
+
+    /// Sort on the modules page: `O` on the keyboard, X on the controller.
+    pub fn sort_hint(&self, action: &str) -> Hint {
+        self.nav_hint(&[Nav::Sort], action)
+    }
+
     /// One direction of the menu moves alone (the name page uses Right and Left apart).
     pub fn dir_hint(&self, nav: Nav, action: &str) -> Hint {
         self.nav_hint(&[nav], action)

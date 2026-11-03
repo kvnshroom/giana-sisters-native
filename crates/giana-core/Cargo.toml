@@ -10,3 +10,4 @@ giana-engine-b = { path = "../giana-engine-b" }
 [dev-dependencies]
 giana-extract = { path = "../giana-extract" }
 giana-render = { path = "../giana-render" }
+giana-module = { path = "../giana-module" }

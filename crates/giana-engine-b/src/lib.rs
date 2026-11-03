@@ -14,6 +14,7 @@
 //! Addresses in the docs are C64 addresses of the hack's 64K program image.
 
 pub mod files;
+pub mod gem;
 pub mod hooks;
 pub mod stage;
 pub mod types;
