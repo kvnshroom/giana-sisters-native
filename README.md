@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon/icon.png" width="128" height="128" alt=""></p>
+
 # The Great Giana Sisters – native port
 
 A native PC version of the 1987 C64 classic *The Great Giana Sisters*, written in Rust.

@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- App icon (original pixel art, `assets/icon`): macOS app, Windows program, window and taskbar, Linux archive
+
 ## [0.1.0]
 
 First release: a native Rust port of "The Great Giana Sisters" (C64, Rainbow Arts, 1987). Not an emulator: the game
