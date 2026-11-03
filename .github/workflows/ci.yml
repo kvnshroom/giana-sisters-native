@@ -1,0 +1,29 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install SDL2
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+      - run: cargo build --workspace --locked
+      - run: cargo test --workspace --locked
+  build-bundled:
+    # the same static-SDL builds as the release, so a broken Windows/macOS build shows up before tagging
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked -p giana-app --features bundled-sdl
+      - run: ./target/release/giana-app --version
+        shell: bash

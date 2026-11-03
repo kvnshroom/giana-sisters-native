@@ -1,0 +1,24 @@
+# data/ manifest: every original-derived file the game build needs.
+# Columns: path (relative to data/), size in bytes, sha256 of the content the port was verified with.
+# Lines starting with '#' are comments. Embedded in crates/giana-extract/src/derive.rs (a unit test keeps both equal); the app checks it at start-up.
+#
+# Inputs, taken from the user's .g64 by the extractor:
+#   ingame.bin          64K program image, file offset == C64 address: disk file 1 at $0820, zeros elsewhere, documented patches (giana-extract).
+#                       This is the oracle-patched variant ($1277 = $04). The game build does not
+#                       depend on that byte: the unpatched value $05 gives identical test results (checked with the unit tests).
+#   f_2.prg             raw program file of the title part (20088 bytes, load address $0801, crunched BASIC stub).
+# Derived by giana-extract (crates/giana-extract/src/derive.rs), in the app on first start or by `giana-extract <g64> <dir>`:
+#   collision_table.bin image $9C20..$9D20
+#   colortable.bin      image $AB00..$AC00
+#   stage1_map.bin      image $AC00..$C000
+#   stage_palettes.bin  33 x (image[$604E+s]&15, image[$6075+s]&15, image[$609C+s]&15, image[$60C3+s])
+#   title_koala.bin     decrunched f_2.prg memory $2000..$4710: multicolour bitmap, screen RAM, colour RAM, background.
+# Not files any more (computed by the build from ingame.bin): the 33 stage maps (giana_core::state::all_stages, ported
+# sub_9936), character set and sprite shapes (game state), title and stage music (ported sound driver, giana-audio).
+collision_table.bin 256 667526cbc31e27d88d7e5871b646f96ff904d5b76b81494f29e425f41083b22b
+colortable.bin 256 74ccc485e71ad8505c1c30932f07f728624f822e9277fecb659f63209287966a
+f_2.prg 20088 389ec667bab8bf119facad9706191d0ac79103950f3fa45dd3fe74e20c2676e0
+ingame.bin 65536 5fe942fa64cd73395f852d49156fac3b0fc0bac120f7375efd52248f1c142c6e
+stage1_map.bin 5120 e75d388d6b80e7ec82064fc6a9309c16dadedf34a73425b52e4712be1fe7c99c
+stage_palettes.bin 132 e75786ccc9337b8a90c84b7bccc6b3c9d25de4b586234a4c85d72af5e6d0e456
+title_koala.bin 10001 88975b52bb92932020cba739f4136e425fa1aec97e9cca3361ea3ddf54ef6cbb

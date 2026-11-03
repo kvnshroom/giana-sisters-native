@@ -1,0 +1,4 @@
+# generated from your own game file (tools/data/setup.sh) - never commit it
+/data/
+/target/
+__pycache__/
