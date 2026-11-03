@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.1]
 
 - App icon (original pixel art, `assets/icon`): macOS app, Windows program, window and taskbar, Linux archive
 
