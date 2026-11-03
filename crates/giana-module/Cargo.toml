@@ -1,0 +1,12 @@
+[package]
+name = "giana-module"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "ROM modules (.grom): shareable BPS patches against the player's own extracted game data"
+
+[dependencies]
+giana-extract = { path = "../giana-extract" }
+serde_json = "1.0.154"
+zip = { version = "9.2.2", default-features = false, features = ["deflate-flate2"] }
+flate2 = "1.1.10"

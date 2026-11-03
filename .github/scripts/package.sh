@@ -68,17 +68,53 @@ TXT
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>C64 disk image (G64)</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>g64</string></array>
+      <key>LSItemContentTypes</key>
+      <array><string>io.github.kvnshroom.giana-sisters-native.g64</string></array>
+    </dict>
+  </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>io.github.kvnshroom.giana-sisters-native.g64</string>
+      <key>UTTypeDescription</key><string>C64 disk image (G64)</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array><string>g64</string></array>
+      </dict>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST
+    # ad-hoc signature (no developer identity): the bundle is at least consistently signed, but still not notarized
+    if command -v codesign >/dev/null; then
+      codesign --force --deep --sign - "$app"
+    fi
     cat >"$d/INSTALL.txt" <<'TXT'
 The Great Giana Sisters - native port (macOS, Apple Silicon and Intel)
 
-Nothing to install (SDL2 is built in). The app is not signed. The first time:
-right-click "Giana Sisters.app" > Open > Open, or run
-    xattr -dr com.apple.quarantine "Giana Sisters.app"
-On the first start it asks for your own copy of the game as a .g64 disk image
-(no game data is included). See README.md.
+Nothing to install (SDL2 is built in). The app is not notarized by Apple, so macOS
+blocks it the first time. To allow it:
+  1. Double-click "Giana Sisters.app" once. macOS says it cannot be opened. Click "Done".
+  2. Open System Settings > Privacy & Security, scroll down to "Security" and click
+     "Open Anyway" next to "Giana Sisters" (macOS 15 and later; older versions: right-click
+     the app > Open > Open). Confirm with your password.
+  Or in Terminal, once:   xattr -dr com.apple.quarantine "Giana Sisters.app"
+
+On the first start click "CHOOSE FILE..." (or press Enter) and pick your own copy of the game
+as a .g64 disk image. You can also drop the .g64 on the window or on the app icon.
+No game data is included. See README.md.
 TXT
     ;;
   *)

@@ -1,7 +1,11 @@
-//! Text on the 40 x 25 character grid, drawn with the letters of the game's own character set.
+//! Text on the 40 x 25 character grid, drawn with the letters of the game's own character set. Before the original
+//! data is there (the first start), letters and digits come from our own font in `fallback_font`.
 
+use crate::fallback_font;
 use crate::framebuffer::{Framebuffer, HEIGHT, WIDTH};
+use giana_core::data;
 use giana_core::image::img;
+use std::sync::OnceLock;
 
 const CHARSET: usize = 0xC000;
 /// Screen position of character cell (0, 0) in the frame buffer.
@@ -56,7 +60,18 @@ const fn box_line(top: u8, mid: u8, bottom: u8) -> [u8; 8] {
     [top, top, top, mid, mid, bottom, bottom, bottom]
 }
 
+/// True when the game's character set can be used: the data is installed, or (tests, tools) can be found.
+fn original_charset() -> bool {
+    static FOUND: OnceLock<bool> = OnceLock::new();
+    data::is_installed() || *FOUND.get_or_init(data::available)
+}
+
 fn glyph(c: char) -> [u8; 8] {
+    if !original_charset() {
+        if let Some(g) = fallback_font::glyph(c.to_ascii_uppercase()) {
+            return g;
+        }
+    }
     let code = match c.to_ascii_uppercase() {
         l @ 'A'..='Z' => Some(l as usize - 'A' as usize + 1),
         d @ '0'..='9' => Some(d as usize - '0' as usize + 0x30),

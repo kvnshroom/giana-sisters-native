@@ -235,10 +235,33 @@ pub enum Status {
 pub enum Action {
     None,
     Quit,
+    /// Open the file dialog (the caller does it on the main thread and reports back with `picked`).
+    ChooseFile,
 }
 
-/// The items of the page, top to bottom: the path field, the search, quit.
-const ITEMS: usize = 3;
+/// The items of the page, top to bottom: choose file, the path field, the search, quit.
+const ITEMS: usize = 4;
+const CHOOSE: usize = 0;
+const FIELD: usize = 1;
+const SEARCH: usize = 2;
+
+/// Shown when the file dialog returned without a file (cancelled, or it could not be shown at all).
+const NO_FILE: &str = "NO FILE CHOSEN. IF NO WINDOW OPENED, DROP THE .G64 FILE ON THIS WINDOW OR TYPE ITS PATH.";
+
+/// Opens the system file dialog (call on the main thread; it blocks until it is closed). `None`: cancelled, or the
+/// dialog could not be shown (on Linux it needs the desktop portal or zenity, and rfd cannot tell the two apart).
+pub fn choose_file() -> Option<PathBuf> {
+    let start = home_dir().map(|h| h.join("Downloads")).filter(|d| d.is_dir()).or_else(home_dir);
+    let mut dialog = rfd::FileDialog::new()
+        .set_title("Choose your The Great Giana Sisters disk image")
+        .add_filter("C64 disk image (.g64)", &["g64", "G64"])
+        .add_filter("All files", &["*"]);
+    if let Some(dir) = start {
+        dialog = dialog.set_directory(dir);
+    }
+    // a backend problem must not take the game down
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dialog.pick_file())).ok().flatten()
+}
 
 pub struct Setup {
     pub path: String,
@@ -250,7 +273,7 @@ pub struct Setup {
 
 impl Setup {
     pub fn new(dest: PathBuf) -> Setup {
-        Setup { path: String::new(), cursor: 0, status: Status::Idle, dest, job: None }
+        Setup { path: String::new(), cursor: CHOOSE, status: Status::Idle, dest, job: None }
     }
 
     pub fn busy(&self) -> bool {
@@ -258,14 +281,14 @@ impl Setup {
     }
 
     pub fn type_text(&mut self, text: &str) {
-        if self.cursor == 0 && !self.busy() {
+        if self.cursor == FIELD && !self.busy() {
             self.path.extend(text.chars().filter(|c| !c.is_control()));
             self.status = Status::Idle;
         }
     }
 
     pub fn backspace(&mut self) {
-        if self.cursor == 0 && !self.busy() {
+        if self.cursor == FIELD && !self.busy() {
             self.path.pop();
         }
     }
@@ -282,15 +305,28 @@ impl Setup {
             return Action::None;
         }
         match self.cursor {
-            0 if self.path.trim().is_empty() => self.status = Status::Failed(wrap("TYPE OR PASTE THE PATH FIRST, OR DROP THE FILE ON THE WINDOW", LINE)),
-            0 => {
+            CHOOSE => return Action::ChooseFile,
+            FIELD if self.path.trim().is_empty() => self.status = Status::Failed(wrap("TYPE OR PASTE THE PATH FIRST, OR DROP THE FILE ON THE WINDOW", LINE)),
+            FIELD => {
                 let p = clean_path(&self.path);
                 self.start_import(p);
             }
-            1 => self.start_search(),
+            SEARCH => self.start_search(),
             _ => return Action::Quit,
         }
         Action::None
+    }
+
+    /// The result of the file dialog: a file starts the import, nothing explains what to do instead.
+    pub fn picked(&mut self, file: Option<PathBuf>) {
+        match file {
+            Some(p) if !self.busy() => {
+                self.path = p.display().to_string();
+                self.start_import(p);
+            }
+            Some(_) => {}
+            None => self.status = Status::Failed(wrap(NO_FILE, LINE)),
+        }
     }
 
     /// A file dropped on the window.
@@ -359,11 +395,14 @@ pub fn footer_hints(setup: &Setup) -> Vec<Hint> {
         return vec![Hint::new("PLEASE", "WAIT")];
     }
     let mut h = vec![Hint::new("UP/DN", "MOVE"), Hint::new("ENTER", "SELECT")];
-    if setup.cursor == 0 {
-        h.push(Hint::new("CTRL+V", "PASTE"));
+    if setup.cursor == FIELD {
+        h.push(Hint::new(if cfg!(target_os = "macos") { "CMD+V" } else { "CTRL+V" }, "PASTE"));
     }
     h
 }
+
+/// Instruction lines of the page (each at most `LINE` characters).
+const PAGE_TEXT: [&str; 1] = ["OR DROP IT HERE OR TYPE ITS PATH:"];
 
 /// Draws the page. `tick` counts frames (for the dots of the progress message).
 pub fn draw(fb: &mut Framebuffer, setup: &Setup, tick: u32, nudge: usize) {
@@ -372,36 +411,36 @@ pub fn draw(fb: &mut Framebuffer, setup: &Setup, tick: u32, nudge: usize) {
     let p = Panel::centered(W, 25, true);
     p.draw(fb, Some("FIRST START"));
     p.message_colored(fb, 3, "THE GREAT GIANA SISTERS NEEDS", ui::color::TEXT);
-    p.message_colored(fb, 5, "YOUR ORIGINAL DISK IMAGE", ui::color::TEXT);
-    p.message_colored(fb, 8, "DROP THE .G64 FILE ON THIS WINDOW", ui::color::DIM);
-    p.message_colored(fb, 9, "OR TYPE OR PASTE ITS PATH", ui::color::DIM);
+    p.message_colored(fb, 5, "YOUR ORIGINAL DISK IMAGE (.G64)", ui::color::TEXT);
+    let state = |i: usize| if setup.cursor == i && i != FIELD { ItemState::Selected } else { ItemState::Normal };
+    p.item_centered(fb, p.row_y(7), "CHOOSE FILE...", state(CHOOSE), nudge);
+    p.message_colored(fb, 10, PAGE_TEXT[0], ui::color::DIM);
     let shown: String = {
         let n = setup.path.chars().count();
         setup.path.chars().skip(n.saturating_sub(LINE - 1)).collect()
     };
-    p.field(fb, p.row_y(11), (W - LINE) / 2, LINE, &safe_text(&shown), setup.cursor == 0 && !setup.busy());
-    let state = |i: usize| if setup.cursor == i && i != 0 { ItemState::Selected } else { ItemState::Normal };
-    p.item_centered(fb, p.row_y(13), "SEARCH THIS COMPUTER", state(1), nudge);
-    p.item_centered(fb, p.row_y(15), "QUIT", state(2), nudge);
-    p.separator(fb, 17);
+    p.field(fb, p.row_y(12), (W - LINE) / 2, LINE, &safe_text(&shown), setup.cursor == FIELD && !setup.busy());
+    p.item_centered(fb, p.row_y(14), "SEARCH THIS COMPUTER", state(SEARCH), nudge);
+    p.item_centered(fb, p.row_y(16), "QUIT", state(ITEMS - 1), nudge);
+    p.separator(fb, 18);
     match &setup.status {
         Status::Idle => {
-            p.message_colored(fb, 19, "THE DATA STAYS ON YOUR COMPUTER.", ui::color::DIM);
-            p.message_colored(fb, 21, "THIS IS DONE ONLY ONCE.", ui::color::DIM);
+            p.message_colored(fb, 20, "THE DATA STAYS ON YOUR COMPUTER.", ui::color::DIM);
+            p.message_colored(fb, 22, "THIS IS DONE ONLY ONCE.", ui::color::DIM);
         }
         Status::Working(what) => {
             let dots = ".".repeat((tick / 12 % 4) as usize);
             for (i, l) in wrap(what, LINE).iter().enumerate() {
-                p.message_colored(fb, 19 + i, l, ui::color::YELLOW);
+                p.message_colored(fb, 20 + i, l, ui::color::YELLOW);
             }
             p.message_colored(fb, 22, &format!("{dots:<3}"), ui::color::YELLOW);
         }
         Status::Failed(lines) => {
             for (i, l) in lines.iter().take(5).enumerate() {
-                p.message_colored(fb, 18 + i, &clip(l, LINE), ui::color::YELLOW);
+                p.message_colored(fb, 19 + i, &clip(l, LINE), ui::color::YELLOW);
             }
         }
-        Status::Done => p.message_colored(fb, 19, "ALL SET - STARTING THE GAME", ui::color::CYAN),
+        Status::Done => p.message_colored(fb, 20, "ALL SET - STARTING THE GAME", ui::color::CYAN),
     }
     ui::footer(fb, &footer_hints(setup), None);
 }
@@ -430,6 +469,59 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("setup did not finish");
+    }
+
+    #[test]
+    fn choose_file_is_first_and_selected() {
+        let mut s = Setup::new(temp("choose"));
+        assert_eq!(s.cursor, 0);
+        assert_eq!(s.activate(), Action::ChooseFile);
+        // typing goes nowhere until the path field is selected
+        s.type_text("abc");
+        assert_eq!(s.path, "");
+        s.move_cursor(true);
+        s.type_text("abc");
+        assert_eq!(s.path, "abc");
+        s.move_cursor(true);
+        s.move_cursor(true);
+        assert_eq!(s.activate(), Action::Quit);
+        s.move_cursor(true);
+        assert_eq!(s.cursor, 0);
+        s.move_cursor(false);
+        assert_eq!(s.cursor, ITEMS - 1);
+    }
+
+    #[test]
+    fn a_cancelled_dialog_explains_the_alternatives() {
+        let mut s = Setup::new(temp("cancel"));
+        s.picked(None);
+        let Status::Failed(lines) = &s.status else { panic!() };
+        assert!(lines.join(" ").contains("DROP"));
+        assert!(!s.busy());
+    }
+
+    #[test]
+    fn a_picked_file_is_imported() {
+        let dest = temp("picked");
+        let mut s = Setup::new(dest.clone());
+        s.picked(Some(PathBuf::from("/nonexistent/x.g64")));
+        assert!(s.busy());
+        wait(&mut s);
+        assert!(matches!(s.status, Status::Failed(_)));
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn page_texts_fit_and_use_known_glyphs() {
+        for t in PAGE_TEXT.iter().chain([&NO_FILE]) {
+            assert_eq!(safe_text(t), *t, "unsupported characters in {t}");
+        }
+        for t in PAGE_TEXT {
+            assert!(t.chars().count() <= LINE, "{t}");
+        }
+        for l in wrap(NO_FILE, LINE) {
+            assert!(l.chars().count() <= LINE, "{l}");
+        }
     }
 
     #[test]
@@ -478,6 +570,7 @@ mod tests {
         }
         let dest = temp("typed");
         let mut s = Setup::new(dest.clone());
+        s.move_cursor(true);
         s.type_text(&format!("\"{}\"", repo(G64).display()));
         s.activate();
         wait(&mut s);

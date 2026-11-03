@@ -6,6 +6,7 @@ pub mod tiles;
 pub mod parallax;
 pub mod sprites;
 pub mod text;
+mod fallback_font;
 pub mod vic;
 
 #[cfg(test)]

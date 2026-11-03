@@ -17,6 +17,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
+      - name: First start without game data
+        run: .github/scripts/first_start_smoke.sh target/debug/giana-app
   build-bundled:
     # the same static-SDL builds as the release, so a broken Windows/macOS build shows up before tagging
     strategy:
@@ -30,3 +32,6 @@ jobs:
       - run: cargo build --release --locked -p giana-app --features bundled-sdl
       - run: ./target/release/giana-app --version
         shell: bash
+      - name: First start without game data
+        if: runner.os == 'macOS'
+        run: .github/scripts/first_start_smoke.sh target/release/giana-app

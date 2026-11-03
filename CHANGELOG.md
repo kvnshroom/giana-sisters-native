@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.2]
+
+- Fixed: the very first start (no game data yet) crashed before showing anything, on every system. The
+  first-start page drew its text with the game's own font, which is part of the data it asks for; it now uses a
+  font of its own until the data is there. A CI check starts the game without data so this can't come back.
+- First start: **CHOOSE FILE...** opens your system's file dialog (selected by default, just press Enter); dropping
+  the file on the window, typing or pasting its path and the search still work. The search only runs when chosen.
+- A `.g64` given to the program (Open with, dragging it onto the app or `giana-app.exe`) is imported right away.
+- macOS: `.g64` is a document type of the app, the bundle is ad-hoc signed, and the install notes describe
+  "Open Anyway" for macOS 15 and later. CMD+V pastes on the first-start page.
+- Errors that stop the game are shown in a message box and saved to `last-error.txt` in the settings folder,
+  instead of the game silently closing when started without a console.
+- Screenshots in the README.
+
 ## [0.1.1]
 
 - App icon (original pixel art, `assets/icon`): macOS app, Windows program, window and taskbar, Linux archive

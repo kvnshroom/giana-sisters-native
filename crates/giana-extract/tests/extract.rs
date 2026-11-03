@@ -47,3 +47,22 @@ fn derives_every_manifest_file_from_the_disk_image() {
         assert!(giana_extract::derive::matches_manifest(f.name, &f.data), "{}", f.name);
     }
 }
+
+#[test]
+fn derive_files_accepts_a_modified_image_and_derive_all_rejects_it() {
+    let Ok(g64) = std::fs::read(root().join("orig/Great_Giana_Sisters_The.g64")) else {
+        eprintln!("skipped: orig/ not present");
+        return;
+    };
+    let files = giana_extract::extract_all(&g64).unwrap();
+    let get = |n: &str| files.iter().find(|f| f.name == n).unwrap().data.clone();
+    let (ingame, f2) = (get("ingame.bin"), get("f_2.prg"));
+    let same = giana_extract::derive::derive_files(ingame.clone(), f2.clone()).unwrap();
+    assert_eq!(same.iter().map(|f| f.name).collect::<Vec<_>>(), files.iter().map(|f| f.name).collect::<Vec<_>>());
+    let mut hacked = ingame.clone();
+    hacked[0xAC10] ^= 1;
+    let out = giana_extract::derive::derive_files(hacked.clone(), f2.clone()).unwrap();
+    let map = out.iter().find(|f| f.name == "stage1_map.bin").unwrap();
+    assert_eq!(map.data[0x10], ingame[0xAC10] ^ 1);
+    assert!(giana_extract::derive::derive_all(hacked, f2).is_err());
+}

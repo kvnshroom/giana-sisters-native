@@ -69,8 +69,12 @@ pub fn title_koala(prg: &[u8]) -> Result<Vec<u8>, String> {
     Ok(cpu.m[0x2000..0x4711].to_vec())
 }
 
-/// All manifest files, derived from `ingame.bin` and `f_2.prg` and verified against the manifest.
-pub fn derive_all(ingame: Vec<u8>, f2: Vec<u8>) -> Result<Vec<DataFile>, String> {
+/// All manifest files, derived from `ingame.bin` and `f_2.prg`, sorted by name, **without** the manifest check. Used for
+/// ROM modules, whose images differ from the original on purpose.
+pub fn derive_files(ingame: Vec<u8>, f2: Vec<u8>) -> Result<Vec<DataFile>, String> {
+    if ingame.len() != entry("ingame.bin").size {
+        return Err(format!("ingame.bin has {} bytes, expected {}", ingame.len(), entry("ingame.bin").size));
+    }
     let mut files: Vec<DataFile> = Vec::new();
     for (name, data) in derive_tables(&ingame) {
         files.push(DataFile { name: entry(name).name, data });
@@ -78,12 +82,18 @@ pub fn derive_all(ingame: Vec<u8>, f2: Vec<u8>) -> Result<Vec<DataFile>, String>
     files.push(DataFile { name: "title_koala.bin", data: title_koala(&f2)? });
     files.push(DataFile { name: "ingame.bin", data: ingame });
     files.push(DataFile { name: "f_2.prg", data: f2 });
+    files.sort_by_key(|f| f.name);
+    Ok(files)
+}
+
+/// All manifest files, derived from `ingame.bin` and `f_2.prg` and verified against the manifest.
+pub fn derive_all(ingame: Vec<u8>, f2: Vec<u8>) -> Result<Vec<DataFile>, String> {
+    let files = derive_files(ingame, f2)?;
     for f in &files {
         if !matches_manifest(f.name, &f.data) {
             return Err(format!("derived {} does not match the expected size/SHA-256", f.name));
         }
     }
-    files.sort_by_key(|f| f.name);
     Ok(files)
 }
 

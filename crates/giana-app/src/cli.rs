@@ -3,7 +3,10 @@
 pub const HELP: &str = "The Great Giana Sisters (Rust port)
 
 USAGE:
-    giana-app [OPTIONS]
+    giana-app [OPTIONS] [FILE.g64]
+
+ARGUMENT:
+    FILE.g64           on the first start, use this disk image (also: Open with, or drag it onto the program)
 
 OPTIONS:
     --import FILE.g64  extract the game data from your original disk image and exit
@@ -31,6 +34,8 @@ pub struct Options {
     pub stage: Option<u32>,
     /// no automatic check for a new version
     pub no_update_check: bool,
+    /// a lone `FILE.g64` argument (Open with, drag onto the program): imported at once if the game data is still missing
+    pub open: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,11 +61,16 @@ fn stage_number(value: Option<&str>) -> Result<u32, String> {
         .ok_or_else(|| format!("--stage needs a number from 1 to 33, not '{}'", value.unwrap_or("")))
 }
 
+fn is_g64(arg: &str) -> bool {
+    std::path::Path::new(arg).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("g64"))
+}
+
 /// Arguments without the program name. The error is the message for the player.
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String> {
     let mut opts = Options::default();
     let mut args = args.into_iter();
     let mut import = None;
+    let mut open = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
@@ -71,12 +81,16 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
             "--data" => opts.data = Some(args.next().filter(|v| !v.is_empty()).ok_or("--data needs a folder")?.into()),
             "--import" => import = Some(args.next().filter(|v| !v.is_empty()).ok_or("--import needs the path of a .g64 file")?.into()),
             "--stage" => opts.stage = Some(stage_number(args.next().as_deref())?),
+            // old macOS versions pass a process serial number when launched from Finder
+            other if other.starts_with("-psn_") => {}
+            other if !other.starts_with('-') && open.is_none() && is_g64(other) => open = Some(other.into()),
             other => match other.strip_prefix("--stage=") {
                 Some(v) => opts.stage = Some(stage_number(Some(v))?),
                 None => return Err(format!("unknown argument '{other}'")),
             },
         }
     }
+    opts.open = open;
     Ok(match import {
         Some(file) => Command::Import(file, opts.data),
         None => Command::Run(opts),
@@ -118,6 +132,16 @@ mod tests {
         assert_eq!(p(&["--import", "a.g64"]), Ok(Command::Import("a.g64".into(), None)));
         assert!(p(&["--import"]).is_err());
         assert!(p(&["--data"]).is_err());
+    }
+
+    #[test]
+    fn a_lone_g64_path_is_accepted() {
+        let Ok(Command::Run(o)) = p(&["/x/My Games/Giana.G64"]) else { panic!() };
+        assert_eq!(o.open, Some("/x/My Games/Giana.G64".into()));
+        let Ok(Command::Run(o)) = p(&["-psn_0_12345", "--debug", "a.g64"]) else { panic!() };
+        assert!(o.debug && o.open == Some("a.g64".into()));
+        assert!(p(&["notes.txt"]).is_err());
+        assert!(p(&["a.g64", "b.g64"]).is_err());
     }
 
     #[test]

@@ -61,6 +61,19 @@ fn startup_error(what: &str, e: impl std::fmt::Display, hint: &str) -> String {
     format!("{what}: {e}\n{hint}")
 }
 
+/// Shows a fatal error in a message box (also when no console is open) and writes it to `last-error.txt` next to the
+/// settings, so that it can be found and sent along with a bug report.
+fn report_fatal(text: &str) {
+    let mut shown = text.to_string();
+    if let Some(dir) = settings_path().as_deref().and_then(std::path::Path::parent) {
+        let file = dir.join("last-error.txt");
+        if std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&file, format!("{text}\n"))).is_ok() {
+            shown.push_str(&format!("\n\nThis message was saved in {}", file.display()));
+        }
+    }
+    let _ = sdl2::messagebox::show_simple_message_box(sdl2::messagebox::MessageBoxFlag::ERROR, "The Great Giana Sisters", &shown, None);
+}
+
 const SDL_HINT: &str = "Is the SDL2 library installed? Fedora: sudo dnf install SDL2 - Debian/Ubuntu: sudo apt install libsdl2-2.0-0 - macOS: brew install sdl2";
 const DISPLAY_HINT: &str = "Is a display connected, and is a desktop session (X11 or Wayland) running? Without a display the game cannot start.";
 
@@ -336,8 +349,18 @@ fn main() {
             }
         }
         Command::Run(options) => {
+            // Started from Finder or the Windows Explorer there is no console: an error must not just close the game
+            let default_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                default_hook(info);
+                // macOS shows windows only from the main thread; other threads' panics go to the console only
+                if std::thread::current().name() == Some("main") {
+                    report_fatal(&format!("The game stopped because of an internal error:\n{info}"));
+                }
+            }));
             if let Err(e) = run(options) {
                 eprintln!("giana-app: {e}");
+                report_fatal(&e.to_string());
                 std::process::exit(1);
             }
         }
@@ -352,6 +375,7 @@ fn first_run_page<C>(
     video: &sdl2::VideoSubsystem,
     settings: &Settings,
     dest: std::path::PathBuf,
+    open: Option<std::path::PathBuf>,
 ) -> Result<bool, Box<dyn std::error::Error>>
 where
     Canvas<Window>: Sized,
@@ -359,6 +383,10 @@ where
     Window: sdl2::render::RenderTarget<Context = C>,
 {
     let mut setup = firstrun::Setup::new(dest);
+    // a file given on the command line (Open with, dragged onto the program) is imported right away
+    if let Some(file) = open {
+        setup.drop_file(&file.display().to_string());
+    }
     let text = video.text_input();
     text.start();
     let clipboard = video.clipboard();
@@ -366,6 +394,7 @@ where
     let mut fb = Framebuffer::new();
     let mut tick = 0u32;
     let done = 'page: loop {
+        let mut choose = false;
         for event in events.poll_iter() {
             match event {
                 Event::Quit { .. } => break 'page false,
@@ -377,8 +406,10 @@ where
                     Keycode::Up => setup.move_cursor(false),
                     Keycode::Down | Keycode::Tab => setup.move_cursor(true),
                     Keycode::Return | Keycode::KpEnter => {
-                        if setup.activate() == firstrun::Action::Quit {
-                            break 'page false;
+                        match setup.activate() {
+                            firstrun::Action::Quit => break 'page false,
+                            firstrun::Action::ChooseFile => choose = true,
+                            firstrun::Action::None => {}
                         }
                     }
                     Keycode::Escape => break 'page false,
@@ -399,6 +430,20 @@ where
                     _ => {}
                 },
                 _ => {}
+            }
+        }
+        if choose {
+            // the dialog must run on this (main) thread; it blocks the window while it is open
+            text.stop();
+            let file = firstrun::choose_file();
+            text.start();
+            setup.picked(file);
+            // keys and clicks from while the dialog was open are not meant for this page
+            events.pump_events();
+            for e in events.poll_iter() {
+                if let Event::DropFile { filename, .. } = e {
+                    setup.drop_file(&filename);
+                }
             }
         }
         if setup.poll() {
@@ -479,7 +524,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         None => {
             let dest = firstrun::destination(options.data.as_deref()).ok_or("There is no folder for the game data. Give one with --data DIR.")?;
             println!("No game data found. Asking for the disk image; the data will go to {}", dest.display());
-            if !first_run_page(&mut canvas, &mut presenter, &mut event_pump, &video_subsystem, &settings, dest.clone())? {
+            if !first_run_page(&mut canvas, &mut presenter, &mut event_pump, &video_subsystem, &settings, dest.clone(), options.open.clone())? {
                 return Ok(());
             }
             dest

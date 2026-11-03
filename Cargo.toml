@@ -6,6 +6,7 @@ members = [
     "crates/giana-audio",
     "crates/giana-app",
     "crates/giana-extract",
+    "crates/giana-module",
 ]
 
 [profile.release]

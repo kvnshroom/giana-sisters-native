@@ -9,6 +9,12 @@ frame by frame, against the real thing running in a C64 emulator. The result pla
 same enemies, same music from the original sound driver – but runs as a normal program with a proper menu, controller
 support, fullscreen and network play.
 
+<p align="center">
+  <img src="screenshots/menu.png" width="32%" alt="The main menu">
+  <img src="screenshots/stage1.png" width="32%" alt="Giana jumping in stage 1 with enemies around">
+  <img src="screenshots/stage4.png" width="32%" alt="The castle of stage 4">
+</p>
+
 ## Why this exists
 
 I built this for my dad. He played Giana Sisters back in the day, and I wanted us to be able to play it together
@@ -38,10 +44,12 @@ Download the package for your system from the [Releases](../../releases) page:
 |---|---|---|
 | Linux (x86_64) | `giana-sisters-native-<version>-linux-x86_64.tar.gz` | needs SDL2: `sudo apt install libsdl2-2.0-0` or `sudo dnf install SDL2` |
 | Windows (x86_64) | `giana-sisters-native-<version>-windows-x86_64.zip` | unsigned: in SmartScreen click "More info" → "Run anyway" |
-| macOS (Apple Silicon and Intel) | `giana-sisters-native-<version>-macos-universal.tar.gz` | unsigned: right-click "Giana Sisters.app" → Open the first time |
+| macOS (Apple Silicon and Intel) | `giana-sisters-native-<version>-macos-universal.tar.gz` | not notarized: open it once, then System Settings → Privacy & Security → "Open Anyway" (macOS 15 and later; older: right-click → Open), or `xattr -dr com.apple.quarantine "Giana Sisters.app"` |
 
-Unpack it and start the game. On the first start it asks for your disk image: drag the `.g64` onto the window, type
-or paste its path, or let it search the usual folders (Downloads, Documents, your home folder). That's it – after that it starts straight into the
+Unpack it and start the game. On the first start it asks for your disk image: click **CHOOSE FILE...** (or just press Enter) and pick the `.g64`, or
+drag it onto the window (or onto the app icon), type or paste its path, or let it search the usual folders (Downloads,
+Documents, your home folder; only when you choose that). On Linux the file dialog needs the desktop portal or zenity,
+without one use drag and drop. That's it – after that it starts straight into the
 menu. (From the command line: `giana-app --import /path/to/disk.g64`.)
 
 The game checks GitHub once a day for a new version and shows a notice in the main menu; press `U` (or `X` on a
@@ -102,8 +110,9 @@ folder next to the program works too, and `--data DIR` picks any other place.
 ### Command line
 
 ```
-giana-app [OPTIONS]
+giana-app [OPTIONS] [FILE.g64]
 
+    FILE.g64           on the first start, use this disk image ("Open with", or drag it onto giana-app.exe)
     --import FILE.g64  extract the game data from your original disk image and exit
     --data DIR         use the original game data in DIR (extract into it on first start)
     --stage N          skip the menu and start in stage N (1 to 33)
@@ -164,6 +173,9 @@ This repository and its releases contain **no game data**. You need your own cop
 a port – a translation – of the original program into Rust; it contains no disk images, ROMs, graphics, music or level
 files of the original. "The Great Giana Sisters" and all related names and characters belong to their respective
 owners. This project is not affiliated with or endorsed by them.
+
+The screenshots in this README show the original game's graphics and are included for illustration only; the rights remain
+with their owners.
 
 ## Credits
 

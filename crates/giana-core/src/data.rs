@@ -34,14 +34,28 @@ const FILES: [(&str, usize); 6] = [
 impl GameData {
     /// Reads the files of `dir` and checks their sizes. (The app additionally checks the SHA-256 before it trusts a folder.)
     pub fn load_dir(dir: &Path) -> Result<GameData, String> {
-        let mut v: Vec<Vec<u8>> = Vec::new();
-        for (name, size) in FILES {
+        let mut v: Vec<(&str, Vec<u8>)> = Vec::new();
+        for (name, _) in FILES {
             let p = dir.join(name);
             let d = std::fs::read(&p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
+            v.push((name, d));
+        }
+        let refs: Vec<(&str, &[u8])> = v.iter().map(|(n, d)| (*n, d.as_slice())).collect();
+        Self::from_files(&refs).map_err(|e| format!("{} (in {})", e, dir.display()))
+    }
+
+    /// Builds the data from in-memory files (name, content), e.g. derived from a patched ROM module. Every file of
+    /// the game data must be present with exactly the right size; extra entries are ignored.
+    pub fn from_files(files: &[(&str, &[u8])]) -> Result<GameData, String> {
+        let mut v: Vec<Vec<u8>> = Vec::new();
+        for (name, size) in FILES {
+            let Some((_, d)) = files.iter().find(|(n, _)| *n == name) else {
+                return Err(format!("missing {name}"));
+            };
             if d.len() != size {
-                return Err(format!("{} has {} bytes, expected {size}", p.display(), d.len()));
+                return Err(format!("{name} has {} bytes, expected {size}", d.len()));
             }
-            v.push(d);
+            v.push(d.to_vec());
         }
         let mut it = v.into_iter();
         let mut next = || it.next().unwrap();
@@ -139,4 +153,22 @@ pub fn get() -> &'static GameData {
              or: ./tools/data/setup.sh <your .g64>"
         );
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_files_checks_names_and_sizes() {
+        let owned: Vec<(&str, Vec<u8>)> = FILES.iter().map(|&(n, s)| (n, vec![7u8; s])).collect();
+        let refs: Vec<(&str, &[u8])> = owned.iter().map(|(n, d)| (*n, d.as_slice())).collect();
+        let g = GameData::from_files(&refs).unwrap();
+        assert_eq!(g.ingame.len(), 65536);
+        assert_eq!(g.stage_palettes.len(), 132);
+        assert!(GameData::from_files(&refs[1..]).err().unwrap().contains("missing ingame.bin"));
+        let mut bad = refs.clone();
+        bad[3] = ("stage1_map.bin", &[0u8; 5]);
+        assert!(GameData::from_files(&bad).err().unwrap().contains("stage1_map.bin has 5 bytes"));
+    }
 }
