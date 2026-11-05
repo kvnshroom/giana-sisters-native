@@ -209,3 +209,9 @@ impl AudioEngine {
         }
     }
 }
+
+impl Default for AudioEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}

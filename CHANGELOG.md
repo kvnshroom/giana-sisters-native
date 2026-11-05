@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0]
+
+- Stop in the middle of a game: closing the program saves it, and CONTINUE 1 PLAYER / CONTINUE 2 PLAYERS in the main
+  menu bring it back paused, exactly where it was (one saved game per player count and ROM module; QUIT TO TITLE ends a
+  game without saving). Saved games survive updates.
+- Choosing a ROM module switches the game at once; the program no longer restarts.
+- Menus: OPTIONS is split into VIDEO, SOUND and GENERAL; CONTROLS holds KEYBOARD and CONTROLLER; plainer names
+  (PICTURE SIZE, SCREEN FILTER, 50 HZ MODE, SMOOTH MOTION as one switch, WINNER RULE, STYLE, UPDATE CHECK) and a short
+  note for every line. The pause menu is RESUME, CONTROLS, OPTIONS, QUIT TO TITLE.
+- First start: shorter, clearer messages when the disk image cannot be used; a shorter `--help`; a lean README with
+  the details in docs/guide.md.
+- ROM hacks closer to the real ones (checked against the hacks' own code in an emulator):
+  - Construction Kit hacks: after a death Giana restarts at the hack's own half-way point (she often appeared five
+    columns off, in a wall or on an enemy, and died again at once); lives and stage numbers come from the hack.
+  - Construction-set hacks: the statue and the dragon stage are the hack's own; Super Marioahner Sisters jumps with fire;
+    the secret key no longer skips a stage.
+  - The construction-set game has its music and sound again.
+  - Gem Nightmare: the importer keeps 56 bytes of the hack's code it used to overwrite.
+- The original game: the stage exit after a warp and the restart banner
+  follow the C64 more closely.
+
 ## [0.2.1]
 
 - Giana Sisters II "Gem Nightmare" (The Seven-A-Three, 1993) plays: an older version of the construction-set engine,

@@ -287,7 +287,7 @@ impl Panel {
     /// `value_w` characters.
     #[allow(clippy::too_many_arguments)]
     pub fn value_row(&self, fb: &mut Framebuffer, y: isize, label: &str, value: &str, value_w: usize, state: ItemState, nudge: usize) {
-        debug_assert!(self.max_value_len(label.chars().count()).map_or(false, |m| m >= value_w && value.chars().count() <= value_w), "{label:?} {value:?} do not fit {self:?}");
+        debug_assert!(self.max_value_len(label.chars().count()).is_some_and(|m| m >= value_w && value.chars().count() <= value_w), "{label:?} {value:?} do not fit {self:?}");
         let fg = self.row_colors(fb, y, state, nudge);
         draw_text_px(fb, self.col_x(Panel::LABEL_COL), y, label, px(fg));
         let (left, right) = self.value_arrows(value_w);
@@ -359,7 +359,7 @@ impl Panel {
 
     /// Text at a column and character row counted from the panel's top left corner.
     pub fn text_at(&self, fb: &mut Framebuffer, col_in_panel: usize, row_in_panel: usize, text: &str, color: u8) {
-        debug_assert!(col_in_panel >= 1 && col_in_panel + text.chars().count() <= self.w - 1, "text {text:?} at {col_in_panel} outside {self:?}");
+        debug_assert!(col_in_panel >= 1 && col_in_panel + text.chars().count() < self.w, "text {text:?} at {col_in_panel} outside {self:?}");
         draw_text_px(fb, self.col_x(col_in_panel), self.row_y(row_in_panel), text, px(color));
     }
 
@@ -782,7 +782,7 @@ pub fn content_center_x(fb: &Framebuffer, y0: usize, y1: usize) -> Option<isize>
             }
         }
     }
-    (lo <= hi).then(|| ((lo + hi + 1) / 2) as isize)
+    (lo <= hi).then(|| (lo + hi).div_ceil(2) as isize)
 }
 
 /// Top of a pill that stands where a notice goes: just above the footer.
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn value_rows_keep_label_and_value_apart() {
-        let rows = [("FULLSCREEN", "OFF"), ("SCALING", "WHOLE PIXELS"), ("DISPLAY 50 HZ", "AUTO"), ("WINNER", "FURTHEST"), ("VOLUME", "")];
+        let rows = [("FULLSCREEN", "OFF"), ("PICTURE SIZE", "WITH BORDER"), ("50 HZ MODE", "AUTO"), ("WINNER", "FURTHEST"), ("VOLUME", "")];
         let label_max = rows.iter().map(|r| r.0.len()).max().unwrap();
         let value_w = 12;
         let w = Panel::min_width(label_max, value_w);
@@ -888,7 +888,7 @@ mod tests {
         p.draw(&mut fb, Some("OPTIONS"));
         p.separator(&mut fb, p.h - 4);
         p.item(&mut fb, p.item_y(0), "FIRST", ItemState::Selected, 1);
-        p.value_row(&mut fb, p.item_y(1), "SCALING", "WHOLE PIXELS", 12, ItemState::Normal, 0);
+        p.value_row(&mut fb, p.item_y(1), "SIZE", "WITH BORDER", 12, ItemState::Normal, 0);
         p.volume_row(&mut fb, p.item_y(2), "VOLUME", 6, 10, ItemState::Selected, 1);
         p.value_row(&mut fb, p.item_y(3), "OFF", "X", 12, ItemState::Disabled, 0);
         p.item_centered(&mut fb, p.item_y(4), "BACK", ItemState::Normal, 0);
@@ -941,7 +941,7 @@ mod tests {
         assert!(note_fits(&sets[0], "V0.1.0"));
         assert!(!note_fits(&sets[1], "V0.1.0") && !note_fits(&sets[2], "V0.1.0"));
         assert!(FOOTER_Y >= grid_rect().3 as usize, "footer must not overlap the grid");
-        assert!(FOOTER_Y + FOOTER_H <= HEIGHT);
+        const _: () = assert!(FOOTER_Y + FOOTER_H <= HEIGHT);
         // bound keys: the longest key label still fits
         let h = Hint::new("R SHIFT", "FIRE");
         assert!(hints_width(&[h]) <= FOOTER_MAX);
@@ -954,7 +954,7 @@ mod tests {
         fb.clear(px(c::CYAN));
         footer(&mut fb, &[Hint::new("UP/DN", "MOVE"), Hint::new("ESC", "BACK")], Some("V0.1.0"));
         for y in 0..HEIGHT {
-            if y >= FOOTER_Y && y < FOOTER_Y + FOOTER_H {
+            if (FOOTER_Y..FOOTER_Y + FOOTER_H).contains(&y) {
                 continue;
             }
             for x in 0..WIDTH {

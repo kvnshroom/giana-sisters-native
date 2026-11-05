@@ -115,6 +115,8 @@ impl Machine<'_> {
     fn basic_visible(&self) -> bool {
         self.port & 3 == 3
     }
+    // the broad `$D000..=$D3FF` / `$DC00..=$DDFF` arms deliberately come after the specific registers (first match wins)
+    #[allow(clippy::match_overlapping_arm)]
     fn io_read(&mut self, a: u16) -> u8 {
         self.io_reads += 1;
         let raster = ((self.cycles / 63) % 312) as u16;
@@ -133,7 +135,7 @@ impl Machine<'_> {
             0xDC0D | 0xDD0D => 0x03,
             0xDD00 => (self.dd00 & 0x3F) | 0xC0,
             0xD000..=0xD3FF => self.vic[(a & 63) as usize],
-            0xDC00..=0xDCFF | 0xDD00..=0xDDFF => 0,
+            0xDC00..=0xDDFF => 0,
             _ => 0xFF,
         }
     }
@@ -388,7 +390,7 @@ impl Machine<'_> {
     /// Answers a call to a KERNAL entry point; returns false when `pc` is not one.
     fn kernal_trap(&mut self, cpu: &mut Cpu) -> bool {
         let pc = cpu.pc;
-        if !(0xFF81..=0xFFF3).contains(&pc) || (pc - 0xFF81) % 3 != 0 {
+        if !(0xFF81..=0xFFF3).contains(&pc) || !(pc - 0xFF81).is_multiple_of(3) {
             return false;
         }
         match pc {
@@ -727,7 +729,7 @@ fn boot(disk: Option<&Disk>, prg: Vec<u8>, name: &str, opts: &BootOptions) -> Re
         // game's own start-up (which changes RAM) runs after the last one.
         let event = if opts.entries.contains(&pc) && insn > 0 && pc != last_pc && (pc != 0x0820 || matches!(m.ram[0x0820], 0x4C | 0x20)) {
             Some(format!("game entry ${pc:04X} reached"))
-        } else if pc >= 0x0820 && pc < 0xFF81 && last_pc < 0x0820 && low_run >= 50_000 {
+        } else if (0x0820..0xFF81).contains(&pc) && last_pc < 0x0820 && low_run >= 50_000 {
             Some(format!("unpacker finished (ran {low_run} instructions below $0820), entered ${pc:04X}"))
         } else if m.big_load && (0x0820..0xFF81).contains(&pc) {
             m.big_load = false;
@@ -793,7 +795,7 @@ fn boot(disk: Option<&Disk>, prg: Vec<u8>, name: &str, opts: &BootOptions) -> Re
         }
         m.cycles = cpu.cycles;
         insn += 1;
-        if insn % 100_000 == 0 {
+        if insn.is_multiple_of(100_000) {
             // idle = the program only runs a small loop and either nothing in RAM changes or it keeps polling the keys
             let hash = ram_hash(&m.ram[0x0800..]);
             let polling = m.key_reads - blk_keys > if snapshot.is_some() { 8 } else { 1000 };

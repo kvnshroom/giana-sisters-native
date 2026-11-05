@@ -35,7 +35,7 @@ pub const MONSTER_DEF_ADDRESS: u16 = 0x7505;
 pub const MONSTER_SPRITE_ADDRESS: u16 = 0xFB80;
 pub const RECORD_LEN: usize = 21;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TypeRecord {
     pub raw: [u8; RECORD_LEN],
 }

@@ -46,6 +46,19 @@ impl SplitDrivers {
         Self { music, effects: Self::silent_effects() }
     }
 
+    /// Keeps both drivers in the (suspended) game, so that the effect that plays now goes on after a restore.
+    pub fn save_into(&self, game: &mut giana_core::state::GameState) {
+        game.split_sound = Some(Box::new((self.music.clone(), self.effects.clone())));
+    }
+
+    /// The drivers that [`save_into`](Self::save_into) kept in the game, if any (they are taken out of it).
+    pub fn take_from(game: &mut giana_core::state::GameState) -> Option<Self> {
+        let (mut music, mut effects) = *game.split_sound.take()?;
+        music.record = None;
+        effects.record = None;
+        Some(Self { music, effects })
+    }
+
     fn silent_effects() -> Driver {
         let mut d = Driver::new();
         d.call(ENTRY_INIT, 0, 0, 0xF0, false);
@@ -157,6 +170,6 @@ mod tests {
         s.feed(&[DriverCall::Call { entry: ENTRY_INIT, a: 0, x: 0, y: 0xF0, carry: false }, TICK, TICK, TICK]);
         let (m, e) = s.regs();
         assert_eq!(gates(&e), [false; 3]);
-        assert_eq!(gates(&m)[2], false);
+        assert!(!gates(&m)[2]);
     }
 }

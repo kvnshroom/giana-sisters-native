@@ -18,8 +18,10 @@ use giana_app::ui::{self, PillTone};
 use giana_app::result::{decide, MatchResult, Standing, Winner};
 use giana_app::scores::{score_value, scores_path, Entry, Scores};
 use giana_app::settings::{settings_path, Presentation, Settings};
+use giana_app::suspend;
 use giana_audio::mixer::Mixer;
 use giana_audio::player::MusicTrack;
+use giana_app::split_follow::{follow_split, stop_recording};
 use giana_audio::split::SplitDrivers;
 use giana_core::state::{ControllerInput, GameScreen, GameState, stage_palettes};
 use giana_render::framebuffer::{Framebuffer, BORDER_X, BORDER_Y, HEIGHT, WIDTH};
@@ -37,11 +39,7 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::Canvas;
 use sdl2::surface::Surface;
 use sdl2::video::{FullscreenType, Window};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-
-/// Set when the player switched the ROM module: `main` starts the game again once the window and the sound are closed.
-static RESTART: AtomicBool = AtomicBool::new(false);
 
 struct SidAudioCallback {
     mixer: Mixer,
@@ -167,10 +165,26 @@ fn save_settings(settings: &Settings, open: &mut Option<Menu>) {
     }
 }
 
+/// Looks at the slots of the suspended games of `module` (its data must be installed), one player first. A file that does
+/// not fit is deleted and the menu says so.
+fn look_at_suspended(module: &str, open: &mut Option<Menu>) -> Vec<suspend::Info> {
+    let (found, rejected) = suspend::look(module, &suspend::Identity::current(module));
+    for why in rejected {
+        eprintln!("A suspended game was discarded: {}", why.notice());
+        // a notice that is already there (a module that could not be loaded) is more important
+        if let Some(m) = open.as_mut().filter(|m| m.notice.is_none()) {
+            m.notice = Some(why.notice().to_string());
+        }
+    }
+    found
+}
+
 /// Menu steps that the main loop carries out at its next logic tick.
 #[derive(Default)]
 struct Pending {
     start: Option<GameMode>,
+    /// `CONTINUE`: take the suspended game of that many players
+    resume_suspended: Option<u8>,
     host: Option<NetMode>,
     join: Option<String>,
     search: bool,
@@ -202,6 +216,7 @@ fn apply_outcome(outcome: Outcome, open: &mut Option<Menu>, pending: &mut Pendin
             pending.start = Some(mode);
             *open = None;
         }
+        Outcome::Continue(players) => pending.resume_suspended = Some(players),
         Outcome::Resume => *open = None,
         Outcome::QuitToTitle => {
             pending.to_title = true;
@@ -259,38 +274,6 @@ enum SoundSource {
     Paused,
     /// the sound driver of the running game
     Game,
-}
-
-/// The SID registers of the music chip and of the effects chip for the game that is heard (`which`: 0 yours, 1 the other
-/// player's). The sound driver of that game records its calls (`Driver::record`), and they are played on two drivers of our
-/// own, one without the effect requests and one without the music requests. Both are started again from a copy of the
-/// game's driver when the game that is heard changes or is a new one (its driver does not record yet).
-fn follow_split(split_game: &mut Option<(SplitDrivers, u8)>, game: &mut GameState, other: Option<&mut GameState>, which: u8) -> ([u8; 25], [u8; 25]) {
-    let (shown, hidden) = match (which, other) {
-        (1, Some(o)) => (o, Some(game)),
-        (_, o) => (game, o),
-    };
-    if let Some(h) = hidden {
-        h.sound.record = None;
-    }
-    let fresh = shown.sound.record.is_none() || split_game.as_ref().map_or(true, |(_, w)| *w != which);
-    if fresh {
-        shown.sound.record = Some(Vec::new());
-        *split_game = Some((SplitDrivers::from_game(&shown.sound), which));
-    } else if let Some((drivers, _)) = split_game.as_mut() {
-        drivers.feed(&shown.sound.take_calls());
-    }
-    split_game.as_ref().map_or(([0; 25], [0; 25]), |(d, _)| d.regs())
-}
-
-/// The games stop recording the calls of their sound driver (nothing listens, and the list would only grow).
-fn stop_recording(split_game: &mut Option<(SplitDrivers, u8)>, game: &mut GameState, other: Option<&mut GameState>) {
-    if split_game.take().is_some() || game.sound.record.is_some() || other.as_ref().map_or(false, |o| o.sound.record.is_some()) {
-        game.sound.record = None;
-        if let Some(o) = other {
-            o.sound.record = None;
-        }
-    }
 }
 
 fn player_name(player: u8) -> &'static str {
@@ -489,10 +472,10 @@ fn main() {
                 eprintln!("giana-app: there is no folder for the game data. Give one with --data DIR.");
                 std::process::exit(1);
             };
-            match firstrun::import_file(&file, &dest) {
-                Ok(()) => println!("Game data extracted to {}", dest.display()),
-                Err(lines) => {
-                    eprintln!("giana-app: {}", lines.join(" "));
+            match firstrun::try_import_file(&file, &dest) {
+                Ok(()) => println!("Game data extracted to {}. You can start the game now.", dest.display()),
+                Err(e) => {
+                    eprintln!("giana-app: {}", e.plain());
                     std::process::exit(1);
                 }
             }
@@ -511,14 +494,6 @@ fn main() {
                 eprintln!("giana-app: {e}");
                 report_fatal(&e.to_string());
                 std::process::exit(1);
-            }
-            // another ROM module was chosen: `run` has closed the window and the sound, now the game starts again
-            if RESTART.load(Ordering::SeqCst) {
-                if let Err(e) = modules::spawn_restart() {
-                    eprintln!("giana-app: could not start the game again: {e}");
-                    report_fatal(&format!("The game could not start itself again: {e}\nStart it once more by hand."));
-                    std::process::exit(1);
-                }
             }
         }
     }
@@ -775,8 +750,7 @@ where
                 OptionChange::EffectsDown | OptionChange::EffectsUp => settings.change_effects(change == OptionChange::EffectsUp),
                 OptionChange::MenuSounds(forward) => settings.menu_sounds = settings.menu_sounds.next(forward),
                 OptionChange::Scaling(forward) => settings.scaling = settings.scaling.next(forward),
-                OptionChange::Mode => settings.enhancements.enhanced = !settings.enhancements.enhanced,
-                OptionChange::SmoothMotion => settings.enhancements.smooth_motion = !settings.enhancements.smooth_motion,
+                OptionChange::SmoothMotion => settings.enhancements.toggle_smooth_motion(),
                 OptionChange::Winner => settings.winner = settings.winner.other(),
                 OptionChange::Display50 => {
                     settings.display_50 = !settings.display_50;
@@ -901,7 +875,7 @@ where
     Window: sdl2::render::RenderTarget<Context = C>,
     C: 'static,
 {
-    let mut leave = |settings: &mut Settings, text: &str, notice: &mut Option<String>| {
+    let leave = |settings: &mut Settings, text: &str, notice: &mut Option<String>| {
         settings.presentation = Presentation::Modern;
         if let Some(path) = settings_path() {
             let _ = settings.save(&path);
@@ -931,6 +905,48 @@ where
             Ok(AuthenticNext::Continue)
         }
     }
+}
+
+/// Installs the data of a ROM module (`None` or an empty id: the original game) as the data of this process, with the
+/// features of its family, and notes it as played. Used at start-up and for every switch while the game runs. Returns
+/// the id that is now active (empty for the original) and a notice for the menu when the module could not be loaded
+/// and the original game was loaded instead. `Err` only when not even the original data can be loaded (then nothing
+/// has changed).
+fn activate_module(store: Option<&Store>, wanted: Option<&str>, data_dir: &std::path::Path, settings: &mut Settings) -> Result<(String, Option<String>), String> {
+    let mut notice = None;
+    if let (Some(id), Some(store)) = (wanted.filter(|id| !id.is_empty()), store) {
+        match store.load_selected(id, data_dir) {
+            Ok((data, applied, meta)) => {
+                giana_core::data::install(data);
+                giana_core::features::set_construction_kit(match applied.family {
+                    giana_module::Family::ConstructionKit1989 { variant: giana_module::CkVariant::Basic } => giana_core::features::ConstructionKit::Basic,
+                    giana_module::Family::ConstructionKit1989 { variant: giana_module::CkVariant::Full } => giana_core::features::ConstructionKit::Full,
+                    _ => giana_core::features::ConstructionKit::Off,
+                });
+                // family B (the 7A3 construction-set engine): the module's disk files go to engine B, `None` = original engine
+                giana_core::features::set_engine_b((applied.engine.as_deref() == Some("b")).then(|| applied.files.clone()));
+                // family T (TNW Giana Sisters 2): its stage files (the original stages already restored)
+                giana_core::features::set_tnw((applied.engine.as_deref() == Some("t")).then(|| applied.files.clone()));
+                println!("ROM module: {} ({id})", meta.name);
+                // LAST PLAYED on the modules page
+                settings.note_played(id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+                if let Some(path) = settings_path() {
+                    let _ = settings.save(&path);
+                }
+                return Ok((id.to_string(), None));
+            }
+            Err(e) => {
+                eprintln!("giana-app: could not load the ROM module {id}: {e}");
+                notice = Some("ROM MODULE COULD NOT BE LOADED".to_string());
+            }
+        }
+    }
+    firstrun::load(data_dir)?;
+    // a module of an earlier run may have left its features on
+    giana_core::features::set_construction_kit(giana_core::features::ConstructionKit::Off);
+    giana_core::features::set_engine_b(None);
+    giana_core::features::set_tnw(None);
+    Ok((String::new(), notice))
 }
 
 fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -1005,7 +1021,6 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     // The ROM module to play: from the command line (this run only), else the one chosen in the settings. Any problem
     // plays the original game and says so in the menu.
     let store = Store::default_location();
-    let mut module_id = String::new();
     let mut module_notice: Option<String> = None;
     let wanted: Option<String> = {
         let mut wanted = None;
@@ -1046,38 +1061,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         wanted
     };
-    let mut loaded = false;
-    if let (Some(id), Some(store)) = (wanted.as_deref(), store.as_ref()) {
-        match store.load_selected(id, &data_dir) {
-            Ok((data, applied, meta)) => {
-                giana_core::data::install(data);
-                giana_core::features::set_construction_kit(match applied.family {
-                    giana_module::Family::ConstructionKit1989 { variant: giana_module::CkVariant::Basic } => giana_core::features::ConstructionKit::Basic,
-                    giana_module::Family::ConstructionKit1989 { variant: giana_module::CkVariant::Full } => giana_core::features::ConstructionKit::Full,
-                    _ => giana_core::features::ConstructionKit::Off,
-                });
-                // family B (the 7A3 construction-set engine): the module's disk files go to engine B, `None` = original engine
-                giana_core::features::set_engine_b((applied.engine.as_deref() == Some("b")).then(|| applied.files.clone()));
-                // family T (TNW Giana Sisters 2): its stage files (the original stages already restored)
-                giana_core::features::set_tnw((applied.engine.as_deref() == Some("t")).then(|| applied.files.clone()));
-                println!("ROM module: {} ({id})", meta.name);
-                module_id = id.to_string();
-                // LAST PLAYED on the modules page
-                settings.note_played(id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
-                if let Some(path) = settings_path() {
-                    let _ = settings.save(&path);
-                }
-                loaded = true;
-            }
-            Err(e) => {
-                eprintln!("giana-app: could not load the ROM module {id}: {e}");
-                module_notice = Some("ROM MODULE COULD NOT BE LOADED".to_string());
-            }
-        }
-    }
-    if !loaded {
-        firstrun::load(&data_dir).map_err(|e| startup_error("Could not load the game data", e, "Delete the data folder and start the game again to extract it anew."))?;
-    }
+    let (loaded_id, load_notice) = activate_module(store.as_ref(), wanted.as_deref(), &data_dir, &mut settings)
+        .map_err(|e| startup_error("Could not load the game data", e, "Delete the data folder and start the game again to extract it anew."))?;
+    let mut module_id = loaded_id;
+    module_notice = load_notice.or(module_notice);
     println!("Game data: {}", data_dir.display());
     let mut module_list = module_infos(store.as_ref(), &data_dir, &settings);
     let mut authentic_avail = authentic::availability(&data_dir, !module_id.is_empty());
@@ -1122,6 +1109,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         m.notice = module_notice.take();
     }
     let mut pending = Pending::default();
+    // the game of this module that was suspended when the program was closed last time, if any
+    let mut suspended = look_at_suspended(&module_id, &mut open_menu);
     let mut scores = scores_path(&module_id).map_or_else(Scores::default, |p| Scores::load(&p));
     let mut hosting: Option<Host> = None;
     let mut finder: Option<Finder> = None;
@@ -1212,6 +1201,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             m.update = updater.view.clone();
             m.set_modules(&module_list, &module_id);
             m.authentic = authentic_avail;
+            m.set_suspend(suspended.clone());
+            m.can_suspend = suspend::can_suspend(&game, session.is_some() || other_game.is_some(), options.stage.is_some());
         }
         if let Some(change) = updater.poll() {
             settings.last_update_check = change.last_check.unwrap_or(settings.last_update_check);
@@ -1249,7 +1240,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
 
                 // Mute on M, unless M is typed or bound
                 Event::KeyDown { keycode: Some(Keycode::M), repeat: false, .. }
-                    if open_menu.as_ref().map_or(true, |m| !m.capturing && m.page != menu::Page::EnterName)
+                    if open_menu.as_ref().is_none_or(|m| !m.capturing && m.page != menu::Page::EnterName)
                         && !bindings.keys.iter().flatten().any(|&b| b == Some(Keycode::M)) =>
                 {
                     settings.muted = !settings.muted;
@@ -1347,8 +1338,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         active_controller = Some(c);
                     }
                 }
-                Event::ControllerDeviceRemoved { which, .. } => {
-                    if active_controller.as_ref().map_or(false, |c| c.instance_id() == which) {
+                Event::ControllerDeviceRemoved { which, .. }
+                    if active_controller.as_ref().is_some_and(|c| c.instance_id() == which) => {
                         drop(active_controller.take());
                         held.clear_pad();
                         input_state.pad_removed();
@@ -1359,7 +1350,6 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             active_controller = Some(c);
                         }
                     }
-                }
                 _ => {}
             }
         }
@@ -1391,12 +1381,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 OptionChange::Scaling(forward) => settings.scaling = settings.scaling.next(forward),
                 OptionChange::Crt => settings.crt = !settings.crt,
-                OptionChange::Mode | OptionChange::SmoothMotion => {
-                    if change == OptionChange::Mode {
-                        settings.enhancements.enhanced = !settings.enhancements.enhanced;
-                    } else {
-                        settings.enhancements.smooth_motion = !settings.enhancements.smooth_motion;
-                    }
+                OptionChange::SmoothMotion => {
+                    settings.enhancements.toggle_smooth_motion();
                     // A game that is waiting for the other player carries the rules of the host to the one who joins
                     if let Some(h) = hosting.as_mut() {
                         h.set_rules(settings.enhancements.rules());
@@ -1476,6 +1462,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(store) = store.as_ref() {
                 match store.remove(&id) {
                     Ok(()) => {
+                        // its suspended game cannot be continued any more
+                        suspend::discard_all(&id);
                         module_list = module_infos(Some(store), &data_dir, &settings);
                         // a module that was chosen but not loaded (it failed) is not chosen any more
                         if settings.module == id {
@@ -1505,11 +1493,75 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             save_settings(&settings, &mut open_menu);
         }
         if let Some(id) = pending.play_module.take() {
-            // Another module means another set of data: the game starts again with it (see `modules::spawn_restart`)
-            settings.module = id;
+            // Another module means another set of data, switched in place: window, sound device and settings stay, the
+            // game goes back to the title of the new module (what `run` built from the data is built anew)
+            if let Some(s) = session.as_mut() {
+                s.leave();
+            }
+            session = None;
+            other_game = None;
+            hosting = None;
+            finder = None;
+            joining = None;
+            match activate_module(store.as_ref(), Some(&id), &data_dir, &mut settings) {
+                Ok((loaded_id, notice)) => {
+                    module_id = loaded_id;
+                    settings.module = module_id.clone();
+                    scores = scores_path(&module_id).map_or_else(Scores::default, |p| Scores::load(&p));
+                    authentic_avail = authentic::availability(&data_dir, !module_id.is_empty());
+                    module_list = module_infos(store.as_ref(), &data_dir, &settings);
+                    game = GameState::new();
+                    game.screen = GameScreen::Title;
+                    split_game = None;
+                    vic_steps = 0;
+                    toast = None;
+                    // the menu's sound driver reads the title tune from the data
+                    menu_sound = MenuSounds::new();
+                    menu_sound.set_mode(settings.menu_sounds);
+                    menu_sound.set_split(settings.split_sound(), true);
+                    menu_sound.start_title();
+                    sound_source = SoundSource::Title;
+                    let mut m = Menu::main();
+                    m.notice = notice;
+                    open_menu = Some(m);
+                    // every module has a suspended game of its own
+                    suspended = look_at_suspended(&module_id, &mut open_menu);
+                }
+                Err(e) => {
+                    eprintln!("Could not switch the ROM module: {e}");
+                    if let Some(m) = open_menu.as_mut() {
+                        m.notice = Some("ROM MODULE COULD NOT BE LOADED".to_string());
+                    }
+                }
+            }
             save_settings(&settings, &mut open_menu);
-            RESTART.store(true, Ordering::SeqCst);
-            break 'running;
+            continue 'running;
+        }
+        if let Some(players) = pending.resume_suspended.take().filter(|&n| session.is_none() && suspended.iter().any(|i| i.players == n)) {
+            // the game comes back paused, so that the player is not surprised by it running
+            match suspend::path(&module_id, players).map(|path| suspend::take(&path, &suspend::Identity::current(&module_id))) {
+                Some(Ok((restored, info))) => {
+                    game = restored;
+                    other_game = None;
+                    last_mode = Some(if info.players == 2 { GameMode::TwoPlayers } else { GameMode::OnePlayer });
+                    split_game = None;
+                    vic_steps = 0;
+                    toast = None;
+                    held.clear();
+                    let mut m = Menu::pause();
+                    m.settings = settings.clone();
+                    open_menu = Some(m);
+                }
+                Some(Err(why)) => {
+                    eprintln!("The suspended game could not be continued: {}", why.notice());
+                    if let Some(m) = open_menu.as_mut() {
+                        m.notice = Some(why.notice().to_string());
+                    }
+                }
+                None => {}
+            }
+            // continued, or not usable: either way this slot is gone; the other one stays
+            suspended.retain(|i| i.players != players);
         }
         if pending.quit {
             if let Some(s) = session.as_mut() {
@@ -1644,6 +1696,14 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 s.tick(&mut game, &input, open_menu.is_some());
             } else if let Some(mode) = pending.start.take() {
                 last_mode = Some(mode);
+                // a new game replaces the suspended game with the same number of players, and only that one
+                let players = if mode == GameMode::TwoPlayers { 2 } else { 1 };
+                if suspended.iter().any(|i| i.players == players) {
+                    suspended.retain(|i| i.players != players);
+                    if let Some(path) = suspend::path(&module_id, players) {
+                        suspend::discard(&path);
+                    }
+                }
                 // The ported game takes over (stage 1 start of the original)
                 game = match mode {
                     GameMode::OnePlayer => GameState::new_port_game(),
@@ -1670,7 +1730,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 other_game = None;
             }
             let ended = ended.filter(|_| session.is_some());
-            let both_out = game.game_over && other_game.as_ref().map_or(true, |o| o.game_over || ended.is_some());
+            let both_out = game.game_over && other_game.as_ref().is_none_or(|o| o.game_over || ended.is_some());
             if both_out || pending.to_title || ended.is_some() {
                 let early = std::mem::take(&mut pending.to_title);
                 // Who played here (the host is Giana), and the rule of the winner: in a network game the host's
@@ -1739,6 +1799,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         d.mixer.effects.live_regs = Some(effects);
                     } else {
                         stop_recording(&mut split_game, &mut game, other_game.as_mut());
+                        // a saved effect no longer applies once the game plays on one chip
+                        game.split_sound = None;
                         let shown = other_game.as_ref().filter(|_| game.game_over).unwrap_or(&game);
                         let mut regs = [0u8; 25];
                         regs.copy_from_slice(&shown.sound.sid[..25]);
@@ -1913,7 +1975,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 // Draw outer borders in black (38-column C64 PAL clipping: X=40..343, Y=40..239)
                 for y in 0..HEIGHT {
                     for x in 0..WIDTH {
-                        if x < 40 || x > 343 || y < 40 || y >= 240 {
+                        if !(40..=343).contains(&x) || !(40..240).contains(&y) {
                             fb.set_pixel(x, y, c64_color(0)); // C64 black border
                         }
                     }
@@ -1928,14 +1990,14 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         // `present`); the messages below that stand in the border then move up into the last rows of the game picture.
         // A pause menu (and the pages behind it) stands over the running game and keeps its view, so the picture does not
         // jump when it opens. The main menu and the pages after a game have no game behind them: the whole frame.
-        let playing = game.screen == GameScreen::InGame && !game.legacy_model && open_menu.as_ref().map_or(true, |m| m.paused);
+        let playing = game.screen == GameScreen::InGame && !game.legacy_model && open_menu.as_ref().is_none_or(|m| m.paused);
         let window_size = canvas.output_size().unwrap_or((WIDTH as u32, HEIGHT as u32));
         let layout = present::layout(settings.scaling, playing, window_size);
         let cropped = layout.src == present::PLAY;
         let view = ui::View::new(cropped);
         // Two lanes for the small messages: in the bottom border, or over the last rows of the picture when it is cut
         let (info_y, hint_y) = if cropped { (224, 208) } else { (240, 256) };
-        let toast_on = toast.map_or(false, |(_, since)| since.elapsed() < Duration::from_millis(1500));
+        let toast_on = toast.is_some_and(|(_, since)| since.elapsed() < Duration::from_millis(1500));
         if let (Some(s), None) = (&session, &open_menu) {
             // who plays on this computer, and how the other one is doing; a toast takes the place for a moment
             let name = player_name(s.me);
@@ -1990,8 +2052,20 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(s) = session.as_mut() {
         s.leave();
     }
+    // A local game that is still on is kept for next time instead (its points count when it ends)
+    let mut kept = false;
+    if suspend::can_suspend(&game, session.is_some() || other_game.is_some(), options.stage.is_some()) {
+        // an effect that is playing on the effects chip goes on after CONTINUE
+        if let Some((drivers, _)) = &split_game {
+            drivers.save_into(&mut game);
+        }
+        match suspend::write(&module_id, &suspend::Identity::current(&module_id), &game) {
+            Ok(_) => kept = true,
+            Err(e) => eprintln!("Could not save the game: {e}"),
+        }
+    }
     let mut results = Vec::new();
-    if game.screen == GameScreen::InGame {
+    if game.screen == GameScreen::InGame && !kept {
         results = game_results(&game);
         if let Some(s) = &session {
             // Each computer keeps its own player's score

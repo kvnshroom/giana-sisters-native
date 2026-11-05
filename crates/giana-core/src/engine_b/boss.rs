@@ -220,8 +220,8 @@ impl GameState {
             dir = 0;
         }
         self.set_d32(0x3258, speed);
-        if self.stage as u8 == 0x2A {
-            // `$86F6`: the last stage's dragon is blue-grey (3) and faces Giana
+        if self.stage as u8 == crate::image::img(0x86F7) {
+            // `$86F6: CMP #imm` (Ridley X `$2A`, the other hacks `0`): the last stage's dragon is blue-grey (3) and faces Giana
             for s in 5..=7 {
                 self.en.vic_col[s] = 3;
             }
@@ -574,18 +574,18 @@ impl GameState {
         let (mut dx, b) = fx.overflowing_sub(ex);
         let mut dxh = fhi.wrapping_sub(ehi).wrapping_sub(b as u8);
         let neg = (fhi as i16 - ehi as i16 - b as i16) < 0;
-        let dirx;
-        if neg {
+        
+        let dirx = if neg {
             dx = !dx;
             dxh = !dxh;
             dx = dx.wrapping_add(1);
             if dx == 0 {
                 dxh = dxh.wrapping_add(1);
             }
-            dirx = 0u8;
+            0u8
         } else {
-            dirx = 0xFF;
-        }
+            0xFF
+        };
         self.set_d32(0x3243, dirx);
         let (mut dy, b) = fy.overflowing_sub(ey);
         let diry;

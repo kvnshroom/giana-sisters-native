@@ -504,7 +504,7 @@ mod tests {
         s.chars[8..16].fill(0xFF); // character 1: a solid block
         s.color.fill(1);
         s.bg = [6, 0, 0];
-        let col = 20 - (shift + 7) / 8;
+        let col = 20 - shift.div_ceil(8);
         for row in 5..25 {
             s.screen[row * 40 + col] = 1;
         }

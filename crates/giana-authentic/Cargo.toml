@@ -9,3 +9,6 @@ description = "AUTHENTIC presentation: runs the player's own title program and t
 giana-extract = { path = "../giana-extract" }
 giana-core = { path = "../giana-core" }
 giana-render = { path = "../giana-render" }
+
+[lints]
+workspace = true

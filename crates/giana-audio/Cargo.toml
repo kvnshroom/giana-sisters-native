@@ -7,3 +7,6 @@ license = "GPL-3.0-or-later"
 [dependencies]
 resid-rs = "1.1.1"
 giana-core = { path = "../giana-core" }
+
+[lints]
+workspace = true

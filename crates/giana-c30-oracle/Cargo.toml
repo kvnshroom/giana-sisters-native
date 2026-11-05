@@ -10,3 +10,6 @@ publish = false
 giana-module = { path = "../giana-module" }
 giana-engine-c = { path = "../giana-engine-c" }
 giana-render = { path = "../giana-render" }
+
+[lints]
+workspace = true

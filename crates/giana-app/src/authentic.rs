@@ -411,10 +411,6 @@ fn paint(fb: &mut Framebuffer, pic: &[u8]) {
 mod tests {
     use super::*;
 
-    fn data_dir() -> Option<PathBuf> {
-        giana_core::data::candidate_dirs(None).into_iter().find(|d| d.join("atg.prg").is_file() && d.join("f_2.prg").is_file() && d.join("ingame.bin").is_file())
-    }
-
     #[test]
     fn availability_follows_the_files() {
         let dir = std::env::temp_dir().join(format!("giana-authentic-avail-{}", std::process::id()));

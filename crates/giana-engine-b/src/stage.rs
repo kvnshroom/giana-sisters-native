@@ -33,7 +33,7 @@ pub const MAP_BASE: usize = 0xAC00;
 pub const BLOCK_TABLE: usize = 0x9200;
 const HEADER_LEN: usize = 16;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StageHeader {
     pub monster: u8,
     pub diamond_scheme: u8,
@@ -56,7 +56,7 @@ impl StageHeader {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MapRecord {
     pub block: u8,
     pub col: u8,
@@ -71,14 +71,14 @@ pub const MAX_SPAWN_ROW: u8 = 28;
 
 /// An enemy/object of the stage. `trigger` is stored as column + 1: the object appears when the scroll column
 /// (`$21`) reaches `trigger - 1`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Spawn {
     pub trigger: u8,
     pub row: u8,
     pub kind: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stage {
     pub header: StageHeader,
     pub records: Vec<MapRecord>,

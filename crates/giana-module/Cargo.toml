@@ -6,6 +6,7 @@ license = "GPL-3.0-or-later"
 description = "ROM modules (.grom): shareable BPS patches against the player's own extracted game data"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 giana-extract = { path = "../giana-extract" }
 serde_json = "1.0.154"
 zip = { version = "9.2.2", default-features = false, features = ["deflate-flate2"] }
@@ -14,3 +15,6 @@ flate2 = "1.1.10"
 [dev-dependencies]
 giana-core = { path = "../giana-core" }
 giana-render = { path = "../giana-render" }
+
+[lints]
+workspace = true

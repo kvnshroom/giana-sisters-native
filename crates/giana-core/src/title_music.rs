@@ -73,10 +73,12 @@ impl Player6502 {
         self.n = r & 0x80 != 0;
     }
 
+    #[allow(dead_code)] // only used when the translated span contains PHP/PLP/BRK
     fn flags(&self) -> u8 {
         (self.n as u8) << 7 | (self.v as u8) << 6 | 0x20 | (self.z as u8) << 1 | self.c as u8
     }
 
+    #[allow(dead_code)] // only used when the translated span contains PHP/PLP/BRK
     fn set_flags(&mut self, p: u8) {
         self.n = p & 0x80 != 0;
         self.v = p & 0x40 != 0;
@@ -1041,25 +1043,25 @@ impl Player6502 {
                 0xC993 => { self.cycles += 3; self.pc = 0xC99A; continue; }
                 0xC996 => { self.cycles += 2; self.x = { let t = self.x.wrapping_add(1); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC997; }
                 0xC997 => { self.cycles += 4; self.wr(0x02C1u16, self.x); self.pc = 0xC99A; }
-                0xC99A => { self.cycles += 4; self.a = { let t = self.rd((0xA000u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC99D; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xC99A => { self.cycles += 4; self.a = { let t = self.rd((0xA000u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC99D; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xC99D => { self.cycles += 3; self.wr(0x00A5u16, self.a); self.pc = 0xC99F; }
-                0xC99F => { self.cycles += 4; self.a = { let t = self.rd((0xA100u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9A2; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xC99F => { self.cycles += 4; self.a = { let t = self.rd((0xA100u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9A2; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xC9A2 => { self.cycles += 3; self.wr(0x00A6u16, self.a); self.pc = 0xC9A4; }
-                0xC9A4 => { self.cycles += 4; self.a = { let t = self.rd((0xA400u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9A7; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xC9A4 => { self.cycles += 4; self.a = { let t = self.rd((0xA400u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9A7; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xC9A7 => { self.cycles += 3; self.wr(0x00A7u16, self.a); self.pc = 0xC9A9; }
-                0xC9A9 => { self.cycles += 4; self.a = { let t = self.rd((0xA500u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9AC; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xC9A9 => { self.cycles += 4; self.a = { let t = self.rd((0xA500u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9AC; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xC9AC => { self.cycles += 3; self.wr(0x00A8u16, self.a); self.pc = 0xC9AE; }
-                0xC9AE => { self.cycles += 4; self.a = { let t = self.rd((0xA800u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9B1; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xC9AE => { self.cycles += 4; self.a = { let t = self.rd((0xA800u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9B1; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xC9B1 => { self.cycles += 3; self.wr(0x00A9u16, self.a); self.pc = 0xC9B3; }
-                0xC9B3 => { self.cycles += 4; self.a = { let t = self.rd((0xA900u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9B6; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xC9B3 => { self.cycles += 4; self.a = { let t = self.rd((0xA900u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9B6; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xC9B6 => { self.cycles += 3; self.wr(0x00AAu16, self.a); self.pc = 0xC9B8; }
                 0xC9B8 => { self.cycles += 2; self.a = { let t = 0x00u8; self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9BA; }
                 0xC9BA => { self.cycles += 3; self.wr(0x00ABu16, self.a); self.pc = 0xC9BC; }
                 0xC9BC => { self.cycles += 2; self.a = { let t = 0xBFu8; self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9BE; }
                 0xC9BE => { self.cycles += 3; self.wr(0x00ACu16, self.a); self.pc = 0xC9C0; }
-                0xC9C0 => { self.cycles += 4; self.a = { let t = self.rd((0xAC00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9C3; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xC9C0 => { self.cycles += 4; self.a = { let t = self.rd((0xAC00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9C3; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xC9C3 => { self.cycles += 3; self.wr(0x00F9u16, self.a); self.pc = 0xC9C5; }
-                0xC9C5 => { self.cycles += 4; self.a = { let t = self.rd((0xAD00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9C8; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xC9C5 => { self.cycles += 4; self.a = { let t = self.rd((0xAD00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9C8; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xC9C8 => { self.cycles += 3; self.wr(0x00FAu16, self.a); self.pc = 0xC9CA; }
                 0xC9CA => { self.cycles += 2; self.y = { let t = 0x00u8; self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9CC; }
                 0xC9CC => { self.cycles += 5; self.a = { let t = self.rd((self.mem[0xAB] as u16 | (self.mem[0xAC] as u16) << 8).wrapping_add(self.y as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xC9CE; if (self.mem[0xAB] as u16 + self.y as u16) > 0xFF { self.cycles += 1; } }
@@ -1106,17 +1108,17 @@ impl Player6502 {
                 0xCA23 => { self.cycles += 5; self.a = { let t = self.rd((self.mem[0xA9] as u16 | (self.mem[0xAA] as u16) << 8).wrapping_add(self.y as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA25; if (self.mem[0xA9] as u16 + self.y as u16) > 0xFF { self.cycles += 1; } }
                 0xCA25 => { self.cycles += 4; self.wr(0x02CEu16, self.a); self.pc = 0xCA28; }
                 0xCA28 => { self.cycles += 4; self.x = { let t = self.rd(0x02C1u16); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA2B; }
-                0xCA2B => { self.cycles += 4; self.a = { let t = self.rd((0xA200u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA2E; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCA2B => { self.cycles += 4; self.a = { let t = self.rd((0xA200u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA2E; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCA2E => { self.cycles += 4; self.wr(0x02D2u16, self.a); self.pc = 0xCA31; }
-                0xCA31 => { self.cycles += 4; self.a = { let t = self.rd((0xA300u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA34; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCA31 => { self.cycles += 4; self.a = { let t = self.rd((0xA300u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA34; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCA34 => { self.cycles += 4; self.wr(0x02CFu16, self.a); self.pc = 0xCA37; }
-                0xCA37 => { self.cycles += 4; self.a = { let t = self.rd((0xA600u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA3A; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCA37 => { self.cycles += 4; self.a = { let t = self.rd((0xA600u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA3A; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCA3A => { self.cycles += 4; self.wr(0x02D3u16, self.a); self.pc = 0xCA3D; }
-                0xCA3D => { self.cycles += 4; self.a = { let t = self.rd((0xA700u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA40; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCA3D => { self.cycles += 4; self.a = { let t = self.rd((0xA700u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA40; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCA40 => { self.cycles += 4; self.wr(0x02D0u16, self.a); self.pc = 0xCA43; }
-                0xCA43 => { self.cycles += 4; self.a = { let t = self.rd((0xAA00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA46; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCA43 => { self.cycles += 4; self.a = { let t = self.rd((0xAA00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA46; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCA46 => { self.cycles += 4; self.wr(0x02D4u16, self.a); self.pc = 0xCA49; }
-                0xCA49 => { self.cycles += 4; self.a = { let t = self.rd((0xAB00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA4C; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCA49 => { self.cycles += 4; self.a = { let t = self.rd((0xAB00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA4C; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCA4C => { self.cycles += 4; self.wr(0x02D1u16, self.a); self.pc = 0xCA4F; }
                 0xCA4F => { self.cycles += 2; self.x = { let t = 0x00u8; self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCA51; }
                 0xCA51 => { self.cycles += 4; self.wr(0x02C0u16, self.x); self.pc = 0xCA54; }
@@ -1340,22 +1342,22 @@ impl Player6502 {
                 0xCC33 => { self.cycles += 5; self.a = { let t = self.rd((self.mem[0xF9] as u16 | (self.mem[0xFA] as u16) << 8).wrapping_add(self.y as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC35; if (self.mem[0xF9] as u16 + self.y as u16) > 0xFF { self.cycles += 1; } }
                 0xCC35 => { self.cycles += 2; if self.z { self.cycles += 2; self.pc = 0xCC5D; continue; } self.pc = 0xCC37; }
                 0xCC37 => { self.cycles += 2; self.x = { let t = self.a; self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC38; }
-                0xCC38 => { self.cycles += 4; self.a = { let t = self.rd((0x9C00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC3B; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCC38 => { self.cycles += 4; self.a = { let t = self.rd((0x9C00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC3B; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCC3B => { self.cycles += 4; self.wr(0xDD04u16, self.a); self.pc = 0xCC3E; }
-                0xCC3E => { self.cycles += 4; self.a = { let t = self.rd((0x9D00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC41; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCC3E => { self.cycles += 4; self.a = { let t = self.rd((0x9D00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC41; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCC41 => { self.cycles += 2; self.a = { let t = self.a & 0x0Fu8; self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC43; }
                 0xCC43 => { self.cycles += 4; self.wr(0xDD05u16, self.a); self.pc = 0xCC46; }
-                0xCC46 => { self.cycles += 4; self.a = { let t = self.rd((0x9D00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC49; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCC46 => { self.cycles += 4; self.a = { let t = self.rd((0x9D00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC49; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCC49 => { self.cycles += 2; { self.c = self.a & 1 != 0; self.a = { let t = self.a >> 1; self.z = t == 0; self.n = t & 0x80 != 0; t }; } self.pc = 0xCC4A; }
                 0xCC4A => { self.cycles += 2; { self.c = self.a & 1 != 0; self.a = { let t = self.a >> 1; self.z = t == 0; self.n = t & 0x80 != 0; t }; } self.pc = 0xCC4B; }
                 0xCC4B => { self.cycles += 2; { self.c = self.a & 1 != 0; self.a = { let t = self.a >> 1; self.z = t == 0; self.n = t & 0x80 != 0; t }; } self.pc = 0xCC4C; }
                 0xCC4C => { self.cycles += 2; { self.c = self.a & 1 != 0; self.a = { let t = self.a >> 1; self.z = t == 0; self.n = t & 0x80 != 0; t }; } self.pc = 0xCC4D; }
                 0xCC4D => { self.cycles += 3; self.wr(0x002Au16, self.a); self.pc = 0xCC4F; }
-                0xCC4F => { self.cycles += 4; self.a = { let t = self.rd((0x9F00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC52; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCC4F => { self.cycles += 4; self.a = { let t = self.rd((0x9F00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC52; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCC52 => { self.cycles += 3; self.wr(0x0002u16, self.a); self.pc = 0xCC54; }
                 0xCC54 => { self.cycles += 2; self.a = { let t = 0x00u8; self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC56; }
                 0xCC56 => { self.cycles += 3; self.wr(0x0003u16, self.a); self.pc = 0xCC58; }
-                0xCC58 => { self.cycles += 4; self.a = { let t = self.rd((0x9E00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC5B; if (0x00u16 + self.x as u16) > 0xFF { self.cycles += 1; } }
+                0xCC58 => { self.cycles += 4; self.a = { let t = self.rd((0x9E00u16).wrapping_add(self.x as u16)); self.z = t == 0; self.n = t & 0x80 != 0; t }; self.pc = 0xCC5B; if (self.x as u16) > 0xFF { self.cycles += 1; } }
                 0xCC5B => { self.cycles += 3; self.wr(0x0004u16, self.a); self.pc = 0xCC5D; }
                 0xCC5D => { self.cycles += 6; match self.ret.pop() { Some(p) => { self.pc = p; continue; } None => return } }
                 pc => {

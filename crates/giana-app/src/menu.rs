@@ -1,4 +1,4 @@
-//! The main menu, the pause menu and the two controls pages. Not part of the original game.
+//! The main menu, the pause menu, the options pages and the controls pages. Not part of the original game.
 //!
 //! The menu is steered with fixed keys and buttons (see `main.rs`), so that no binding can lock anyone out of it.
 
@@ -91,6 +91,8 @@ pub enum Device {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Root,
+    /// `CONTROLS`: picks the device whose keys or buttons are rebound
+    ControlsPick,
     Controls(Device),
     /// host or join a game with another computer
     Network,
@@ -100,11 +102,14 @@ pub enum Page {
     Scores,
     /// a score made the table: the name for it
     EnterName,
+    /// `OPTIONS`: the hub with the pages VIDEO, SOUND and GENERAL
     Options,
-    /// `MODE: ORIGINAL / ENHANCED` with the single enhancements, reached from the options page
-    Enhanced,
+    /// picture and screen settings, reached from the options page
+    Video,
     /// volumes and menu sounds, reached from the options page
     Sound,
+    /// winner rule, style and update check, reached from the options page
+    General,
     /// the end of a game of two players: who won
     Result,
     /// asked in the pause menu before a game is given up: `QUIT GAME? YES / NO`
@@ -223,7 +228,7 @@ pub enum OptionChange {
     VolumeUp,
     /// the next (true) or the previous way to fill the window
     Scaling(bool),
-    /// `SCREEN: SHARP / CRT`
+    /// `SCREEN FILTER: SHARP / CRT TV`
     Crt,
     /// the rule for the winner of a game of two players
     Winner,
@@ -235,57 +240,80 @@ pub enum OptionChange {
     EffectsUp,
     /// the next (true) or previous `MENU SOUNDS` setting
     MenuSounds(bool),
-    /// `MODE: ORIGINAL / ENHANCED`
-    Mode,
+    /// `SMOOTH MOTION: ON / OFF` (see `Enhancements::toggle_smooth_motion`)
     SmoothMotion,
-    /// `PRESENTATION: MODERN / AUTHENTIC`
+    /// `STYLE: MODERN / AUTHENTIC`
     Presentation,
-    /// `CHECK FOR UPDATES: AUTO / OFF`
+    /// `UPDATE CHECK: DAILY / OFF`
     UpdateCheck,
 }
 
-/// The lines of the options page, in order
+/// The lines of the options page, the hub: each opens a page with settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OptionItem {
+    Video,
+    Sound,
+    General,
+    Back,
+}
+
+pub(crate) const OPTION_ITEMS: [OptionItem; 4] = [OptionItem::Video, OptionItem::Sound, OptionItem::General, OptionItem::Back];
+
+impl OptionItem {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            OptionItem::Video => "VIDEO",
+            OptionItem::Sound => "SOUND",
+            OptionItem::General => "GENERAL",
+            OptionItem::Back => "BACK",
+        }
+    }
+}
+
+/// The lines of the video page, reached from the options page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VideoItem {
     Fullscreen,
     Scaling,
     Crt,
     Display50,
-    /// opens the sound page
-    Sound,
+    SmoothMotion,
+    Back,
+}
+
+pub(crate) const VIDEO_ITEMS: [VideoItem; 6] = [VideoItem::Fullscreen, VideoItem::Scaling, VideoItem::Crt, VideoItem::Display50, VideoItem::SmoothMotion, VideoItem::Back];
+
+impl VideoItem {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            VideoItem::Fullscreen => "FULLSCREEN",
+            VideoItem::Scaling => "PICTURE SIZE",
+            VideoItem::Crt => "SCREEN FILTER",
+            VideoItem::Display50 => "50 HZ MODE",
+            VideoItem::SmoothMotion => "SMOOTH MOTION",
+            VideoItem::Back => "BACK",
+        }
+    }
+}
+
+/// The lines of the general page, reached from the options page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GeneralItem {
     Winner,
-    Mode,
     Presentation,
     UpdateCheck,
     Back,
 }
 
-pub(crate) const OPTION_ITEMS: [OptionItem; 10] = [
-    OptionItem::Fullscreen,
-    OptionItem::Scaling,
-    OptionItem::Crt,
-    OptionItem::Display50,
-    OptionItem::Sound,
-    OptionItem::Winner,
-    OptionItem::Mode,
-    OptionItem::Presentation,
-    OptionItem::UpdateCheck,
-    OptionItem::Back,
-];
+pub(crate) const GENERAL_ITEMS: [GeneralItem; 4] = [GeneralItem::Winner, GeneralItem::Presentation, GeneralItem::UpdateCheck, GeneralItem::Back];
 
-impl OptionItem {
+impl GeneralItem {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            OptionItem::Fullscreen => "FULLSCREEN",
-            OptionItem::Scaling => "SCALING",
-            OptionItem::Crt => "SCREEN",
-            OptionItem::Display50 => "DISPLAY 50 HZ",
-            OptionItem::Sound => "SOUND",
-            OptionItem::Winner => "WINNER",
-            OptionItem::Mode => "MODE",
-            OptionItem::Presentation => "PRESENTATION",
-            OptionItem::UpdateCheck => "UPDATE CHECK",
-            OptionItem::Back => "BACK",
+            GeneralItem::Winner => "WINNER RULE",
+            GeneralItem::Presentation => "STYLE",
+            GeneralItem::UpdateCheck => "UPDATE CHECK",
+            GeneralItem::Back => "BACK",
         }
     }
 }
@@ -314,27 +342,6 @@ impl SoundItem {
     }
 }
 
-/// The lines of the page with the enhancements. More can be added here: each is a switch in `Enhancements` that only works
-/// in `ENHANCED` mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum EnhancedItem {
-    Mode,
-    SmoothMotion,
-    Back,
-}
-
-pub(crate) const ENHANCED_ITEMS: [EnhancedItem; 3] = [EnhancedItem::Mode, EnhancedItem::SmoothMotion, EnhancedItem::Back];
-
-impl EnhancedItem {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            EnhancedItem::Mode => "MODE",
-            EnhancedItem::SmoothMotion => "SMOOTH MOTION",
-            EnhancedItem::Back => "BACK",
-        }
-    }
-}
-
 /// How long the result stays on the screen before a key can close it, in logic steps (50 per second)
 pub const RESULT_HOLD: u32 = 150;
 
@@ -348,13 +355,14 @@ pub enum GameMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RootItem {
+    /// the main menu, when a suspended game of 1 or 2 players waits (see `suspend`)
+    Continue(u8),
     Start(GameMode),
     Resume,
     Network,
     HighScores,
     Modules,
-    Keyboard,
-    Controller,
+    Controls,
     Options,
     QuitToTitle,
     Quit,
@@ -363,14 +371,15 @@ pub(crate) enum RootItem {
 impl RootItem {
     pub(crate) fn label(self) -> &'static str {
         match self {
+            RootItem::Continue(2) => "CONTINUE 2 PLAYERS",
+            RootItem::Continue(_) => "CONTINUE 1 PLAYER",
             RootItem::Start(GameMode::OnePlayer) => "1 PLAYER",
             RootItem::Start(GameMode::TwoPlayers) => "2 PLAYERS",
             RootItem::Resume => "RESUME",
             RootItem::Network => "NETWORK",
             RootItem::HighScores => "HIGH SCORES",
             RootItem::Modules => "ROM MODULES",
-            RootItem::Keyboard => "KEYBOARD",
-            RootItem::Controller => "CONTROLLER",
+            RootItem::Controls => "CONTROLS",
             RootItem::Options => "OPTIONS",
             RootItem::QuitToTitle => "QUIT TO TITLE",
             RootItem::Quit => "QUIT",
@@ -380,24 +389,27 @@ impl RootItem {
 }
 
 pub(crate) const NETWORK_ITEMS: [&str; 4] = ["HOST SAME TIME", "HOST TAKE TURNS", "JOIN GAME", "BACK"];
-const MAIN_ITEMS: [RootItem; 9] = [
+/// The device pages behind `CONTROLS`.
+pub(crate) const CONTROLS_ITEMS: [&str; 3] = ["KEYBOARD", "CONTROLLER", "BACK"];
+const MAIN_ITEMS: [RootItem; 8] = [
     RootItem::Start(GameMode::OnePlayer),
     RootItem::Start(GameMode::TwoPlayers),
     RootItem::Network,
-    RootItem::HighScores,
-    RootItem::Keyboard,
-    RootItem::Controller,
-    RootItem::Options,
     RootItem::Modules,
+    RootItem::HighScores,
+    RootItem::Controls,
+    RootItem::Options,
     RootItem::Quit,
 ];
-const PAUSE_ITEMS: [RootItem; 5] = [RootItem::Resume, RootItem::Keyboard, RootItem::Controller, RootItem::Options, RootItem::QuitToTitle];
+const PAUSE_ITEMS: [RootItem; 4] = [RootItem::Resume, RootItem::Controls, RootItem::Options, RootItem::QuitToTitle];
 
 /// What the app has to do after a menu step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     None,
     StartGame(GameMode),
+    /// `CONTINUE 1 PLAYER` / `CONTINUE 2 PLAYERS`: take the suspended game of that many players
+    Continue(u8),
     Resume,
     QuitToTitle,
     QuitApp,
@@ -420,7 +432,7 @@ pub enum Outcome {
     ModuleAdd,
     /// the options page asks for the disk image again: AUTHENTIC needs a file that older data folders lack
     AuthenticData,
-    /// play this module (its id, empty for the original game): the app saves the choice and restarts
+    /// play this module (its id, empty for the original game): the app saves the choice and switches the game in place
     ModulePlay(String),
     /// delete this module
     ModuleRemove(String),
@@ -485,6 +497,10 @@ pub struct Menu {
     pub module_sel: Option<usize>,
     /// can `PRESENTATION: AUTHENTIC` be used? (the app keeps it up to date)
     pub authentic: AuthenticAvail,
+    /// the games of this module that wait to be continued, one player first (the app keeps it up to date, see `set_suspend`)
+    pub suspended: Vec<crate::suspend::Info>,
+    /// the game that is paused is saved when the program is closed (a local game: the pause menu says so)
+    pub can_suspend: bool,
 }
 
 impl Menu {
@@ -518,6 +534,8 @@ impl Menu {
             module_error: None,
             module_sel: None,
             authentic: AuthenticAvail::Ready,
+            suspended: Vec::new(),
+            can_suspend: false,
         }
     }
 
@@ -525,11 +543,37 @@ impl Menu {
         Self { paused: true, ..Self::main() }
     }
 
-    pub(crate) fn root_items(&self) -> &'static [RootItem] {
+    /// The lines of the root page. The main menu starts with a CONTINUE line for every suspended game.
+    pub(crate) fn root_items(&self) -> Vec<RootItem> {
         if self.paused {
-            &PAUSE_ITEMS
+            PAUSE_ITEMS.to_vec()
         } else {
-            &MAIN_ITEMS
+            self.suspended.iter().map(|i| RootItem::Continue(i.players)).chain(MAIN_ITEMS).collect()
+        }
+    }
+
+    /// The suspended game of `players` players, if there is one.
+    pub fn suspended_game(&self, players: u8) -> Option<&crate::suspend::Info> {
+        self.suspended.iter().find(|i| i.players == players)
+    }
+
+    /// Tells the main menu about the suspended games (none, one or both). CONTINUE lines come and go, so the cursor follows
+    /// the line it was on.
+    pub fn set_suspend(&mut self, suspended: Vec<crate::suspend::Info>) {
+        let same_lines = self.suspended.iter().map(|i| i.players).eq(suspended.iter().map(|i| i.players));
+        if same_lines {
+            self.suspended = suspended;
+            return;
+        }
+        let on_root = self.page == Page::Root && !self.paused;
+        let was = on_root.then(|| self.root_items().get(self.cursor).copied()).flatten();
+        let had_none = self.suspended.is_empty();
+        self.suspended = suspended;
+        if let Some(item) = was {
+            // A menu that has not been touched yet (the cursor on its first line) offers CONTINUE first; otherwise the cursor
+            // stays on the line it was on. When its line goes, it goes to the first line.
+            let untouched = had_none && self.cursor == 0 && !self.suspended.is_empty();
+            self.cursor = if untouched { 0 } else { self.root_items().iter().position(|&i| i == item).unwrap_or(0) };
         }
     }
 
@@ -544,6 +588,7 @@ impl Menu {
         self.module_error = None;
         match self.page {
             Page::Root => self.step_root(nav),
+            Page::ControlsPick => self.step_controls_pick(nav),
             Page::Controls(device) => self.step_controls(nav, device, b),
             Page::Network => self.step_network(nav),
             Page::Hosting => self.step_hosting(nav),
@@ -551,7 +596,8 @@ impl Menu {
             Page::Scores => self.step_scores(nav),
             Page::EnterName => self.step_name(nav),
             Page::Options => self.step_options(nav),
-            Page::Enhanced => self.step_enhanced(nav),
+            Page::Video => self.step_video(nav),
+            Page::General => self.step_general(nav),
             Page::Sound => self.step_sound(nav),
             Page::ConfirmQuit => self.step_confirm_quit(nav),
             Page::Modules => self.step_modules(nav),
@@ -951,6 +997,7 @@ impl Menu {
             Nav::Down => self.cursor = (self.cursor + 1) % n,
             Nav::Back if self.paused => return Outcome::Resume,
             Nav::Confirm => match self.root_items()[self.cursor] {
+                RootItem::Continue(n) => return Outcome::Continue(n),
                 RootItem::Start(mode) => return Outcome::StartGame(mode),
                 RootItem::Resume => return Outcome::Resume,
                 RootItem::Network => {
@@ -963,8 +1010,10 @@ impl Menu {
                     // the module that is played starts selected
                     self.cursor = self.modules.iter().position(|m| m.id == self.active_module).map_or(0, |i| i + 1);
                 }
-                RootItem::Keyboard => self.open(Device::Keyboard),
-                RootItem::Controller => self.open(Device::Pad),
+                RootItem::Controls => {
+                    self.page = Page::ControlsPick;
+                    self.cursor = 0;
+                }
                 RootItem::Options => {
                     self.page = Page::Options;
                     self.cursor = 0;
@@ -990,25 +1039,54 @@ impl Menu {
                 self.page = Page::Root;
                 self.cursor = self.root_items().iter().position(|&i| i == RootItem::Options).unwrap_or(0);
             }
-            (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Fullscreen) => return Outcome::Option(OptionChange::Fullscreen),
-            (Nav::Left, OptionItem::Scaling) => return Outcome::Option(OptionChange::Scaling(false)),
-            (Nav::Right | Nav::Confirm, OptionItem::Scaling) => return Outcome::Option(OptionChange::Scaling(true)),
-            (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Crt) => return Outcome::Option(OptionChange::Crt),
-            (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Display50) => return Outcome::Option(OptionChange::Display50),
-            (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::UpdateCheck) => return Outcome::Option(OptionChange::UpdateCheck),
-            (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Winner) => return Outcome::Option(OptionChange::Winner),
-            (Nav::Right | Nav::Confirm, OptionItem::Sound) => {
-                self.page = Page::Sound;
+            (Nav::Right | Nav::Confirm, OptionItem::Video | OptionItem::Sound | OptionItem::General) => {
+                self.page = match item {
+                    OptionItem::Video => Page::Video,
+                    OptionItem::Sound => Page::Sound,
+                    _ => Page::General,
+                };
                 self.cursor = 0;
             }
-            // left and right switch the mode, confirm opens the page with the single enhancements
-            (Nav::Left | Nav::Right, OptionItem::Mode) => return Outcome::Option(OptionChange::Mode),
-            (Nav::Confirm, OptionItem::Mode) => {
-                self.page = Page::Enhanced;
-                self.cursor = 0;
-            }
+            _ => {}
+        }
+        Outcome::None
+    }
+
+    /// BACK from a page of the options hub: the hub, on the line that opened the page.
+    fn close_options_page(&mut self, item: OptionItem) {
+        self.page = Page::Options;
+        self.cursor = OPTION_ITEMS.iter().position(|&i| i == item).unwrap_or(0);
+    }
+
+    fn step_video(&mut self, nav: Nav) -> Outcome {
+        let n = VIDEO_ITEMS.len();
+        let item = VIDEO_ITEMS[self.cursor.min(n - 1)];
+        match (nav, item) {
+            (Nav::Up, _) => self.cursor = (self.cursor + n - 1) % n,
+            (Nav::Down, _) => self.cursor = (self.cursor + 1) % n,
+            (Nav::Back, _) | (Nav::Confirm, VideoItem::Back) => self.close_options_page(OptionItem::Video),
+            (Nav::Left | Nav::Right | Nav::Confirm, VideoItem::Fullscreen) => return Outcome::Option(OptionChange::Fullscreen),
+            (Nav::Left, VideoItem::Scaling) => return Outcome::Option(OptionChange::Scaling(false)),
+            (Nav::Right | Nav::Confirm, VideoItem::Scaling) => return Outcome::Option(OptionChange::Scaling(true)),
+            (Nav::Left | Nav::Right | Nav::Confirm, VideoItem::Crt) => return Outcome::Option(OptionChange::Crt),
+            (Nav::Left | Nav::Right | Nav::Confirm, VideoItem::Display50) => return Outcome::Option(OptionChange::Display50),
+            (Nav::Left | Nav::Right | Nav::Confirm, VideoItem::SmoothMotion) => return Outcome::Option(OptionChange::SmoothMotion),
+            _ => {}
+        }
+        Outcome::None
+    }
+
+    fn step_general(&mut self, nav: Nav) -> Outcome {
+        let n = GENERAL_ITEMS.len();
+        let item = GENERAL_ITEMS[self.cursor.min(n - 1)];
+        match (nav, item) {
+            (Nav::Up, _) => self.cursor = (self.cursor + n - 1) % n,
+            (Nav::Down, _) => self.cursor = (self.cursor + 1) % n,
+            (Nav::Back, _) | (Nav::Confirm, GeneralItem::Back) => self.close_options_page(OptionItem::General),
+            (Nav::Left | Nav::Right | Nav::Confirm, GeneralItem::UpdateCheck) => return Outcome::Option(OptionChange::UpdateCheck),
+            (Nav::Left | Nav::Right | Nav::Confirm, GeneralItem::Winner) => return Outcome::Option(OptionChange::Winner),
             // the way out of AUTHENTIC is always open; the way in needs the data
-            (Nav::Left | Nav::Right | Nav::Confirm, OptionItem::Presentation) => match self.authentic {
+            (Nav::Left | Nav::Right | Nav::Confirm, GeneralItem::Presentation) => match self.authentic {
                 _ if self.settings.presentation == crate::settings::Presentation::Authentic => return Outcome::Option(OptionChange::Presentation),
                 AuthenticAvail::Ready => return Outcome::Option(OptionChange::Presentation),
                 AuthenticAvail::NeedsData if nav == Nav::Confirm => return Outcome::AuthenticData,
@@ -1025,10 +1103,7 @@ impl Menu {
         match (nav, item) {
             (Nav::Up, _) => self.cursor = (self.cursor + n - 1) % n,
             (Nav::Down, _) => self.cursor = (self.cursor + 1) % n,
-            (Nav::Back, _) | (Nav::Confirm, SoundItem::Back) => {
-                self.page = Page::Options;
-                self.cursor = OPTION_ITEMS.iter().position(|&i| i == OptionItem::Sound).unwrap_or(0);
-            }
+            (Nav::Back, _) | (Nav::Confirm, SoundItem::Back) => self.close_options_page(OptionItem::Sound),
             (Nav::Left, SoundItem::Volume) => return Outcome::Option(OptionChange::VolumeDown),
             (Nav::Right | Nav::Confirm, SoundItem::Volume) => return Outcome::Option(OptionChange::VolumeUp),
             (Nav::Left, SoundItem::Music) => return Outcome::Option(OptionChange::MusicDown),
@@ -1042,23 +1117,6 @@ impl Menu {
         Outcome::None
     }
 
-    fn step_enhanced(&mut self, nav: Nav) -> Outcome {
-        let n = ENHANCED_ITEMS.len();
-        let item = ENHANCED_ITEMS[self.cursor.min(n - 1)];
-        match (nav, item) {
-            (Nav::Up, _) => self.cursor = (self.cursor + n - 1) % n,
-            (Nav::Down, _) => self.cursor = (self.cursor + 1) % n,
-            (Nav::Back, _) | (Nav::Confirm, EnhancedItem::Back) => {
-                self.page = Page::Options;
-                self.cursor = OPTION_ITEMS.iter().position(|&i| i == OptionItem::Mode).unwrap_or(0);
-            }
-            (Nav::Left | Nav::Right | Nav::Confirm, EnhancedItem::Mode) => return Outcome::Option(OptionChange::Mode),
-            (Nav::Left | Nav::Right | Nav::Confirm, EnhancedItem::SmoothMotion) => return Outcome::Option(OptionChange::SmoothMotion),
-            _ => {}
-        }
-        Outcome::None
-    }
-
     fn open(&mut self, device: Device) {
         self.page = Page::Controls(device);
         self.cursor = 0;
@@ -1066,9 +1124,29 @@ impl Menu {
     }
 
     fn close_controls(&mut self, device: Device) {
+        self.page = Page::ControlsPick;
+        self.cursor = if device == Device::Keyboard { 0 } else { 1 };
+    }
+
+    fn step_controls_pick(&mut self, nav: Nav) -> Outcome {
+        let n = CONTROLS_ITEMS.len();
+        match nav {
+            Nav::Up => self.cursor = (self.cursor + n - 1) % n,
+            Nav::Down => self.cursor = (self.cursor + 1) % n,
+            Nav::Back => self.leave_controls_pick(),
+            Nav::Confirm => match self.cursor {
+                0 => self.open(Device::Keyboard),
+                1 => self.open(Device::Pad),
+                _ => self.leave_controls_pick(),
+            },
+            _ => {}
+        }
+        Outcome::None
+    }
+
+    fn leave_controls_pick(&mut self) {
         self.page = Page::Root;
-        let item = if device == Device::Keyboard { RootItem::Keyboard } else { RootItem::Controller };
-        self.cursor = self.root_items().iter().position(|&i| i == item).unwrap_or(0);
+        self.cursor = self.root_items().iter().position(|&i| i == RootItem::Controls).unwrap_or(0);
     }
 
     fn step_controls(&mut self, nav: Nav, device: Device, b: &mut Bindings) -> Outcome {
@@ -1197,17 +1275,82 @@ mod tests {
         assert_eq!(nav(&mut m, &mut b, &[Nav::Up, Nav::Confirm]), Outcome::None);
         assert_eq!((m.page, m.cursor), (Page::ConfirmQuit, 1));
         assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None, "NO goes back");
-        assert_eq!((m.page, m.cursor), (Page::Root, 4));
+        assert_eq!((m.page, m.cursor), (Page::Root, 3));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Confirm, Nav::Back]), Outcome::None, "back is NO too");
         assert_eq!(m.page, Page::Root);
         assert_eq!(nav(&mut m, &mut b, &[Nav::Confirm, Nav::Up, Nav::Confirm]), Outcome::QuitToTitle);
+    }
+
+    fn suspended(players: u8) -> crate::suspend::Info {
+        crate::suspend::Info { players, stage: 7, score: 12350, player: 0, other_score: 0 }
+    }
+
+    fn labels(m: &Menu) -> Vec<&'static str> {
+        m.root_items().iter().map(|i| i.label()).collect()
+    }
+
+    #[test]
+    fn a_continue_line_for_every_suspended_game_comes_first() {
+        let mut b = Bindings::default();
+        let mut m = Menu::main();
+        assert_eq!(m.root_items().len(), 8);
+        assert!(!labels(&m).iter().any(|l| l.starts_with("CONTINUE")));
+        // one suspended game: one line, and a menu that was not touched yet offers it
+        m.set_suspend(vec![suspended(2)]);
+        assert_eq!(labels(&m)[..2], ["CONTINUE 2 PLAYERS", "1 PLAYER"]);
+        assert_eq!((m.root_items().len(), m.cursor), (9, 0));
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::Continue(2));
+        // both: one player first, each line its own outcome
+        let mut m = Menu::main();
+        m.set_suspend(vec![suspended(1), suspended(2)]);
+        assert_eq!(labels(&m)[..3], ["CONTINUE 1 PLAYER", "CONTINUE 2 PLAYERS", "1 PLAYER"]);
+        assert_eq!((m.root_items().len(), m.cursor), (10, 0));
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::Continue(1));
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::Continue(2));
+        // 1 PLAYER and 2 PLAYERS follow
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::StartGame(GameMode::OnePlayer));
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::StartGame(GameMode::TwoPlayers));
+        assert_eq!(m.suspended_game(2).map(|i| i.players), Some(2));
+        assert!(Menu::main().suspended_game(1).is_none());
+        // a pause menu never has them
+        let mut p = Menu::pause();
+        p.set_suspend(vec![suspended(1), suspended(2)]);
+        assert_eq!(p.root_items().len(), 4);
+    }
+
+    #[test]
+    fn the_cursor_stays_on_its_line_when_continue_lines_come_and_go() {
+        let mut m = Menu::main();
+        m.select_mode(Some(GameMode::TwoPlayers));
+        assert_eq!(m.root_items()[m.cursor].label(), "2 PLAYERS");
+        m.set_suspend(vec![suspended(1)]);
+        assert_eq!(m.root_items()[m.cursor].label(), "2 PLAYERS");
+        m.set_suspend(vec![suspended(1), suspended(2)]);
+        assert_eq!(m.root_items()[m.cursor].label(), "2 PLAYERS");
+        // the same lines again (other values) change nothing
+        m.set_suspend(vec![suspended(1), crate::suspend::Info { score: 5, ..suspended(2) }]);
+        assert_eq!(m.root_items()[m.cursor].label(), "2 PLAYERS");
+        m.set_suspend(Vec::new());
+        assert_eq!(m.root_items()[m.cursor].label(), "2 PLAYERS");
+        // the line that went away: the first one
+        m.set_suspend(vec![suspended(1), suspended(2)]);
+        m.cursor = 1;
+        m.set_suspend(vec![suspended(1)]);
+        assert_eq!(m.root_items()[m.cursor].label(), "CONTINUE 1 PLAYER");
+        m.cursor = 0;
+        m.set_suspend(Vec::new());
+        assert_eq!(m.root_items()[m.cursor].label(), "1 PLAYER");
+        // a cursor that is on the first line of a fresh menu goes to the first CONTINUE line
+        let mut m = Menu::main();
+        m.set_suspend(vec![suspended(1), suspended(2)]);
+        assert_eq!(m.cursor, 0);
     }
 
     #[test]
     fn rebinding_a_key_stores_it_in_the_selected_slot() {
         let mut b = Bindings::default();
         let mut m = Menu::main();
-        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Confirm, Nav::Down, Nav::Down, Nav::Down, Nav::Right, Nav::Confirm]);
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Confirm, Nav::Confirm, Nav::Down, Nav::Down, Nav::Down, Nav::Right, Nav::Confirm]);
         assert!(m.capturing);
         assert_eq!(m.capture_key(Keycode::J, &mut b), Outcome::Changed);
         assert_eq!(b.keys[3][1], Some(Keycode::J));
@@ -1219,7 +1362,7 @@ mod tests {
         let mut b = Bindings::default();
         let before = b.clone();
         let mut m = Menu::main();
-        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Confirm, Nav::Confirm, Nav::Back]);
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Confirm, Nav::Confirm, Nav::Confirm, Nav::Back]);
         assert!(!m.capturing);
         assert_eq!(m.page, Page::Controls(Device::Keyboard));
         assert_eq!(b, before);
@@ -1229,7 +1372,7 @@ mod tests {
     fn clear_and_reset_only_touch_their_device() {
         let mut b = Bindings::default();
         let mut m = Menu::main();
-        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Confirm]);
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Confirm, Nav::Confirm]);
         assert_eq!(m.step(Nav::Clear, &mut b), Outcome::Changed);
         assert_eq!(b.keys[0][0], None);
         let pad = b.pad;
@@ -1244,7 +1387,14 @@ mod tests {
     fn back_returns_to_the_item_that_opened_the_page() {
         let mut b = Bindings::default();
         let mut m = Menu::main();
-        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Up, Nav::Up, Nav::Confirm, Nav::Back]);
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Up, Nav::Confirm]);
+        assert_eq!(m.page, Page::ControlsPick);
+        // CONTROLS picks the device, and BACK from a device page returns to that line
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]);
+        assert_eq!(m.page, Page::Controls(Device::Pad));
+        nav(&mut m, &mut b, &[Nav::Back]);
+        assert_eq!((m.page, m.cursor), (Page::ControlsPick, 1));
+        nav(&mut m, &mut b, &[Nav::Back]);
         assert_eq!((m.page, m.cursor), (Page::Root, 5));
     }
 
@@ -1314,8 +1464,8 @@ mod tests {
         }
         // opened by hand it still comes back to its own entry
         let mut m = Menu::main();
-        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Confirm, Nav::Back]);
-        assert_eq!(m.cursor, 3);
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Confirm, Nav::Back]);
+        assert_eq!(m.cursor, 4);
     }
 
     #[test]
@@ -1351,17 +1501,22 @@ mod tests {
     fn options_change_nothing_themselves_and_ask_the_app() {
         let mut b = Bindings::default();
         let mut m = Menu::main();
-        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Up, Nav::Confirm]);
-        assert_eq!(m.page, Page::Options);
+        // OPTIONS is the third entry from the bottom (before QUIT)
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Confirm]);
+        assert_eq!(m.page, Page::Options, "the hub");
+        assert_eq!(m.step(Nav::Left, &mut b), Outcome::None, "nothing is changed on the hub");
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None);
+        assert_eq!((m.page, m.cursor), (Page::Video, 0));
         assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::Option(OptionChange::Fullscreen));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::Option(OptionChange::Scaling(true)));
         assert_eq!(m.step(Nav::Left, &mut b), Outcome::Option(OptionChange::Scaling(false)));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Right]), Outcome::Option(OptionChange::Crt));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::Option(OptionChange::Display50));
-        // SOUND opens its page; left does nothing on the line itself
-        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Left]), Outcome::None);
-        assert_eq!(m.page, Page::Options);
-        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None);
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Left]), Outcome::Option(OptionChange::SmoothMotion));
+        nav(&mut m, &mut b, &[Nav::Back]);
+        assert_eq!((m.page, OPTION_ITEMS[m.cursor]), (Page::Options, OptionItem::Video), "BACK returns to the VIDEO line");
+        // SOUND
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::None);
         assert_eq!((m.page, m.cursor), (Page::Sound, 0));
         assert_eq!(m.step(Nav::Left, &mut b), Outcome::Option(OptionChange::VolumeDown));
         assert_eq!(m.step(Nav::Right, &mut b), Outcome::Option(OptionChange::VolumeUp));
@@ -1372,21 +1527,25 @@ mod tests {
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::Option(OptionChange::MenuSounds(true)));
         assert_eq!(m.step(Nav::Left, &mut b), Outcome::Option(OptionChange::MenuSounds(false)));
         nav(&mut m, &mut b, &[Nav::Back]);
-        assert_eq!(m.page, Page::Options, "BACK returns to the options page, on the SOUND line");
-        assert_eq!(OPTION_ITEMS[m.cursor], OptionItem::Sound);
-        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Right]), Outcome::Option(OptionChange::Winner));
-        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Right]), Outcome::Option(OptionChange::Mode));
+        assert_eq!((m.page, OPTION_ITEMS[m.cursor]), (Page::Options, OptionItem::Sound), "BACK returns to the SOUND line");
+        // GENERAL
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]);
+        assert_eq!((m.page, m.cursor), (Page::General, 0));
+        assert_eq!(m.step(Nav::Right, &mut b), Outcome::Option(OptionChange::Winner));
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Right]), Outcome::Option(OptionChange::UpdateCheck));
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]);
+        assert_eq!((m.page, OPTION_ITEMS[m.cursor]), (Page::Options, OptionItem::General), "the BACK line returns too");
         nav(&mut m, &mut b, &[Nav::Back]);
         assert_eq!((m.page, m.cursor), (Page::Root, 6));
     }
 
     #[test]
-    fn the_presentation_item_needs_the_data_to_switch_to_authentic_but_can_always_switch_back() {
+    fn the_style_item_needs_the_data_to_switch_to_authentic_but_can_always_switch_back() {
         use crate::settings::Presentation;
         let mut b = Bindings::default();
         let mut m = Menu::main();
-        m.page = Page::Options;
-        m.cursor = OPTION_ITEMS.iter().position(|&i| i == OptionItem::Presentation).unwrap();
+        m.page = Page::General;
+        m.cursor = GENERAL_ITEMS.iter().position(|&i| i == GeneralItem::Presentation).unwrap();
         // data there: left, right and confirm switch
         m.authentic = AuthenticAvail::Ready;
         for n in [Nav::Left, Nav::Right, Nav::Confirm] {
@@ -1402,21 +1561,6 @@ mod tests {
         // in AUTHENTIC the way out is always open
         m.settings.presentation = Presentation::Authentic;
         assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::Option(OptionChange::Presentation));
-    }
-
-    #[test]
-    fn the_mode_item_opens_the_page_with_the_enhancements() {
-        let mut b = Bindings::default();
-        let mut m = Menu::main();
-        m.page = Page::Options;
-        m.cursor = OPTION_ITEMS.iter().position(|&i| i == OptionItem::Mode).unwrap();
-        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None);
-        assert_eq!((m.page, m.cursor), (Page::Enhanced, 0));
-        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::Option(OptionChange::Mode));
-        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Right]), Outcome::Option(OptionChange::SmoothMotion));
-        nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]);
-        assert_eq!(m.page, Page::Options, "BACK returns to the options page, on the MODE line");
-        assert_eq!(OPTION_ITEMS[m.cursor], OptionItem::Mode);
     }
 
     #[test]
@@ -1456,8 +1600,8 @@ mod tests {
         let mut b = Bindings::default();
         let mut m = Menu::main();
         m.set_modules(&two_modules(), "");
-        // ROM MODULES is the item before QUIT
-        nav(&mut m, &mut b, &[Nav::Up, Nav::Up]);
+        // ROM MODULES is the fourth item
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down]);
         assert_eq!(m.root_items()[m.cursor].label(), "ROM MODULES");
         m.step(Nav::Confirm, &mut b);
         assert_eq!((m.page, m.cursor), (Page::Modules, 0));
@@ -1466,7 +1610,7 @@ mod tests {
 
     #[test]
     fn the_pause_menu_has_no_rom_modules() {
-        assert!(!Menu::pause().root_items().iter().any(|&i| i == RootItem::Modules));
+        assert!(!Menu::pause().root_items().contains(&RootItem::Modules));
     }
 
     #[test]
@@ -1477,7 +1621,7 @@ mod tests {
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Confirm]), Outcome::ModuleAdd);
         assert_eq!(m.page, Page::Modules);
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::None);
-        assert_eq!((m.page, m.cursor), (Page::Root, 7), "back to the item that opened the page");
+        assert_eq!((m.page, m.cursor), (Page::Root, 3), "back to the item that opened the page");
         // back with the back key, and up wraps to BACK
         nav(&mut m, &mut b, &[Nav::Confirm, Nav::Back]);
         assert_eq!(m.page, Page::Root);
@@ -1647,7 +1791,7 @@ mod tests {
         let mut b = Bindings::default();
         let mut m = Menu::main();
         m.set_modules(&two_modules(), "bbbbbbbbbbbbbbbb");
-        nav(&mut m, &mut b, &[Nav::Up, Nav::Up, Nav::Confirm]);
+        nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Confirm]);
         assert_eq!(m.cursor, 2);
         m.module_added(None, Some("this is not a valid ROM module".into()));
         assert!(m.module_error.is_some());

@@ -220,18 +220,21 @@ impl Stage {
         }
         // object spawn list
         let mut spawns = Vec::new();
-        while n < 100 {
-            // special rooms have no list: the game still reads the following bytes as one but never reaches column 255
-            let c = at(p)?;
-            if c == 0xFF {
-                p += 1;
-                break;
-            }
-            let t = at(p + 2)?;
-            spawns.push(Spawn { column: c.wrapping_sub(1), param: at(p + 1)?, kind: t & 0x7F, special: t & 0x80 != 0 });
-            p += 3;
-            if spawns.len() > 256 {
-                return Err(StageError::Corrupt("spawn list does not end"));
+        // (stage numbers 100 and up are the special rooms)
+        if n < 100 {
+            loop {
+                // special rooms have no list: the game still reads the following bytes as one but never reaches column 255
+                let c = at(p)?;
+                if c == 0xFF {
+                    p += 1;
+                    break;
+                }
+                let t = at(p + 2)?;
+                spawns.push(Spawn { column: c.wrapping_sub(1), param: at(p + 1)?, kind: t & 0x7F, special: t & 0x80 != 0 });
+                p += 3;
+                if spawns.len() > 256 {
+                    return Err(StageError::Corrupt("spawn list does not end"));
+                }
             }
         }
         Ok(Stage { number: n, header: Header(h), banner, commands, spawns, start_addr: start, end_addr: p as u16 })

@@ -114,18 +114,17 @@ impl Vic {
 
     /// Picture pixel at which a colour written in cycle `c` is first visible.
     pub fn x_of_cycle(c: u16) -> i32 {
-        c as i32 * 8 + X_OF_CYCLE1 + 0
+        c as i32 * 8 + X_OF_CYCLE1
     }
 
     /// Called when a new cycle starts. Handles line-start work and the bad line decision. Returns true if a raster IRQ
     /// condition appeared.
     pub fn start_cycle(&mut self) {
         let c = self.cycle;
-        if c == 2 && self.line != 0 || c == 3 && self.line == 0 {
-            if self.raster_compare() == self.line {
+        if (c == 2 && self.line != 0 || c == 3 && self.line == 0)
+            && self.raster_compare() == self.line {
                 self.irq_flags |= 1;
             }
-        }
         if c == 1 {
             let (top, bottom) = if self.regs[0x11] & 8 != 0 { (51, 251) } else { (55, 247) };
             if self.line == bottom {
@@ -405,7 +404,7 @@ impl Vic {
                 };
                 let w = pw * if xexp { 2 } else { 1 };
                 for j in 0..w {
-                    let x = px0 + (k as i32) * w as i32 + j as i32;
+                    let x = px0 + k * w + j;
                     if !(0..WIDTH as i32).contains(&x) {
                         continue;
                     }
@@ -427,5 +426,11 @@ impl Vic {
         }
         self.collide_ss |= ss;
         self.collide_sb |= sb;
+    }
+}
+
+impl Default for Vic {
+    fn default() -> Self {
+        Self::new()
     }
 }

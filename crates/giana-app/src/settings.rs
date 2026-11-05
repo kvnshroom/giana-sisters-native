@@ -21,7 +21,7 @@ pub enum Scaling {
 impl Scaling {
     pub fn label(self) -> &'static str {
         match self {
-            Scaling::Whole => "WHOLE PIXELS",
+            Scaling::Whole => "WITH BORDER",
             Scaling::NoBorder => "NO BORDER",
             Scaling::Fill => "FILL SCREEN",
         }
@@ -211,6 +211,17 @@ impl Default for Enhancements {
 }
 
 impl Enhancements {
+    /// The `SMOOTH MOTION` switch of the video page. It shows `smooth_motion()`: turning it on also sets the master
+    /// `mode` to enhanced (both keys stay in `settings.conf`); turning it off leaves `mode` as it is.
+    pub fn toggle_smooth_motion(&mut self) {
+        if self.smooth_motion() {
+            self.smooth_motion = false;
+        } else {
+            self.enhanced = true;
+            self.smooth_motion = true;
+        }
+    }
+
     /// Smooth motion is on: the mode is `ENHANCED` and the switch is on.
     pub fn smooth_motion(&self) -> bool {
         self.enhanced && self.smooth_motion
@@ -557,6 +568,35 @@ mod tests {
         // independent of the mode
         let s = Settings::from_text("mode = enhanced\npresentation = authentic\n");
         assert!(s.enhancements.enhanced && s.presentation == Presentation::Authentic);
+    }
+
+    /// The one SMOOTH MOTION switch shows the same state as the old MODE + SMOOTH MOTION pair for every old file, and
+    /// writes both keys back.
+    #[test]
+    fn the_smooth_motion_switch_reads_and_writes_mode_and_smooth_motion() {
+        for (text, shown) in [
+            ("mode = original\nsmooth_motion = true\n", false),
+            ("mode = original\nsmooth_motion = false\n", false),
+            ("mode = enhanced\nsmooth_motion = true\n", true),
+            ("mode = enhanced\nsmooth_motion = false\n", false),
+            ("volume = 3\n", false),
+        ] {
+            let mut s = Settings::from_text(text);
+            assert_eq!(s.enhancements.smooth_motion(), shown, "{text:?}");
+            // switching flips what is shown, and the file keeps saying so
+            s.enhancements.toggle_smooth_motion();
+            assert_eq!(s.enhancements.smooth_motion(), !shown, "{text:?}");
+            let saved = s.to_text();
+            let back = Settings::from_text(&saved);
+            assert_eq!(back.enhancements.smooth_motion(), !shown, "{text:?}");
+            if !shown {
+                assert!(saved.contains("mode = enhanced\n") && saved.contains("smooth_motion = true\n"), "{saved}");
+            }
+        }
+        // switched off, the master mode stays as it was
+        let mut s = Settings::from_text("mode = enhanced\nsmooth_motion = true\n");
+        s.enhancements.toggle_smooth_motion();
+        assert!(s.to_text().contains("mode = enhanced\n") && s.to_text().contains("smooth_motion = false\n"));
     }
 
     #[test]

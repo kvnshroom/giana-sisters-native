@@ -139,7 +139,11 @@ pub fn covered_ranges(family: Family) -> &'static [(u16, u16)] {
         ],
         // the 7A3 engine is played by engine B (`giana-core/src/engine_b`), a port of the hack's own routines: its code
         // changes are what that engine implements, so none of them is left uncovered
-        Family::SevenA3 => &[(0x0000, 0xFFFF)],
+        // ... except the sound driver (`$41C0..$4A79`): the port plays every module with the original's driver translated to Rust
+        // (`giana-core/src/sound_driver.rs`), so a hack with another driver does not sound as intended and says so (none of the
+        // known ones: the construction-set game's snapshot has an empty driver area, `apply` completes it with the original's,
+        // which is what the game's own `GAME PART 2` file holds)
+        Family::SevenA3 => &[(0x0000, 0x41BF), (0x4A7A, 0xFFFF)],
         _ => &[],
     }
 }

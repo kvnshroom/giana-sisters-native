@@ -33,13 +33,13 @@ impl Mixer {
             self.scratch.resize(out.len(), 0);
             self.effects.fill_audio_buffer(&mut self.scratch);
             for (m, &e) in out.iter_mut().zip(&self.scratch) {
-                let mixed = (*m as i32 * self.music_gain >> 8) + (e as i32 * self.effects_gain >> 8);
+                let mixed = ((*m as i32 * self.music_gain) >> 8) + ((e as i32 * self.effects_gain) >> 8);
                 *m = mixed.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
             }
         }
         if self.gain != 256 {
             for sample in out.iter_mut() {
-                *sample = (*sample as i32 * self.gain >> 8) as i16;
+                *sample = ((*sample as i32 * self.gain) >> 8) as i16;
             }
         }
     }
@@ -103,7 +103,7 @@ mod tests {
                 mixer.fill(&mut x);
                 plain.fill_audio_buffer(&mut y);
                 if gain != 256 {
-                    y.iter_mut().for_each(|s| *s = (*s as i32 * gain >> 8) as i16);
+                    y.iter_mut().for_each(|s| *s = ((*s as i32 * gain) >> 8) as i16);
                 }
                 a.extend(x);
                 b.extend(y);
@@ -117,7 +117,7 @@ mod tests {
     fn music_and_effects_alone_both_sound_and_the_volumes_apply() {
         giana_core::skip_without_data!();
         let (_, calls) = session(240);
-        let mut render = |music_gain: i32, effects_gain: i32| {
+        let render = |music_gain: i32, effects_gain: i32| {
             let mut mixer = Mixer::new();
             mixer.split = true;
             mixer.music_gain = music_gain;

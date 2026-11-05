@@ -42,7 +42,7 @@ use giana_engine_b::{expand_map, Spawn, Stage, StageHeader, TypeRecord};
 use std::sync::Arc;
 
 /// Header and object list of the stage that was built last (`$9000..$900F` and the list `$9006/7` points to).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Current {
     /// stage number (`$20`) it was built for; `$64` is the title backdrop, `$65..` treasure rooms
     pub number: u8,
@@ -65,12 +65,16 @@ pub struct Built {
     pub min_power: Option<u8>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct EngineB {
+    /// the module's disk files: not part of a suspend point, `snapshot::restore` sets them again
+    #[serde(skip)]
     files: Arc<Vec<ModFile>>,
     /// colour attribute per character (`$AB00`): the image's table with the stage constants applied
+    #[serde(with = "giana_engine_b::snap::arr")]
     pub colours: [u8; 256],
     /// tile classes (`$9C20`, bit 0 = solid): the image's table with the stage constants applied
+    #[serde(with = "giana_engine_b::snap::arr")]
     pub classes: [u8; 256],
     /// type records `$00..=$36` (table `$21D8`); `$32` is the monster of the last stage that had one
     pub types: Vec<Option<TypeRecord>>,
@@ -107,6 +111,11 @@ pub struct EngineB {
 }
 
 impl EngineB {
+    /// A restored engine gets the files of the installed module again (they are not part of a snapshot).
+    pub(crate) fn attach(&mut self, files: Arc<Vec<ModFile>>) {
+        self.files = files;
+    }
+
     /// Engine B for the image (`img`: the module's 64K program image) and the disk files of the module.
     pub fn new(files: Arc<Vec<ModFile>>, img: &[u8]) -> EngineB {
         let mut colours = [0u8; 256];

@@ -4,7 +4,7 @@
 //! binding; `toasts` shows the messages over the running game.
 use giana_app::bindings::{Bindings, PadInput};
 use giana_app::hints::InputState;
-use giana_app::menu::{Device, Menu, Page, Search};
+use giana_app::menu::{AuthenticAvail, Device, Menu, Page, Search};
 use giana_app::menu_draw::{self, DrawCtx};
 use giana_app::padicons::{icon_for, Icon, PadKind, DOWN, LEFT, RIGHT, UP};
 use giana_app::result::{decide, Standing, Winner};
@@ -280,15 +280,29 @@ fn main() {
         let mut m = main(0);
         m.show_result(res(Winner::Score, ("GIANA", 12300, 3), ("MARIA", 8450, 5)));
         v.push(("result_hold", m, false));
-        for (name, paused, audio_ok, scaling, cursor) in [("options", false, true, Scaling::NoBorder, 1), ("options_nosound", true, false, Scaling::Fill, 2)] {
+        // the hub with its three pages
+        for (name, paused, audio_ok, cursor) in [("options", false, true, 0), ("options_sound", false, true, 1), ("options_general", true, false, 2), ("options_back", false, true, 3)] {
             let mut m = main(cursor);
             m.paused = paused;
             m.page = Page::Options;
             m.audio_ok = audio_ok;
-            m.settings.volume = 6;
-            m.settings.music_volume = 7;
-            m.settings.effects_volume = 4;
+            v.push((name, m, false));
+        }
+        for (name, paused, cursor, scaling, crt, smooth) in [
+            ("video", false, 0, Scaling::Whole, false, false),
+            ("video_size", false, 1, Scaling::NoBorder, false, false),
+            ("video_filter", true, 2, Scaling::Fill, true, false),
+            ("video_50hz", false, 3, Scaling::Whole, false, false),
+            ("video_smooth", false, 4, Scaling::Whole, false, true),
+            ("video_back", false, 5, Scaling::Whole, false, false),
+        ] {
+            let mut m = main(cursor);
+            m.paused = paused;
+            m.page = Page::Video;
             m.settings.scaling = scaling;
+            m.settings.crt = crt;
+            m.settings.enhancements.enhanced = smooth;
+            m.settings.enhancements.smooth_motion = smooth;
             v.push((name, m, false));
         }
         for (name, cursor, muted, audio_ok) in [("sound_volume", 0, false, true), ("sound_music", 1, false, true), ("sound_menu", 3, true, false), ("sound_back", 4, false, true)] {
@@ -301,21 +315,17 @@ fn main() {
             m.settings.effects_volume = 4;
             v.push((name, m, false));
         }
-        let mut m = main(5);
-        m.page = Page::Options;
-        m.settings.enhancements.enhanced = true;
-        m.settings.winner = Winner::Furthest;
-        v.push(("options_mode", m, false));
-        let mut m = main(3);
-        m.page = Page::Options;
-        v.push(("options_sound", m, false));
-        let mut m = main(7);
-        m.page = Page::Options;
-        v.push(("options_back", m, false));
-        for (name, enhanced, cursor) in [("enhanced_original", false, 0), ("enhanced_off_smooth", false, 1), ("enhanced_on", true, 1)] {
+        for (name, cursor, furthest, authentic) in [
+            ("general_winner", 0, false, AuthenticAvail::Ready),
+            ("general_winner_furthest", 0, true, AuthenticAvail::Ready),
+            ("general_style", 1, false, AuthenticAvail::Ready),
+            ("general_style_data", 1, false, AuthenticAvail::NeedsData),
+            ("general_update", 2, false, AuthenticAvail::Ready),
+        ] {
             let mut m = main(cursor);
-            m.page = Page::Enhanced;
-            m.settings.enhancements.enhanced = enhanced;
+            m.page = Page::General;
+            m.authentic = authentic;
+            m.settings.winner = if furthest { Winner::Furthest } else { Winner::Score };
             v.push((name, m, false));
         }
         for (name, device) in [("keys", Device::Keyboard), ("pad", Device::Pad)] {
@@ -341,7 +351,7 @@ fn main() {
         }
         for (tag, kind) in kinds {
             let all = tag == "xbox";
-            let some = matches!(*name, "main" | "pause" | "pad" | "pad_capture" | "name" | "join" | "options_mode" | "result_score" | "quit" | "host" | "main_update");
+            let some = matches!(*name, "main" | "pause" | "pad" | "pad_capture" | "name" | "join" | "video_smooth" | "result_score" | "quit" | "host" | "main_update");
             if all || some {
                 s.page(name, tag, m, InputState::pad(kind), false, *full);
             }

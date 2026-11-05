@@ -8,7 +8,7 @@ use crate::image::img;
 use crate::mainloop::MainLine;
 use crate::state::{BonusTiming, GameState};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BonusPhase {
     /// L1E2B: waits until the animated tile slots are idle
     SlotWait,
@@ -296,7 +296,7 @@ impl GameState {
                 let steps = if *back { &t.ret_swap } else { &t.swap };
                 // the chain that finishes the swap runs between the handlers unless it ended before the chain (`swap_early`)
                 let early = if *back { t.ret_swap_early } else { t.swap_early };
-                !early && steps.get(*chain).map_or(false, |&(c, _)| c >= SWAP_CELLS)
+                !early && steps.get(*chain).is_some_and(|&(c, _)| c >= SWAP_CELLS)
             }
             // the set-up after the walk happens between the interrupts $12A3 and $1393
             BonusPhase::Prep => true,
@@ -419,7 +419,7 @@ impl GameState {
                 let t = self.bonus_timing_front();
                 let steps = if *back { &t.ret_swap } else { &t.swap };
                 let early = if *back { t.ret_swap_early } else { t.swap_early };
-                early && steps.get(*chain).map_or(false, |&(c, _)| c >= SWAP_CELLS)
+                early && steps.get(*chain).is_some_and(|&(c, _)| c >= SWAP_CELLS)
             }
             _ => false,
         }

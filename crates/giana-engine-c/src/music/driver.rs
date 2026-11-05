@@ -66,10 +66,12 @@ impl Driver {
         self.n = r & 0x80 != 0;
     }
 
+    #[allow(dead_code)] // only used when the translated span contains PHP/PLP/BRK
     fn flags(&self) -> u8 {
         (self.n as u8) << 7 | (self.v as u8) << 6 | 0x20 | (self.z as u8) << 1 | self.c as u8
     }
 
+    #[allow(dead_code)] // only used when the translated span contains PHP/PLP/BRK
     fn set_flags(&mut self, p: u8) {
         self.n = p & 0x80 != 0;
         self.v = p & 0x40 != 0;

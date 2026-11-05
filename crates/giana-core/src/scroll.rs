@@ -61,15 +61,42 @@ impl GameState {
         self.column_scroll_pending = true;
     }
 
-    /// sub_9600 ($960C..$9880): copy loops, then `$14 = 0`
+    /// sub_9600 ($960C..$9880): copy loops, then `$14 = 0`.
+    ///
+    /// The copy runs in the main line from the `$1326` handler on and is still going when the next chain starts. It is done at
+    /// the start of the chain, except for the rows from `scroll_split_row` on: those are shifted only after the tile lookup
+    /// `sub_9DF4` of the chain has read the screen (`column_scroll_rest_sub_9600`). `scroll_split_row` is 25 (all rows before the
+    /// lookup) unless a recording shows that the lookup still saw unshifted rows.
     pub fn column_scroll_finish_sub_9600(&mut self) {
         if !self.column_scroll_pending {
             return;
         }
         self.column_scroll_pending = false;
+        let split = (self.scroll_split_row as usize).clamp(5, 25);
+        self.shift_rows_sub_9600(5, split);
+        if split < 25 {
+            self.column_scroll_rest = true;
+        } else {
+            // $987C: LDA #$00; STA $14
+            self.scroll_wrap_flag = 0;
+        }
+    }
+
+    /// The rows of the copy that came after the tile lookup of this chain (see `column_scroll_finish_sub_9600`).
+    pub fn column_scroll_rest_sub_9600(&mut self) {
+        if !self.column_scroll_rest {
+            return;
+        }
+        self.column_scroll_rest = false;
+        self.shift_rows_sub_9600((self.scroll_split_row as usize).clamp(5, 25), 25);
+        self.scroll_wrap_flag = 0;
+    }
+
+    /// Rows `from..to` of screen RAM and colour RAM shifted left by one column, new column 39 from the map.
+    fn shift_rows_sub_9600(&mut self, from: usize, to: usize) {
         let x = self.map_column as usize;
         // Rows 5..24 of screen RAM ($C8C8..$CBE7): shift left by one column, new column 39 from the map
-        for r in 5..25usize {
+        for r in from..to {
             let base = r * 40;
             for y in 0..39usize {
                 self.screen_ram[base + y] = self.screen_ram[base + y + 1];
@@ -78,15 +105,13 @@ impl GameState {
             self.screen_ram[base + 39] = self.current_map.get((r - 5) * 256 + x).copied().unwrap_or(0);
         }
         // Colour RAM: same shift; new colour = $AB00[new screen character]
-        for r in 5..25usize {
+        for r in from..to {
             let base = r * 40;
             for y in 0..39usize {
                 self.color_ram[base + y] = self.color_ram[base + y + 1];
             }
             self.color_ram[base + 39] = self.char_colour(self.screen_ram[base + 39]);
         }
-        // $987C: LDA #$00; STA $14
-        self.scroll_wrap_flag = 0;
     }
 
     /// Title demo (original frames between the stage-2 attract screen and the fire press): the IRQ chain runs

@@ -198,7 +198,7 @@ fn test_hit_brick_reveals_diamond() {
     }
 
     assert_eq!(game.diamonds, initial_diamonds + 1, "Hitting brick under $EB must pop a diamond!");
-    assert!(game.items.len() > 0, "PowerupItem must pop up!");
+    assert!(!game.items.is_empty(), "PowerupItem must pop up!");
 }
 
 #[test]
@@ -413,7 +413,7 @@ fn test_two_players_take_turns_after_every_life() {
     // the original (18_two_players): Giana 3, lives 2, Maria 3, lives 2, Giana 2 ...
     assert_eq!(&t[..5], &[(0, 3, 0, 0, false), (0, 2, 0, 0, false), (1, 3, 0, 0, false), (1, 2, 0, 0, false), (0, 2, 0, 0, false)]);
     assert!(t.last().unwrap().4, "the game ends when both are finished");
-    assert_eq!(t.iter().filter(|s| s.0 == 1).count() > 0, true);
+    assert!(t.iter().filter(|s| s.0 == 1).count() > 0);
 }
 
 #[test]

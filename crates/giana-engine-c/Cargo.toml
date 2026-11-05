@@ -8,3 +8,6 @@ description = "Engine of the fan sequel \"Giana Sisters 30th Anniversary Extende
 [dependencies]
 giana-module = { path = "../giana-module" }
 giana-render = { path = "../giana-render" }
+
+[lints]
+workspace = true

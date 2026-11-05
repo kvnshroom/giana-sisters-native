@@ -48,8 +48,10 @@ pub fn tnw_files() -> Option<Arc<Vec<ModFile>>> {
 }
 
 /// The state of family T in a [`GameState`].
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TnwState {
+    /// the module's disk files: not part of a suspend point, `snapshot::restore` sets them again
+    #[serde(skip)]
     files: Arc<Vec<ModFile>>,
     /// `$7ABF`: 0 = the new stages, 1 = grand loop, 2 = the old stages
     pub mode: u8,
@@ -72,6 +74,11 @@ pub fn file_number(mode: u8, stage: u8) -> u8 {
 }
 
 impl TnwState {
+    /// A restored state gets the files of the installed module again (they are not part of a snapshot).
+    pub(crate) fn attach(&mut self, files: Arc<Vec<ModFile>>) {
+        self.files = files;
+    }
+
     pub fn from_installed() -> Option<Box<TnwState>> {
         tnw_files().map(|files| Box::new(TnwState { files, mode: 0, mem: vec![0; MEM], menu: None, menu_held: true, backup: None }))
     }

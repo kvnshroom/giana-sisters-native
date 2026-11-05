@@ -124,14 +124,6 @@ fn in_words(e: &str) -> String {
     }
 }
 
-/// Starts this program again, to play another ROM module: the arguments of this run without those that only applied to it
-/// (`--module`, `--stage`, the files to open; see `cli::restart_args`). The caller ends this process afterwards, once its
-/// window and sound are closed.
-pub fn spawn_restart() -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
-    std::process::Command::new(exe).args(crate::cli::restart_args(std::env::args().skip(1))).spawn().map(|_| ())
-}
-
 /// How popular the known modules are, for `SORT: POPULAR`: the number of downloads on CSDb (checked 2026-11-03). The
 /// 1989 Construction Kit hacks have no download numbers there; they come after the others in the order the scene
 /// rates them, with made-up weights below the smallest real count. The 30th Anniversary preview (4208 downloads) has no

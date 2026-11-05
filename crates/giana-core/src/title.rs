@@ -243,11 +243,10 @@ impl TitleScreen {
 
     fn start_cycle(&mut self) {
         let c = self.cycle;
-        if (c == 2 && self.line != 0) || (c == 3 && self.line == 0) {
-            if self.raster_compare() == self.line {
+        if ((c == 2 && self.line != 0) || (c == 3 && self.line == 0))
+            && self.raster_compare() == self.line {
                 self.irq_flags |= 1;
             }
-        }
         if c == 1 {
             let (top, bottom) = if self.d011 & 8 != 0 { (51, 251) } else { (55, 247) };
             if self.line == bottom {
@@ -382,6 +381,7 @@ impl TitleScreen {
     }
 
     /// `STA abs` of a colour to `$D021`: three reading cycles, then the write.
+    #[allow(dead_code)] // kept reference of the `STA abs` to $D021 timing
     fn store_d021(&mut self, v: u8) {
         self.reads(3);
         self.write_with(|s| {
@@ -508,7 +508,7 @@ impl TitleScreen {
                 let n = DELAYS[k];
                 s.push(Burn(2 + (2 * (n + 1) + 3 * n + 2))); // LDX #n, DEX / BPL
             }
-            s.push(Burn(2 + 2 * 0)); // LDX #2
+            s.push(Burn(2)); // LDX #2
             s.push(Burn(4));
             s.push(Write);
             s.push(Write); // DEC $09A3

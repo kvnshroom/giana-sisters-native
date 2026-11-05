@@ -36,12 +36,12 @@ pub fn get_tile_type(char_idx: u8) -> TileType {
     }
 
     // Breakable blocks: authentic C64 bitmask 0x60 ($EC..$EF) or Stage brick blocks ($43..$4B, $EA, $EB)
-    if (raw & 0x60 == 0x60) || (char_idx >= 0x43 && char_idx <= 0x4B) || char_idx == 0xEA || char_idx == 0xEB {
+    if (raw & 0x60 == 0x60) || (0x43..=0x4B).contains(&char_idx) || char_idx == 0xEA || char_idx == 0xEB {
         return TileType::Breakable;
     }
 
     // Crumbling bridge tiles in Stage 1 ($28..$2F)
-    if char_idx >= 0x28 && char_idx <= 0x2F {
+    if (0x28..=0x2F).contains(&char_idx) {
         return TileType::Crumbling;
     }
 

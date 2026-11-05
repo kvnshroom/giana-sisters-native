@@ -27,11 +27,13 @@ enum Tail {
 }
 
 /// State of the sprite program that is not part of the original engine's state.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Sprites {
     /// `$0700..$07FF`
+    #[serde(with = "giana_engine_b::snap::arr")]
     pub m: [u8; 0x100],
     /// zero page scratch (`$0A..$0D`, `$EC..$F9`), indexed by address
+    #[serde(with = "giana_engine_b::snap::arr")]
     pub z: [u8; 0x100],
     /// `$FE` bit 7: the stage was just built, the objects of the first screen are spawned
     pub fe: bool,
@@ -401,7 +403,7 @@ impl GameState {
         } else if c == 0x12 {
             self.set_v47(0x46C, 0);
             return false;
-        } else if c > 0x12 || c < 2 {
+        } else if !(2..=0x12).contains(&c) {
             return false;
         }
         if self.v47(0x46C) == 0 {
@@ -652,12 +654,11 @@ impl GameState {
         }
         // rising
         if mode == 1 {
-            if self.spr(xs + 1) < 0x58 {
-                if self.bm(0x7D0 + x) != 0 {
+            if self.spr(xs + 1) < 0x58
+                && self.bm(0x7D0 + x) != 0 {
                     self.b_flip_vertical(x);
                     return Tail::Turn;
                 }
-            }
             self.set_v47(0x488, 0);
         } else {
             let n = self.bm(0x7BC + x).wrapping_add(1);
@@ -696,12 +697,11 @@ impl GameState {
             self.tile_flags(a2) | self.tile_flags(a0) | self.tile_flags(a1)
         };
         // `$884F`: the hop hits a ceiling: turn into falling
-        if cls & 1 != 0 || (self.bm(0x714 + x) != 0 && (cls >> 1) & 1 == 0) {
-            if self.bm(0x7D0 + x) != 0 {
+        if (cls & 1 != 0 || (self.bm(0x714 + x) != 0 && (cls >> 1) & 1 == 0))
+            && self.bm(0x7D0 + x) != 0 {
                 self.set_bm(0x7BC + x, 0x24);
                 self.b_flip_vertical(x);
             }
-        }
         Tail::Turn
     }
 
@@ -754,20 +754,20 @@ impl GameState {
         let y = (y + 1) & 0xFF;
         let dx = self.b_mem(script + y) as i8;
         let xs = 2 * x;
-        let toggle;
-        if dx >= 0 {
+        
+        let toggle = if dx >= 0 {
             self.set_bm(0x774 + x, dx as u8);
             self.set_bm(0x7B4 + x, 0);
             let (v, c) = self.spr(xs).overflowing_add(dx as u8);
             self.set_spr(xs, v);
-            toggle = c;
+            c
         } else {
             self.set_bm(0x774 + x, (dx as u8).wrapping_neg());
             self.set_bm(0x7B4 + x, 1);
             let (v, c) = self.spr(xs).overflowing_add(dx as u8);
             self.set_spr(xs, v);
-            toggle = !c;
-        }
+            !c
+        };
         if toggle {
             self.sprite_x_msb ^= self.bit(x);
         }

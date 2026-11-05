@@ -22,7 +22,7 @@ pub const BONUS_COST_WAIT: i32 = 1000 - BONUS_COST_DEC - BONUS_COST_TIMER - BONU
 /// Busy-wait chains of `sub_9A4F` with Y = 0 and a small X (measured: see docs/oracle-notes.md section 15).
 pub const LONG_WAIT_CHAINS: u32 = 28;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MainLine {
     /// `$0ABF` main loop: one pass per interrupt chain
     Loop,
@@ -30,6 +30,8 @@ pub enum MainLine {
     DeathArc(DeathArc),
     /// `sub_2041` was entered late in a frame: `$043C` is decremented, the music request and the rest follow in the next gap
     DeathLate,
+    /// `$2097..$20A2` are done and `sub_20AC` follows in the next chain (`StageTiming::death_end_split`)
+    DeathEnd,
     /// `$09B6`: stage restart after a lost life, one raster chain per step
     Restart(RestartPhase),
     /// `$0BDF`: stage exit (bonus count, banner wait), ends in the stage start of the next stage
@@ -46,7 +48,7 @@ pub enum MainLine {
     Ending(Option<(usize, usize)>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WarpPhase {
     /// the three busy waits
     Wait(usize),
@@ -56,7 +58,7 @@ pub enum WarpPhase {
     Banner { step: usize, left: usize },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExitPhase {
     /// `sub_0CA2` after `sub_9F45`: the rest of the routine and the bonus count run in the next chain
     Cleared,
@@ -70,15 +72,19 @@ pub enum ExitPhase {
     Final(usize),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RestartPhase {
     PostFire(usize),
+    /// `sub_14DC` exchanges the sprite set before the banner of the restart starts (`$157C` is set afterwards)
+    Swap(usize),
     Banner { step: usize, left: usize },
+    /// between `$0AB1` and `sub_0D54`: the sample cuts the main line there (`StageTiming::banner_gap`)
+    Gap(usize),
     Setup(usize),
     Sync,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeathArc {
     phase: ArcPhase,
     /// index into the table at `$9AEC`
@@ -87,7 +93,7 @@ pub struct DeathArc {
     awaiting_sync: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum ArcPhase {
     /// `$2055` loop: rising part, table walked forward
     Rise,
@@ -118,12 +124,12 @@ impl GameState {
                 }
             }
             MainLine::DeathArc(arc)
-                if arc.phase == ArcPhase::Wait(0) && !self.bonus_ran && self.restart_front().map_or(false, |t| t.tail_mid) =>
+                if arc.phase == ArcPhase::Wait(0) && !self.bonus_ran && self.restart_front().is_some_and(|t| t.tail_mid) =>
             {
                 self.bonus_ran = true;
                 self.death_arc_step(arc);
             }
-            MainLine::StageExit(ExitPhase::Final(0)) if !self.bonus_ran => {
+            MainLine::StageExit(ExitPhase::Final(0)) if !self.bonus_ran && (self.main_gap == 1) != self.exit_final_late() => {
                 self.bonus_ran = true;
                 self.exit_step(ExitPhase::Final(0));
             }
@@ -148,12 +154,23 @@ impl GameState {
         }
     }
 
+    /// The hand-over to the next stage (`Final(0)`) ends the wait of `sub_154F` after the interrupt chain of its frame: before
+    /// (gap 1) or after the sound tick of `$1393` (gap 2), as measured (`ExitTiming::final_late`)
+    fn exit_final_late(&self) -> bool {
+        let t = self.exit_timing_front();
+        !t.final_pre && t.final_late
+    }
+
     /// Busy waits that only burn time end somewhere between the sample line and the first interrupt of the next frame:
     /// they are handled before the interrupt chain (the oracle shows the reset of sub_20AC in the snapshot but the
     /// chain after it already computes with the reset values).
     pub fn main_pre(&mut self) {
         self.bonus_ran = false;
         self.death_late_continue(true);
+        if self.main == MainLine::DeathEnd {
+            self.main = MainLine::Loop;
+            self.after_death_l0c1a();
+        }
         if self.main == MainLine::Restart(RestartPhase::Sync) {
             self.restart_step(RestartPhase::Sync);
         }
@@ -191,8 +208,8 @@ impl GameState {
         match self.main.clone() {
             MainLine::DeathArc(arc) if matches!(arc.phase, ArcPhase::Wait(_)) => {
                 let front = self.restart_front();
-                let tail_pre = front.map_or(true, |t| t.tail_pre);
-                let mid = front.map_or(false, |t| t.tail_mid);
+                let tail_pre = front.is_none_or(|t| t.tail_pre);
+                let mid = front.is_some_and(|t| t.tail_mid);
                 // with `tail_mid` the last step runs in main_pass; the countdown before it runs here
                 if tail_pre == pre && !self.bonus_ran && !(mid && arc.phase == ArcPhase::Wait(0)) {
                     self.bonus_ran = true;
@@ -200,7 +217,9 @@ impl GameState {
                 }
             }
             MainLine::Restart(p) if p != RestartPhase::Sync => {
-                if self.timing.tail_pre == pre && !self.bonus_ran && p != RestartPhase::Setup(0) {
+                let n = self.timing.banner_steps.len();
+                let ends_banner = matches!(p, RestartPhase::Banner { step, left: 0 } if step + 1 >= n) || matches!(p, RestartPhase::Banner { step, .. } if step >= n);
+                if (if ends_banner { self.timing.end_pre } else { self.timing.tail_pre }) == pre && !self.bonus_ran && p != RestartPhase::Setup(0) {
                     self.bonus_ran = true;
                     self.restart_step(p);
                 }
@@ -244,20 +263,20 @@ impl GameState {
                     self.warp_step(p);
                 }
             }
-            MainLine::StageExit(p) => {
+            MainLine::StageExit(p)
                 // The end of the wait depends on when fire is read: its position was measured (`final_pre`)
                 // the hand-over to the next stage (Final(0)) runs between the interrupts, in main_pass
-                if self.timing.tail_pre == pre && p != ExitPhase::Final(0) && !self.bonus_ran {
+                if self.timing.tail_pre == pre && p != ExitPhase::Final(0) && !self.bonus_ran => {
                     self.bonus_ran = true;
                     self.exit_step(p);
                 }
-            }
             _ => {}
         }
     }
 
     /// L0ABF..L0C96: one pass of the main loop
     fn main_loop_pass(&mut self) {
+        self.header_rest();
         // L0ABF: LDA $157E; BNE L0AC7 (the ending, single player; other sequences: not ported, see ledger)
         if self.ending_hook_l0abf() {
             return;
@@ -328,7 +347,7 @@ impl GameState {
     /// chains of that frame: gate of `$12F1`, enemy colour cycling), so it runs in `main_resume`
     fn swap_step_is_last(&self) -> bool {
         let MainLine::SpriteSwap { n, plan } = &self.main else { return false };
-        plan.progress.get(n.wrapping_add(1)).map_or(true, |&d| d >= crate::state::SWAP_HALVES)
+        plan.progress.get(n.wrapping_add(1)).is_none_or(|&d| d >= crate::state::SWAP_HALVES)
     }
 
     /// Side-effect free look at `sprite_set_check_decide` + `swap_sets_begin` (`$14DC..$1474`)
@@ -343,8 +362,8 @@ impl GameState {
     /// `$0C89..$0C96`: LDA $046B; BEQ; JSR sub_14DC; LDA #0; STA $0431
     pub fn sprite_check_l0c89(&mut self) {
         if self.redraw_pending != 0 {
-            if self.sprite_set_check_decide() {
-                if self.swap_sets_begin() {
+            if self.sprite_set_check_decide()
+                && self.swap_sets_begin() {
                     let plan = self.swap_timing.pop_front().unwrap_or_default();
                     if let Some(v) = plan.score_clobber {
                         self.text_cell(0x2E, ((v >> 4) & 0x0F) | 0x30);
@@ -353,7 +372,6 @@ impl GameState {
                     self.main = MainLine::SpriteSwap { n: 0, plan };
                     return;
                 }
-            }
             self.flag_0431 = 0;
         }
     }
@@ -374,6 +392,20 @@ impl GameState {
             self.death_late_pre = self.main_gap == 2;
             return;
         }
+        if let Some(level) = self.restart_front().map(|t| t.death_step_late).filter(|&l| l > 0) {
+            // the sample falls inside `$2049..$2054`: music request and `$0431` are done, the sprite pointers (level 2) and the
+            // first step are not
+            self.request_music_sub_150c(7);
+            self.flag_0431 = 0x80;
+            if level == 1 {
+                self.set_sprite_pointers(0x2A);
+            }
+            self.main = MainLine::DeathLate;
+            self.death_late_pre = true;
+            self.death_step_only = true;
+            self.death_step_sprites = level == 2;
+            return;
+        }
         self.start_death_rest_sub_2041(true);
     }
 
@@ -382,6 +414,14 @@ impl GameState {
     pub fn death_late_continue(&mut self, pre: bool) {
         if self.main == MainLine::DeathLate && self.death_late_pre == pre {
             self.bonus_ran = true;
+            if std::mem::take(&mut self.death_step_only) {
+                if std::mem::take(&mut self.death_step_sprites) {
+                    self.set_sprite_pointers(0x2A);
+                }
+                // `$2053`: LDY #$00 and the first step of the death jump
+                self.death_arc_step(DeathArc { phase: ArcPhase::Rise, y: 0, awaiting_sync: false });
+                return;
+            }
             self.sound.resume();
             self.start_death_rest_sub_2041(false);
         }
@@ -496,6 +536,10 @@ impl GameState {
                     self.player_y_c64 = 0;
                     self.hazard_hit = 0;
                     self.anim_counter = 0;
+                    if self.restart_front().is_some_and(|t| t.death_end_split) {
+                        self.main = MainLine::DeathEnd;
+                        return;
+                    }
                     self.main = MainLine::Loop;
                     self.after_death_l0c1a();
                     return;
@@ -569,9 +613,10 @@ impl GameState {
         self.irq_off_left = self.timing.irq_off_frames;
         self.skip_subpixel_inc = self.timing.skip_inc;
         // sub_0E39 (`$0A5E`) resets the raster chain: the chains up to the banner texts lose their sound tick
-        self.lost_ticks = 1 + self.timing.text_after as u8;
+        self.lost_ticks = (1 + self.timing.text_after as u8).saturating_sub(self.timing.tick_kept as u8);
         self.confirm_armed = false;
         // L09DA sets the stage variables before the banner texts are drawn
+        self.vars_save_pending = None;
         if self.timing.vars_after == 0 {
             self.stage_variables_after_restart();
         }
@@ -593,11 +638,13 @@ impl GameState {
 
     /// One chain of the restart sequence (the waits of `start_stage`, spread over `update` calls)
     fn restart_step(&mut self, phase: RestartPhase) {
+        self.header_rest();
         let stage = self.stage;
         let mut phase = phase;
         loop {
             match phase {
                 RestartPhase::PostFire(n) => {
+                    self.vars_save_late();
                     let at = self.timing.post_fire.saturating_sub(n);
                     if self.timing.clear_after > 0 && at == self.timing.clear_after {
                         self.restart_clear_screen();
@@ -610,12 +657,27 @@ impl GameState {
                     }
                     if self.timing.post_fire.saturating_sub(n) == self.timing.vars_after {
                         self.stage_variables_after_restart();
+                        if self.vars_save_pending.is_some() {
+                            self.vars_save_pending = Some(0);
+                        }
                     }
                     if n > 0 {
                         self.main = MainLine::Restart(RestartPhase::PostFire(n - 1));
                         return;
                     }
                     self.start_stage_after_post_fire();
+                    phase = if self.timing.restart_swap > 0 {
+                        RestartPhase::Swap(self.timing.restart_swap)
+                    } else {
+                        RestartPhase::Banner { step: 0, left: self.timing.banner_steps.first().copied().unwrap_or(0) }
+                    };
+                }
+                RestartPhase::Swap(n) => {
+                    if n > 0 {
+                        self.main = MainLine::Restart(RestartPhase::Swap(n - 1));
+                        return;
+                    }
+                    self.banner_delay = 0x04;
                     phase = RestartPhase::Banner { step: 0, left: self.timing.banner_steps.first().copied().unwrap_or(0) };
                 }
                 RestartPhase::Banner { step, left } => {
@@ -629,8 +691,13 @@ impl GameState {
                         self.start_stage_after_banner_timed(self.timing.setup_wait);
                         phase = RestartPhase::Setup(self.timing.setup_wait);
                     } else if step >= self.timing.banner_steps.len() || (self.banner_fire_skips && self.main_fire) {
-                        self.start_stage_after_banner_timed(self.timing.setup_wait);
-                        phase = RestartPhase::Setup(self.timing.setup_wait);
+                        if self.timing.banner_gap > 0 {
+                            self.start_stage_after_banner_a();
+                            phase = RestartPhase::Gap(self.timing.banner_gap);
+                        } else {
+                            self.start_stage_after_banner_timed(self.timing.setup_wait);
+                            phase = RestartPhase::Setup(self.timing.setup_wait);
+                        }
                     } else if left > 0 {
                         self.main = MainLine::Restart(RestartPhase::Banner { step, left: left - 1 });
                         return;
@@ -640,7 +707,23 @@ impl GameState {
                         phase = RestartPhase::Banner { step: next, left: self.timing.banner_steps.get(next).copied().unwrap_or(0) };
                     }
                 }
+                RestartPhase::Gap(n) => {
+                    if n > 0 {
+                        self.main = MainLine::Restart(RestartPhase::Gap(n - 1));
+                        return;
+                    }
+                    self.start_stage_after_banner_b(self.timing.setup_wait);
+                    phase = RestartPhase::Setup(self.timing.setup_wait);
+                }
                 RestartPhase::Setup(n) => {
+                    // measured decoding: chain `c` after the one that ended the banner stores up to `tile_progress[c]`
+                    if let Some(&h) = self.timing.tile_progress.get(self.timing.setup_wait.saturating_sub(n)) {
+                        self.tile_advance(h);
+                    }
+                    if n == 1 && self.timing.sprites_early && !self.sprites_done {
+                        self.sprites_done = true;
+                        self.start_stage_sprites();
+                    }
                     if n > 0 {
                         if self.timing.setup_wait >= 2 && n == 1 {
                             self.load_stage_tiles_step(1, self.timing.setup_wait);
@@ -651,12 +734,18 @@ impl GameState {
                     if self.timing.setup_wait >= 2 {
                         self.load_stage_tiles_step(2, self.timing.setup_wait);
                     }
-                    self.start_stage_sprites();
+                    if !self.sprites_done {
+                        self.start_stage_sprites();
+                    }
+                    self.sprites_done = false;
                     self.main = MainLine::Restart(RestartPhase::Sync);
                     return;
                 }
                 RestartPhase::Sync => {
                     self.start_stage_finish(stage);
+                    if self.hazard_hit == 0 && !self.timing.tile_progress.is_empty() && self.st_0457 == 0 && self.music_paused == 0 {
+                        self.status_bar_sub_1cd7();
+                    }
                     self.main = MainLine::Loop;
                     return;
                 }
@@ -925,8 +1014,9 @@ impl GameState {
                     }
                 }
                 ExitPhase::Final(n) => {
-                    if n > 0 {
-                        self.main = MainLine::StageExit(ExitPhase::Final(n - 1));
+                    if n > 0 || (self.main_gap == 0 && !self.exit_timing_front().final_pre) {
+                        self.main = MainLine::StageExit(ExitPhase::Final(n.saturating_sub(1)));
+                        if n == 0 { self.bonus_ran = false; }
                         return;
                     }
                     self.exit_timing.pop_front();

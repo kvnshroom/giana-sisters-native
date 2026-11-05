@@ -5,7 +5,8 @@
 //! reads it through [`get`] (and the helpers in `image`).
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 
 /// Name of the folder inside the platform's data location.
 pub const APP_DIR: &str = "giana-native";
@@ -110,15 +111,48 @@ pub fn candidate_dirs(cli: Option<&Path>) -> Vec<PathBuf> {
     v
 }
 
-static DATA: OnceLock<GameData> = OnceLock::new();
+/// The installed data. A ROM module switch installs another set while the game runs: the old one is never freed
+/// (`Box::leak`, a few hundred KB per switch, switches are rare), so `get()` can keep handing out `&'static` references.
+static DATA: RwLock<Option<&'static GameData>> = RwLock::new(None);
+/// Counts the installs; caches derived from the data (see [`cached`]) rebuild when it changes.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Makes `data` the process-wide game data. Returns false when data was already installed.
-pub fn install(data: GameData) -> bool {
-    DATA.set(data).is_ok()
+/// Makes `data` the process-wide game data, replacing what was installed before (a ROM module switch). Everything
+/// derived from the data through [`cached`] is rebuilt on its next use. Callers must not hold references into the old
+/// data across a switch that they expect to show the new one (the old data stays valid, it is just not current).
+pub fn install(data: GameData) {
+    let leaked: &'static GameData = Box::leak(Box::new(data));
+    *DATA.write().unwrap_or_else(|e| e.into_inner()) = Some(leaked);
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Number of installs so far (0: nothing installed yet).
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::SeqCst)
+}
+
+/// A value built from the installed data, rebuilt after the data was replaced. Use as
+/// `static X: Cache<Vec<u8>> = Cache::new(); data::cached(&X, || build())`.
+pub type Cache<T> = RwLock<Option<(u64, &'static T)>>;
+
+/// The value of `cache` for the current data: built by `build` on first use and again after every [`install`].
+/// Replaced values are leaked like the data itself.
+pub fn cached<T>(cache: &'static Cache<T>, build: impl FnOnce() -> T) -> &'static T {
+    // make sure the data is there (this may install the default data and so change the generation)
+    let _ = get();
+    let generation = GENERATION.load(Ordering::SeqCst);
+    if let Some((g, v)) = *cache.read().unwrap_or_else(|e| e.into_inner()) {
+        if g == generation {
+            return v;
+        }
+    }
+    let value: &'static T = Box::leak(Box::new(build()));
+    *cache.write().unwrap_or_else(|e| e.into_inner()) = Some((generation, value));
+    value
 }
 
 pub fn is_installed() -> bool {
-    DATA.get().is_some()
+    DATA.read().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
 /// True when game data is installed or can be found (tests use this through [`skip_without_data!`] so that they pass
@@ -141,18 +175,27 @@ macro_rules! skip_without_data {
 /// The installed game data. When nothing was installed (unit tests, tools), the first usable folder of
 /// [`candidate_dirs`] is loaded; if there is none this panics with an explanation.
 pub fn get() -> &'static GameData {
-    DATA.get_or_init(|| {
-        let dirs = candidate_dirs(None);
-        for d in &dirs {
-            if let Ok(g) = GameData::load_dir(d) {
-                return g;
-            }
+    if let Some(d) = *DATA.read().unwrap_or_else(|e| e.into_inner()) {
+        return d;
+    }
+    let mut slot = DATA.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(d) = *slot {
+        return d;
+    }
+    let dirs = candidate_dirs(None);
+    for d in &dirs {
+        if let Ok(g) = GameData::load_dir(d) {
+            let leaked: &'static GameData = Box::leak(Box::new(g));
+            *slot = Some(leaked);
+            GENERATION.fetch_add(1, Ordering::SeqCst);
+            return leaked;
         }
-        panic!(
-            "the original game data is not loaded: no usable data folder in {dirs:?}. Run the game once and give it your .g64, \
-             or: ./tools/data/setup.sh <your .g64>"
-        );
-    })
+    }
+    drop(slot);
+    panic!(
+        "the original game data is not loaded: no usable data folder in {dirs:?}. Run the game once and give it your .g64, \
+         or: ./tools/data/setup.sh <your .g64>"
+    );
 }
 
 #[cfg(test)]

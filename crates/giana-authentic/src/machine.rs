@@ -138,7 +138,7 @@ impl C64Bus {
                 r => self.cia1[r as usize],
             },
             0xDD00..=0xDDFF => match a & 0xF {
-                0 => (self.cia2[0] | !self.cia2[2]) | 0,
+                0 => self.cia2[0] | !self.cia2[2],
                 0xD => 0,
                 r => self.cia2[r as usize],
             },

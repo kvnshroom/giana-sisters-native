@@ -64,6 +64,10 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 /// A path as typed, pasted or dropped: surrounding quotes, `file://` addresses (with %20 and so on) and `~/` are resolved.
 pub fn clean_path(text: &str) -> PathBuf {
     let mut s = text.trim().trim_matches(|c| c == '"' || c == '\'').trim().to_string();
+    // a path dragged into a terminal: "My\ Games/x.g64"
+    if cfg!(not(windows)) && s.contains("\\ ") {
+        s = s.replace("\\ ", " ");
+    }
     if let Some(rest) = s.strip_prefix("file://") {
         s = rest.trim_start_matches("localhost").to_string();
         let bytes = s.as_bytes();
@@ -99,70 +103,108 @@ fn home_dir() -> Option<PathBuf> {
     var("HOME").or_else(|| var("USERPROFILE"))
 }
 
+/// Why an import failed, in plain words: what is wrong, then what to do about it. `detail` is only for the terminal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportError {
+    pub problem: String,
+    pub fix: String,
+    pub detail: String,
+}
+
+impl ImportError {
+    fn new(problem: &str, fix: &str) -> ImportError {
+        ImportError { problem: problem.into(), fix: fix.into(), detail: String::new() }
+    }
+
+    fn detail(mut self, detail: impl Into<String>) -> ImportError {
+        self.detail = detail.into();
+        self
+    }
+
+    /// For the terminal: one plain sentence group.
+    pub fn plain(&self) -> String {
+        let mut t = format!("{} {}", self.problem, self.fix);
+        if !self.detail.is_empty() {
+            t.push(' ');
+            t.push_str(&self.detail);
+        }
+        t
+    }
+
+    /// For the first-start page: the problem, an empty line, then the fix, in capitals and wrapped.
+    pub fn screen(&self) -> Vec<String> {
+        let mut out = wrap(&safe_text(&self.problem.to_uppercase()), LINE);
+        out.push(String::new());
+        out.extend(wrap(&safe_text(&self.fix.to_uppercase()), LINE));
+        out
+    }
+}
+
 /// Checks the disk image at `path`, extracts everything and writes the data folder `dest`. The error is the message
-/// for the player, as lines of at most 34 characters.
+/// for the player, as lines of at most 34 characters (see [`ImportError::screen`]).
 pub fn import_file(path: &Path, dest: &Path) -> Result<(), Vec<String>> {
-    let fail = |text: &str| Err(wrap(&safe_text(&text.to_uppercase()), LINE));
-    let meta = std::fs::metadata(path).map_err(|e| wrap(&safe_text(&format!("COULD NOT FIND OR OPEN THE FILE ({})", short_io(&e))), LINE))?;
-    if meta.is_dir() {
-        return fail("THAT IS A FOLDER. GIVE THE .G64 FILE ITSELF.");
-    }
-    if meta.len() > MAX_IMAGE {
-        return fail("THIS FILE IS MUCH TOO BIG FOR A DISK IMAGE OF THIS GAME (NOT A G64?)");
-    }
-    let bytes = std::fs::read(path).map_err(|e| wrap(&safe_text(&format!("COULD NOT READ THE FILE ({})", short_io(&e))), LINE))?;
-    import_bytes(&bytes, dest, path.extension().and_then(|e| e.to_str()).unwrap_or(""))
+    try_import_file(path, dest).map_err(|e| e.screen())
 }
 
 /// Same for the content of a file already in memory (`ext` is only used for the wording of one message).
 pub fn import_bytes(bytes: &[u8], dest: &Path, ext: &str) -> Result<(), Vec<String>> {
-    let lines = |t: &str| wrap(&safe_text(&t.to_uppercase()), LINE);
+    try_import_bytes(bytes, dest, ext).map_err(|e| e.screen())
+}
+
+/// [`import_file`] with the error in plain words (for the terminal as well).
+pub fn try_import_file(path: &Path, dest: &Path) -> Result<(), ImportError> {
+    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => ImportError::new("Could not find that file.", "Check the path, or drop the .g64 file on this window.")
+            .detail(format!("({})", path.display())),
+        std::io::ErrorKind::PermissionDenied => ImportError::new("The game may not open that file.", "Copy it to your Downloads folder and choose it there.")
+            .detail(format!("({})", path.display())),
+        _ => ImportError::new("Could not open that file.", "Choose it again, or copy it to your Downloads folder.").detail(format!("({e})")),
+    })?;
+    if meta.is_dir() {
+        return Err(ImportError::new("That is a folder, not a file.", "Choose the .g64 file inside it."));
+    }
+    if meta.len() > MAX_IMAGE {
+        return Err(ImportError::new("That file is too big.", "Choose the .g64 file."));
+    }
+    let bytes = std::fs::read(path).map_err(|e| ImportError::new("Could not read that file.", "Copy it to your Downloads folder and choose it there.").detail(format!("({e})")))?;
+    try_import_bytes(&bytes, dest, path.extension().and_then(|e| e.to_str()).unwrap_or(""))
+}
+
+/// [`import_bytes`] with the error in plain words.
+pub fn try_import_bytes(bytes: &[u8], dest: &Path, ext: &str) -> Result<(), ImportError> {
     if bytes.len() < 12 || &bytes[..8] != b"GCR-1541" {
-        let mut m = lines("THIS IS NOT A G64 DISK IMAGE.");
-        if ext.eq_ignore_ascii_case("d64") {
-            m.extend(lines("A D64 FILE CANNOT BE USED. YOU NEED THE G64 VERSION."));
+        return Err(if ext.eq_ignore_ascii_case("d64") {
+            ImportError::new("That is a .d64, not a .g64 file.", "Use the .g64 of the same disk.")
+        } else if ext.eq_ignore_ascii_case("zip") {
+            ImportError::new("That is a ZIP archive.", "Unpack it first, then choose the .g64 file inside.")
         } else {
-            m.extend(lines("THE FILE MUST END IN .G64."));
-        }
-        return Err(m);
+            ImportError::new("That is not a .g64 disk image.", "Choose a file that ends in .g64.")
+        });
     }
     let hash = sha256_hex(bytes);
     if !KNOWN_VERSIONS.iter().any(|v| v.g64_sha256 == hash) {
         eprintln!("Unknown disk image version, SHA-256 {hash}");
-        let mut m = lines("UNKNOWN VERSION OF THE DISK IMAGE. ONLY THIS ONE IS SUPPORTED (SHA-256):");
-        for v in KNOWN_VERSIONS {
-            m.push(v.g64_sha256[..32].to_uppercase());
-            m.push(v.g64_sha256[32..].to_uppercase());
-        }
-        return Err(m);
+        let known: Vec<&str> = KNOWN_VERSIONS.iter().map(|v| v.g64_sha256).collect();
+        return Err(ImportError::new(
+            "This disk version is unsupported.",
+            &format!("Try another copy. File ID: {}", &hash[..12]),
+        )
+        .detail(format!("SHA-256 of your file: {hash}. Supported: {}.", known.join(", "))));
     }
     let files = giana_extract::extract_all(bytes).map_err(|e| {
         eprintln!("Extraction failed: {e}");
-        lines(&format!("THE DISK IMAGE COULD NOT BE READ: {e}"))
+        ImportError::new("The disk image could not be read.", "The file may be damaged. Try another copy.").detail(format!("({e})"))
     })?;
     giana_extract::write_data_dir(&files, dest).map_err(|e| {
         eprintln!("Could not write the data folder: {e}");
-        let mut m = lines("COULD NOT WRITE THE GAME DATA TO");
-        let shown = dest.display().to_string();
-        let tail: String = shown.chars().rev().take(LINE * 2).collect::<Vec<_>>().into_iter().rev().collect();
-        m.extend(wrap(&safe_text(&tail.to_uppercase()), LINE));
-        m.extend(lines(&format!("({})", e.rsplit(": ").next().unwrap_or(""))));
-        m
+        ImportError::new("Could not save the game data.", "Check free space and permissions.")
+            .detail(format!("(folder {}: {})", dest.display(), e.rsplit(": ").next().unwrap_or("")))
     })?;
     let problems = giana_extract::verify_dir(dest);
     if !problems.is_empty() {
-        return Err(lines(&format!("THE WRITTEN DATA IS NOT VALID: {}", problems.join(", "))));
+        return Err(ImportError::new("The saved game data is not valid.", "Delete the data folder and try again.").detail(format!("({})", problems.join(", "))));
     }
     Ok(())
-}
-
-fn short_io(e: &std::io::Error) -> String {
-    use std::io::ErrorKind::*;
-    match e.kind() {
-        NotFound => "NO SUCH FILE".into(),
-        PermissionDenied => "NO PERMISSION".into(),
-        _ => e.to_string(),
-    }
 }
 
 /// Looks for a `.g64` of a known version in the usual places: Downloads, Documents, Desktop, the home folder, the
@@ -246,7 +288,20 @@ const FIELD: usize = 1;
 const SEARCH: usize = 2;
 
 /// Shown when the file dialog returned without a file (cancelled, or it could not be shown at all).
-const NO_FILE: &str = "NO FILE CHOSEN. IF NO WINDOW OPENED, DROP THE .G64 FILE ON THIS WINDOW OR TYPE ITS PATH.";
+const NO_FILE: &str = "NO FILE CHOSEN.";
+const NO_FILE_FIX: &str = "IF NO WINDOW OPENED, DROP THE .G64 ON THIS WINDOW OR TYPE ITS PATH.";
+const NO_PATH: &str = "NO PATH TYPED YET.";
+const NO_PATH_FIX: &str = "TYPE OR PASTE IT, OR DROP THE .G64 ON THIS WINDOW.";
+const NOT_FOUND: &str = "NO .G64 FOUND IN COMMON FOLDERS.";
+const NOT_FOUND_FIX: &str = "USE CHOOSE FILE, OR DROP THE .G64 ON THIS WINDOW.";
+
+/// A failure message for the page: the problem, an empty line, what to do.
+fn failure(problem: &str, fix: &str) -> Status {
+    let mut lines = wrap(problem, LINE);
+    lines.push(String::new());
+    lines.extend(wrap(fix, LINE));
+    Status::Failed(lines)
+}
 
 /// What the file dialog asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,7 +376,7 @@ impl Setup {
         }
         match self.cursor {
             CHOOSE => return Action::ChooseFile,
-            FIELD if self.path.trim().is_empty() => self.status = Status::Failed(wrap("TYPE OR PASTE THE PATH FIRST, OR DROP THE FILE ON THE WINDOW", LINE)),
+            FIELD if self.path.trim().is_empty() => self.status = failure(NO_PATH, NO_PATH_FIX),
             FIELD => {
                 let p = clean_path(&self.path);
                 self.start_import(p);
@@ -340,7 +395,7 @@ impl Setup {
                 self.start_import(p);
             }
             Some(_) => {}
-            None => self.status = Status::Failed(wrap(NO_FILE, LINE)),
+            None => self.status = failure(NO_FILE, NO_FILE_FIX),
         }
     }
 
@@ -359,7 +414,7 @@ impl Setup {
             let _ = tx.send(import_file(&path, &dest));
         });
         self.job = Some(rx);
-        self.status = Status::Working("CHECKING AND UNPACKING THE DISK IMAGE");
+        self.status = Status::Working("CHECKING THE DISK IMAGE - A MOMENT");
     }
 
     fn start_search(&mut self) {
@@ -371,15 +426,15 @@ impl Setup {
                     println!("Found a disk image: {}", p.display());
                     import_file(&p, &dest)
                 }
-                None => Err(wrap(
-                    "NO KNOWN G64 FOUND IN DOWNLOADS, DOCUMENTS, DESKTOP, YOUR HOME FOLDER OR NEXT TO THE GAME. DROP THE FILE ON THE WINDOW OR TYPE ITS PATH.",
-                    LINE,
-                )),
+                None => {
+                    let Status::Failed(lines) = failure(NOT_FOUND, NOT_FOUND_FIX) else { unreachable!() };
+                    Err(lines)
+                }
             };
             let _ = tx.send(r);
         });
         self.job = Some(rx);
-        self.status = Status::Working("SEARCHING FOR YOUR DISK IMAGE");
+        self.status = Status::Working("LOOKING FOR YOUR DISK IMAGE");
     }
 
     /// Call every frame. True once the data is in place.
@@ -397,7 +452,7 @@ impl Setup {
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
                     self.job = None;
-                    self.status = Status::Failed(wrap("SOMETHING WENT WRONG WHILE UNPACKING", LINE));
+                    self.status = failure("SOMETHING WENT WRONG WHILE UNPACKING.", "START THE GAME AND TRY AGAIN.");
                 }
             }
         }
@@ -409,7 +464,7 @@ pub fn footer_hints(setup: &Setup) -> Vec<Hint> {
     if setup.busy() {
         return vec![Hint::new("PLEASE", "WAIT")];
     }
-    let mut h = vec![Hint::new("UP/DN", "MOVE"), Hint::new("ENTER", "SELECT")];
+    let mut h = vec![Hint::new("UP/DN", "MOVE"), Hint::new("ENTER", "SELECT"), Hint::new("ESC", "QUIT")];
     if setup.cursor == FIELD {
         h.push(Hint::new(if cfg!(target_os = "macos") { "CMD+V" } else { "CTRL+V" }, "PASTE"));
     }
@@ -417,7 +472,14 @@ pub fn footer_hints(setup: &Setup) -> Vec<Hint> {
 }
 
 /// Instruction lines of the page (each at most `LINE` characters).
-const PAGE_TEXT: [&str; 1] = ["OR DROP IT HERE OR TYPE ITS PATH:"];
+const PAGE_TEXT: [&str; 6] = [
+    "THE GREAT GIANA SISTERS NEEDS",
+    "YOUR ORIGINAL DISK IMAGE (.G64)",
+    "OR DROP IT HERE OR TYPE ITS PATH:",
+    "ONLY .G64 WORKS, NOT .D64 / .ZIP.",
+    "IT IS NOT PART OF THIS DOWNLOAD.",
+    "THIS IS DONE ONLY ONCE.",
+];
 
 /// Draws the page. `tick` counts frames (for the dots of the progress message).
 pub fn draw(fb: &mut Framebuffer, setup: &Setup, tick: u32, nudge: usize) {
@@ -425,11 +487,11 @@ pub fn draw(fb: &mut Framebuffer, setup: &Setup, tick: u32, nudge: usize) {
     ui::backdrop_black(fb);
     let p = Panel::centered(W, 25, true);
     p.draw(fb, Some("FIRST START"));
-    p.message_colored(fb, 3, "THE GREAT GIANA SISTERS NEEDS", ui::color::TEXT);
-    p.message_colored(fb, 5, "YOUR ORIGINAL DISK IMAGE (.G64)", ui::color::TEXT);
+    p.message_colored(fb, 3, PAGE_TEXT[0], ui::color::TEXT);
+    p.message_colored(fb, 5, PAGE_TEXT[1], ui::color::TEXT);
     let state = |i: usize| if setup.cursor == i && i != FIELD { ItemState::Selected } else { ItemState::Normal };
     p.item_centered(fb, p.row_y(7), "CHOOSE FILE...", state(CHOOSE), nudge);
-    p.message_colored(fb, 10, PAGE_TEXT[0], ui::color::DIM);
+    p.message_colored(fb, 10, PAGE_TEXT[2], ui::color::DIM);
     let shown: String = {
         let n = setup.path.chars().count();
         setup.path.chars().skip(n.saturating_sub(LINE - 1)).collect()
@@ -437,25 +499,38 @@ pub fn draw(fb: &mut Framebuffer, setup: &Setup, tick: u32, nudge: usize) {
     p.field(fb, p.row_y(12), (W - LINE) / 2, LINE, &safe_text(&shown), setup.cursor == FIELD && !setup.busy());
     p.item_centered(fb, p.row_y(14), "SEARCH THIS COMPUTER", state(SEARCH), nudge);
     p.item_centered(fb, p.row_y(16), "QUIT", state(ITEMS - 1), nudge);
-    p.separator(fb, 18);
+    p.separator(fb, 17);
     match &setup.status {
         Status::Idle => {
-            p.message_colored(fb, 20, "THE DATA STAYS ON YOUR COMPUTER.", ui::color::DIM);
-            p.message_colored(fb, 22, "THIS IS DONE ONLY ONCE.", ui::color::DIM);
+            p.message_colored(fb, 19, PAGE_TEXT[3], ui::color::TEXT);
+            p.message_colored(fb, 21, PAGE_TEXT[4], ui::color::DIM);
+            p.message_colored(fb, 23, PAGE_TEXT[5], ui::color::DIM);
         }
         Status::Working(what) => {
             let dots = ".".repeat((tick / 12 % 4) as usize);
             for (i, l) in wrap(what, LINE).iter().enumerate() {
-                p.message_colored(fb, 20 + i, l, ui::color::YELLOW);
+                p.message_colored(fb, 19 + i, l, ui::color::YELLOW);
             }
-            p.message_colored(fb, 22, &format!("{dots:<3}"), ui::color::YELLOW);
+            p.message_colored(fb, 21, &format!("{dots:<3}"), ui::color::YELLOW);
         }
         Status::Failed(lines) => {
-            for (i, l) in lines.iter().take(5).enumerate() {
-                p.message_colored(fb, 19 + i, &clip(l, LINE), ui::color::YELLOW);
+            // the problem (up to the empty line) in yellow, what to do about it in white
+            // (one text line takes two rows; the empty line only switches the colour; room for three lines)
+            let mut fix = false;
+            let mut row = 19;
+            for l in lines {
+                if l.is_empty() {
+                    fix = true;
+                    continue;
+                }
+                if row > 23 {
+                    break;
+                }
+                p.message_colored(fb, row, &clip(l, LINE), if fix { ui::color::TEXT } else { ui::color::YELLOW });
+                row += 2;
             }
         }
-        Status::Done => p.message_colored(fb, 20, "ALL SET - STARTING THE GAME", ui::color::CYAN),
+        Status::Done => p.message_colored(fb, 19, "ALL SET - STARTING THE GAME", ui::color::CYAN),
     }
     ui::footer(fb, &footer_hints(setup), None);
 }
@@ -520,6 +595,7 @@ mod tests {
         s.picked(None);
         let Status::Failed(lines) = &s.status else { panic!() };
         assert!(lines.join(" ").contains("DROP"));
+        assert!(lines.iter().filter(|l| !l.is_empty()).count() <= 3);
         assert!(!s.busy());
     }
 
@@ -536,14 +612,16 @@ mod tests {
 
     #[test]
     fn page_texts_fit_and_use_known_glyphs() {
-        for t in PAGE_TEXT.iter().chain([&NO_FILE]) {
+        for t in PAGE_TEXT.iter().chain([&NO_FILE, &NO_FILE_FIX, &NO_PATH, &NO_PATH_FIX, &NOT_FOUND, &NOT_FOUND_FIX]) {
             assert_eq!(safe_text(t), *t, "unsupported characters in {t}");
         }
         for t in PAGE_TEXT {
             assert!(t.chars().count() <= LINE, "{t}");
         }
-        for l in wrap(NO_FILE, LINE) {
-            assert!(l.chars().count() <= LINE, "{l}");
+        for t in [NO_FILE_FIX, NOT_FOUND, NOT_FOUND_FIX] {
+            for l in wrap(t, LINE) {
+                assert!(l.chars().count() <= LINE, "{l}");
+            }
         }
     }
 
@@ -552,6 +630,8 @@ mod tests {
         assert_eq!(clean_path("  \"/a/b c.g64\" "), PathBuf::from("/a/b c.g64"));
         assert_eq!(clean_path("file:///home/me/My%20Games/x.g64"), PathBuf::from("/home/me/My Games/x.g64"));
         assert_eq!(clean_path("file:///C:/Games/x.g64"), PathBuf::from("C:/Games/x.g64"));
+        #[cfg(not(windows))]
+        assert_eq!(clean_path("/a/My\\ Games/x.g64"), PathBuf::from("/a/My Games/x.g64"));
     }
 
     #[test]
@@ -565,13 +645,13 @@ mod tests {
     fn rejects_files_in_plain_words() {
         let dest = temp("reject");
         let not_g64 = import_bytes(b"hello", &dest, "txt").unwrap_err().join(" ");
-        assert!(not_g64.contains("NOT A G64"), "{not_g64}");
+        assert!(not_g64.contains("NOT A .G64"), "{not_g64}");
         let d64 = import_bytes(b"hello", &dest, "d64").unwrap_err().join(" ");
         assert!(d64.contains("D64"), "{d64}");
         let mut fake = b"GCR-1541".to_vec();
         fake.extend_from_slice(&[0; 100]);
         let unknown = import_bytes(&fake, &dest, "g64").unwrap_err().join(" ");
-        assert!(unknown.contains("UNKNOWN VERSION") && unknown.contains("5CE29CE0"), "{unknown}");
+        assert!(unknown.contains("UNSUPPORTED") && unknown.contains("FILE ID"), "{unknown}");
         assert!(!dest.exists());
         assert!(import_file(Path::new("/nonexistent/x.g64"), &dest).is_err());
     }
@@ -582,7 +662,7 @@ mod tests {
         let blocker = temp("blocker");
         std::fs::write(&blocker, b"a file, not a folder").unwrap();
         let err = import_bytes(&g64, &blocker.join("data"), "g64").unwrap_err().join(" ");
-        assert!(err.contains("COULD NOT WRITE"), "{err}");
+        assert!(err.contains("COULD NOT SAVE"), "{err}");
         std::fs::remove_file(&blocker).unwrap();
     }
 

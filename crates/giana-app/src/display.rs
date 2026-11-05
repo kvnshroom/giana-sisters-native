@@ -21,7 +21,7 @@ pub type Mode = (i32, i32, i32);
 /// How many frames of this refresh rate one logic step takes (1 for 50 Hz, 2 for 100 Hz, ...), or `None` when the rate is
 /// not an exact multiple of 50 Hz (up to `MAX_FACTOR`).
 pub fn refresh_factor(hz: i32) -> Option<u32> {
-    (hz >= WANTED_HZ && hz % WANTED_HZ == 0 && hz / WANTED_HZ <= MAX_FACTOR).then(|| (hz / WANTED_HZ) as u32)
+    (hz >= WANTED_HZ && hz % WANTED_HZ == 0 && hz / WANTED_HZ <= MAX_FACTOR).then_some((hz / WANTED_HZ) as u32)
 }
 
 /// The index of the mode to use for fullscreen, and how many frames of it one logic step takes; `None` when the display has

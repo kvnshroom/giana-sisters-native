@@ -6,3 +6,6 @@ license = "GPL-3.0-or-later"
 description = "Extracts the program image of The Great Giana Sisters from the user's own .g64 disk image (no ROMs needed)"
 
 [dependencies]
+
+[lints]
+workspace = true

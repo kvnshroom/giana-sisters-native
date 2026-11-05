@@ -5,7 +5,7 @@ use crate::image::image;
 
 /// One call into the driver, as `Driver::record` keeps it: the audio layer replays the calls on other drivers (music and
 /// effects on their own SID). Recording is off by default and changes nothing in the driver.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DriverCall {
     Call { entry: u16, a: u8, x: u8, y: u8, carry: bool },
     Limited { entry: u16, a: u8, x: u8, y: u8, carry: bool, steps: u32 },
@@ -13,7 +13,7 @@ pub enum DriverCall {
 }
 
 /// The driver with its private memory (variables at `$A4..$B9`, `$41D0..$42xx`, music data) and the SID register image.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Driver {
     pub mem: Vec<u8>,
     pub sid: [u8; 32],
@@ -961,5 +961,11 @@ impl Driver {
                 }
             }
         }
+    }
+}
+
+impl Default for Driver {
+    fn default() -> Self {
+        Self::new()
     }
 }

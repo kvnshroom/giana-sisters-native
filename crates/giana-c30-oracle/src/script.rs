@@ -28,7 +28,7 @@ impl Script {
                     _ => return Err(format!("bad key '{c}' in '{tok}'")),
                 };
             }
-            pressed.extend(std::iter::repeat(k).take(n));
+            pressed.extend(std::iter::repeat_n(k, n));
         }
         Ok(Script { pressed })
     }

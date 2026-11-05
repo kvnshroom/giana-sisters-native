@@ -241,11 +241,10 @@ impl Hs {
 
     fn start_cycle(&mut self) {
         let c = self.cycle;
-        if (c == 2 && self.line != 0) || (c == 3 && self.line == 0) {
-            if self.raster_compare() == self.line {
+        if ((c == 2 && self.line != 0) || (c == 3 && self.line == 0))
+            && self.raster_compare() == self.line {
                 self.irq_flags |= 1;
             }
-        }
         if c == 1 {
             let (top, bottom) = if self.regs[0x11] & 8 != 0 { (51, 251) } else { (55, 247) };
             if self.line == bottom {

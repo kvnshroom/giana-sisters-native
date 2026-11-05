@@ -50,7 +50,7 @@ fn imm(img: &[u8], at: usize) -> u8 {
 }
 
 /// The constants of the stage hook and loader, read from the instruction operands of the image.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GemLayout {
     /// stage of the title backdrop (`$2F63`: `CMP #$67`), skips the trainer replacement
     pub title_stage: u8,

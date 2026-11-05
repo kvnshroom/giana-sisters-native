@@ -20,7 +20,7 @@ const V_BASE: usize = 0x044E;
 const D_BASE: usize = 0x3200;
 
 /// Registers of the video chip as the chip itself saw them while it drew the last frame.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct VicFrame {
     pub me: u8,
     pub xy: [u8; 17],
@@ -65,13 +65,16 @@ impl Default for VicFrame {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EnemyState {
     /// `$071C..$07BB`: 20 property columns of 8 slots each.
+    #[serde(with = "giana_engine_b::snap::arr")]
     pub col: [u8; 160],
     /// `$044E..$049F`
+    #[serde(with = "giana_engine_b::snap::arr")]
     pub v: [u8; 0x52],
     /// `$3200..$325F`
+    #[serde(with = "giana_engine_b::snap::arr")]
     pub d: [u8; 0x60],
     /// `$05FA..$0603`: X/Y of sprites 3..7
     pub spr_xy: [u8; 10],
@@ -435,6 +438,16 @@ impl GameState {
             }
             self.en.cia_pra = 0xE9;
             if self.cia_read_pb() == 0x69 {
+                if self.engine_b.is_some() {
+                    // family B (`$7789`: `CMP #$69; BEQ $77A6`): the original's stage skip (`$046D = $FF`) is gone in every 7A3 hack.
+                    // Junior replaced the routine by `INC $D020; INC $D021; RTS` (it runs in the raster IRQ: the sprite program of the
+                    // frame, i.e. the enemies, is skipped while the keys are held, Giana moves on, the colours count up: checked in VICE), the others print "HAHAHA THE ARMINMODE WAS KILLED BY MERLIN" and hang in
+                    // `JMP $77B6` (here: the sprite program is skipped as long as the keys are held; the app has no such key combination).
+                    if img(0x77A6) == 0xEE {
+                        self.en.vic_bg0 = self.en.vic_bg0.wrapping_add(1); // INC $D021 (the border, `$D020`, is not modelled)
+                    }
+                    return;
+                }
                 // L21EB
                 self.st_046d = 0xFF;
                 return;
@@ -627,12 +640,10 @@ impl GameState {
         }
         // L2335: copy 20 property bytes (stride 8)
         self.set_v47(0x477, 0x14);
-        let mut yy = 3usize;
         let mut xx = x;
-        for _ in 0..20 {
+        for yy in 3usize..23 {
             self.set_ep(COL_BASE + xx, img(rec + yy));
             xx += 8;
-            yy += 1;
         }
         self.set_v47(0x477, 0);
         // L234D
@@ -775,7 +786,7 @@ impl GameState {
                 // L2508
                 let x = (y as usize) * 2;
                 let xa = self.spr(x);
-                if xa >= 0x5A && xa < 0xF0 {
+                if (0x5A..0xF0).contains(&xa) {
                     self.sprite_off_sub_253c(y as usize);
                 }
                 y = y.wrapping_sub(1);
@@ -793,7 +804,7 @@ impl GameState {
         let mut x = 0x0Fusize;
         loop {
             let a = self.spr(x);
-            if a >= 0xFA || a < 0x1E {
+            if !(0x1E..0xFA).contains(&a) {
                 self.sprite_off_sub_2547(x >> 1);
             }
             x -= 2;
@@ -957,16 +968,16 @@ impl GameState {
     /// sub_26B7 ($26B7..$26E0): move sprite (offset X, mask index Y) horizontally by $0482 (direction $0483)
     fn move_x_sub_26b7(&mut self, xs: usize, y: usize) {
         let amount = self.v47(0x482);
-        let toggle;
-        if self.v47(0x483) != 0 {
+        
+        let toggle = if self.v47(0x483) != 0 {
             let (v, borrow) = self.spr(xs).overflowing_sub(amount);
             self.set_spr(xs, v);
-            toggle = borrow;
+            borrow
         } else {
             let (v, carry) = self.spr(xs).overflowing_add(amount);
             self.set_spr(xs, v);
-            toggle = carry;
-        }
+            carry
+        };
         if toggle {
             // L26C8: LDA $322C,Y; EOR #$FF; EOR $0604; STA $0604
             self.sprite_x_msb ^= !self.d32(0x322C + y);
@@ -1039,20 +1050,16 @@ impl GameState {
     fn activate_sub_27d3(&mut self) -> bool {
         let x = self.v47(0x47A) as usize;
         let k = self.ep(0x744 + x);
-        let mut enter = false;
         if k == 0x11 {
             let m = self.d32(0x322C + x);
             self.en.vic_mdp &= m;
-            enter = true;
         } else if k >= 0x12 {
             self.set_v47(0x46C, 0);
             return false;
         } else if k < 2 {
             return false;
-        } else {
-            enter = true;
         }
-        if enter {
+        {
             if self.v47(0x46C) == 0 {
                 return true;
             }
@@ -1304,15 +1311,15 @@ impl GameState {
         } else if k >= 0x12 {
             // L296A: power-up pick-up
             self.anim_counter = self.anim_counter.wrapping_add(1);
-            let sfx;
-            if self.anim_counter >= 8 {
+            
+            let sfx = if self.anim_counter >= 8 {
                 self.anim_counter = 4;
                 self.lives_c64 = self.lives_c64.wrapping_add(1);
                 self.draw_lives_sub_0e1f();
-                sfx = 8;
+                8
             } else {
-                sfx = 3;
-            }
+                3
+            };
             self.sfx_queue = sfx;
             self.redraw_pending = 1;
             self.en.vic_me &= self.d32(0x322C + x);
@@ -1734,18 +1741,18 @@ impl GameState {
         let (mut dx, b) = fx.overflowing_sub(ex);
         let mut dxh = fhi.wrapping_sub(ehi).wrapping_sub(b as u8);
         let neg = (fhi as i16 - ehi as i16 - b as i16) < 0;
-        let dirx;
-        if neg {
+        
+        let dirx = if neg {
             dx = !dx;
             dxh = !dxh;
             dx = dx.wrapping_add(1);
             if dx == 0 {
                 dxh = dxh.wrapping_add(1);
             }
-            dirx = 0u8; // LDA #0; BIT skips LDA #$FF
+            0u8 // LDA #0; BIT skips LDA #$FF
         } else {
-            dirx = 0xFF;
-        }
+            0xFF
+        };
         self.set_d32(0x3243, dirx);
         // $324D = fireball Y - enemy Y (absolute)
         let (mut dy, b) = fy.overflowing_sub(ey);

@@ -24,7 +24,8 @@ use crate::image::img;
 use crate::state::GameState;
 
 /// Platform state of engine B: slots and the zero page items `$F8..$FD`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub struct Platforms {
     /// `$FD`: Giana stands on a platform (1)
     pub fd: u8,
@@ -38,11 +39,6 @@ pub struct Platforms {
     pub fa: u8,
 }
 
-impl Default for Platforms {
-    fn default() -> Self {
-        Platforms { fd: 0, fb: 0, f8: 0, f9: 0, fa: 0 }
-    }
-}
 
 impl Platforms {
     /// Stage build (`$2F5D`: `$FD = 0`, spawner restarts at the stage start).
@@ -159,13 +155,12 @@ impl GameState {
         }
         let f = self.surrounding_tile_flags;
         // $891E: head against a solid tile: the platform's `$07D0` flag drops and `$07BC` counts
-        if f[1] & 1 != 0 {
-            if self.b_slot(0x7D0 + x) != 0 {
+        if f[1] & 1 != 0
+            && self.b_slot(0x7D0 + x) != 0 {
                 self.b_set_slot(0x7D0 + x, 0);
                 let bc = self.b_slot(0x7BC + x).wrapping_add(1);
                 self.b_set_slot(0x7BC + x, bc);
             }
-        }
         let (d0, speed, left) = (self.b_slot(0x7D0 + x), self.b_slot(0x774 + x) & 0x7F, self.b_slot(0x7B4 + x) != 0);
         // $8931: landed on solid ground beside the platform: she leaves it
         if d0 == 0 && (f[3] | f[5]) & 1 == 0 && (f[6] | f[7] | f[8]) & 1 != 0 {

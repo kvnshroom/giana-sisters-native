@@ -134,7 +134,7 @@ impl GameState {
         match st {
             1 => cx = 0x1C,
             2 => cx = 0x22,
-            3 | 4 | 5 => cx = 0x28,
+            3..=5 => cx = 0x28,
             6 => {
                 self.debris_state_6_l1896();
                 return;
@@ -324,7 +324,7 @@ impl GameState {
         }
         self.zp_0e = (self.slot(0x9B78 + x) as u16) << 8 | self.slot(0x9B70 + x) as u16;
         let mut a = st;
-        if a >= 1 && a < 6 {
+        if (1..6).contains(&a) {
             // $174A: PHA; TAY; $0E:$0F += $A0; sub_1D46; sub_1D52($9D22,Y); $0E:$0F -= $A0; PLA
             self.zp_0e = self.zp_0e.wrapping_add(0xA0);
             self.colour_pointer_sub_1d46();
@@ -531,17 +531,17 @@ impl GameState {
         let t = self.surrounding_tiles;
         if self.anim_counter != 0 {
             // L1B2F
-            let y: u16;
-            if t[1] == 0x43 {
-                y = 2;
+            
+            let y: u16 = if t[1] == 0x43 {
+                2
             } else if t[1] == 0x44 {
-                y = 1;
+                1
             } else if t[1] == 0x45 {
-                y = 0;
+                0
             } else {
                 self.after_hit_l1bab();
                 return;
-            }
+            };
             self.add_y_sub_1c21(y);
             let a = self.sum3_sub_1c2e();
             if a == 0xCC {
@@ -582,16 +582,16 @@ impl GameState {
     /// L1BAB: tiles $49..$4B above Giana
     fn after_hit_l1bab(&mut self) {
         let t = self.surrounding_tiles;
-        let y: u16;
-        if t[1] == 0x49 {
-            y = 2;
+        
+        let y: u16 = if t[1] == 0x49 {
+            2
         } else if t[1] == 0x4A {
-            y = 1;
+            1
         } else if t[1] == 0x4B {
-            y = 0;
+            0
         } else {
             return;
-        }
+        };
         self.add_y_sub_1c21(y);
         let a = self.sum3_sub_1c2e();
         if a == 0xD5 {
@@ -653,7 +653,10 @@ impl GameState {
         if self.st_0457 != 0 {
             return;
         }
-        if self.stage == 0x20 {
+        // `$1DDA: CMP #$20` (the last stage's statue ends the stage); the 7A3 engine has the operand at `$1DD8` (Ridley X `$29`,
+        // the other hacks `0`: a statue is then always a checkpoint)
+        let last = crate::image::img(if self.engine_b.is_some() { 0x1DD8 } else { 0x1DDA });
+        if self.stage == last as u32 {
             self.st_046d = 0xFF;
             return;
         }

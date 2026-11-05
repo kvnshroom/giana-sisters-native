@@ -18,8 +18,8 @@ pub fn title_koala() -> &'static [u8] {
 /// C64 colour indices (320x200) of the title picture, as the original shows it: the picture is one raster line higher
 /// than the bitmap rows, the last line is black.
 fn title_indices() -> &'static [u8] {
-    static PIXELS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    PIXELS.get_or_init(|| {
+    static PIXELS: giana_core::data::Cache<Vec<u8>> = giana_core::data::Cache::new(None);
+    giana_core::data::cached(&PIXELS, || {
         let (bitmap, rest) = title_koala().split_at(8000);
         let (screen, rest) = rest.split_at(1000);
         let (color, rest) = rest.split_at(1000);
@@ -38,7 +38,7 @@ fn title_indices() -> &'static [u8] {
             }
         }
         out
-    })
+    }).as_slice()
 }
 
 /// Linear 32-bit ARGB/XRGB virtual framebuffer.
@@ -98,5 +98,11 @@ impl Framebuffer {
     /// never reached by the app); `GameScreen::Intro` shows the title picture.
     pub fn draw_intro_screen(&mut self) {
         self.draw_title_screen();
+    }
+}
+
+impl Default for Framebuffer {
+    fn default() -> Self {
+        Self::new()
     }
 }

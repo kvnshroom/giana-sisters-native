@@ -69,7 +69,7 @@ mod tests {
         // Black outer border (38-column mode: X=40..343, Y=40..239)
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
-                if x < 40 || x > 343 || y < 40 || y >= 240 {
+                if !(40..=343).contains(&x) || !(40..240).contains(&y) {
                     fb.set_pixel(x, y, c64_color(0));
                 }
             }

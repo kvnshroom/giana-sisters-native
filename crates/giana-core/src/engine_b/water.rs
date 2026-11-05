@@ -16,7 +16,7 @@
 use crate::state::GameState;
 
 /// The water state of engine B (zero page `$FF` and the two self-modified bytes of the ladder).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Water {
     /// `$FF` bit 7: Giana is in water this frame (or touches a ladder)
     pub in_water: bool,
@@ -76,13 +76,7 @@ impl GameState {
             return;
         }
         // $8DA7..: sink unless she stands between two solid tiles on the floor ($8DC5 / $8DCF)
-        let sink = if (f[3] | f[5]) & 1 != 0 {
-            true
-        } else if self.sprite_head_y & 0x06 != 0x04 {
-            true
-        } else {
-            (f[6] | f[7] | f[8]) & 1 == 0
-        };
+        let sink = (f[3] | f[5]) & 1 != 0 || self.sprite_head_y & 0x06 != 0x04 || (f[6] | f[7] | f[8]) & 1 == 0;
         if sink {
             // $8DC5: $17 = $FF, arc index $042A = $0E (the fall table from there: 2, 2, 2 ... 1, 0)
             self.jump_state = 0xFF;

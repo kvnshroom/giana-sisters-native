@@ -5,7 +5,7 @@
 use crate::bindings::{key_label, Action, Bindings, PadInput};
 use crate::menu::{menu_buttons, menu_keys, Nav};
 use crate::padicons::{icon_for, merge_pair, Icon, PadKind};
-use crate::ui::{hints_width, hints_width_in, Cap, Hint, View, FOOTER_MAX};
+use crate::ui::{hints_width_in, Cap, Hint, View};
 use sdl2::controller::Button;
 use sdl2::keyboard::Keycode;
 
@@ -227,6 +227,7 @@ pub fn fit_in(mut hints: Vec<Hint>, view: View) -> Vec<Hint> {
 mod tests {
     use super::*;
     use crate::menu::nav_for_button;
+    use crate::ui::{hints_width, FOOTER_MAX};
     use crate::menu::nav_for_key;
     use sdl2::controller::Axis;
 

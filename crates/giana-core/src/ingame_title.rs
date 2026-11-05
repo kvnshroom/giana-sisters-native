@@ -144,12 +144,13 @@ impl GameState {
         self.player_save[..8].fill(0);
         self.player_save[8] = 1;
         self.player_save[9] = 1;
-        self.player_save[10] = 3;
-        self.player_save[11] = 3;
+        let lives = self.new_game_lives();
+        self.player_save[10] = lives;
+        self.player_save[11] = lives;
         self.player_save[14] = 0;
         self.player_save[15] = 0;
-        self.lives_c64 = 3;
-        self.lives = 3;
+        self.lives_c64 = lives;
+        self.lives = lives as u32;
         // $09A3: $0456 = $2169 = $0417 = $046D = 0; $09B1: INC $20
         self.spawn_variant = 0;
         self.st_2169 = 0;

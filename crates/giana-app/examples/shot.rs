@@ -22,7 +22,7 @@ fn main() {
     let jump_from: usize = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
     let mut g = GameState::new_port_game();
     // `script:<file>` replays an oracle script (inputs from frame 70 on, the frame the game starts)
-    let keys: Vec<(String, usize)> = if a.get(3).map_or(false, |s| s.starts_with("script:")) {
+    let keys: Vec<(String, usize)> = if a.get(3).is_some_and(|s| s.starts_with("script:")) {
         std::fs::read_to_string(&a[3][7..]).unwrap().split_whitespace()
             .filter(|t| !t.starts_with("POKE")).map(|t| { let (k, n) = t.split_once(':').unwrap(); (k.to_string(), n.parse().unwrap()) }).collect()
     } else { Vec::new() };

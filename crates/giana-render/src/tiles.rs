@@ -4,8 +4,8 @@ use crate::palette::c64_color;
 /// Bank 3 (`$C000..$FFFF`) as the port's game state holds it when a game starts: characters at `$C000`, sprite shapes
 /// above (the game's own copies from `$A000..` into `$C800..` already done).
 pub fn bank3() -> &'static [u8] {
-    static BANK: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    BANK.get_or_init(|| giana_core::state::GameState::new_port_game().sprite_mem)
+    static BANK: giana_core::data::Cache<Vec<u8>> = giana_core::data::Cache::new(None);
+    giana_core::data::cached(&BANK, || giana_core::state::GameState::new_port_game().sprite_mem).as_slice()
 }
 
 /// Character set `$C000..$C7FF`.

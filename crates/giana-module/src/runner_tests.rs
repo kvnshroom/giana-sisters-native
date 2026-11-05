@@ -44,7 +44,7 @@ fn single_prg_without_disk() {
 fn stack_autostart_file_runs() {
     // file at $0100 filled with $02 up to $01FF, then code at $0203 that writes a marker and spins
     let mut prg = vec![0x00, 0x01];
-    prg.extend(std::iter::repeat(0x02).take(0x100));
+    prg.extend(std::iter::repeat_n(0x02, 0x100));
     prg.extend_from_slice(&[0x00, 0x00, 0x00]); // $0200..$0202
     prg.extend_from_slice(&[0xA9, 0x42, 0x8D, 0x00, 0x30, 0x4C, 0x08, 0x02]); // LDA #$42 STA $3000 JMP *
     let disk = build_d64(&[("STACK", &prg)]);

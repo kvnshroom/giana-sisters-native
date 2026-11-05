@@ -3,37 +3,41 @@
 pub const HELP: &str = "The Great Giana Sisters (Rust port)
 
 USAGE:
-    giana-app [OPTIONS] [FILE.g64 | FILE.grom]
+    giana-app [OPTIONS] [FILE]
 
-ARGUMENT:
-    FILE.g64           on the first start, use this disk image (also: Open with, or drag it onto the program)
-    FILE.grom          add this ROM module and play it from now on (also: Open with, or drag it onto the program)
+FILE can be your disk image (.g64) or a ROM module (.grom). You can also open one with the program or drop it on it.
 
-OPTIONS:
-    --import FILE.g64  extract the game data from your original disk image and exit
-    --data DIR         use the original game data in DIR (extract into it on first start)
-    --module FILE|ID   play this ROM module in this run only (a .grom file is added first; an ID is the start of
-                       the id that --list-modules shows)
-    --list-modules     list the installed ROM modules and exit
-    --add-module FILE  add a ROM module (or a hack's disk image) to the list and exit, without playing it
-    --make-module INPUT -o OUT.grom --name NAME [--author A] [--version V] [--description D] [--title F_2.PRG]
-                       make a ROM module from a modified game: a disk image of a hack (.d64/.g64; a hack of the
-                       7A3 construction-set engine brings its stage files along), a 64K image or RAM dump, a PRG
-                       of disk file 1, a VICE snapshot (.vsf) or a .bps patch against ingame.bin. Needs your
-                       original game data; the module contains none of it. Prints what it changes and exits
+FIRST START:
+    --import FILE.g64  take the game data from your disk image, then exit
+    --data DIR         keep the game data in DIR instead of the default folder
+
+PLAY:
     --stage N          skip the menu and start in stage N (1 to 33)
+    --module FILE|ID   play this ROM module this time only
     --debug            debug keys: F1 lives, F2 invulnerable, F3/F4 previous/next stage
-    --check-update     look for a new version now, print the result and exit
-    --no-update-check  never look for a new version (also OPTIONS > UPDATE CHECK)
+
+ROM MODULES:
+    --list-modules     show the installed modules, then exit
+    --add-module FILE  add a module (or a hack's disk image), then exit
+    --make-module INPUT -o OUT.grom --name NAME [--author A] [--version V] [--description D] [--title F_2.PRG]
+                       make a module from a modified game, then exit. INPUT can be a hack's disk image (.d64/.g64),
+                       a 64K image or RAM dump, a PRG of disk file 1, a VICE snapshot (.vsf) or a .bps patch.
+                       Needs your game data; the module itself contains none of it
+
+UPDATES:
+    --check-update     look for a new version, print the result, then exit
+    --no-update-check  never look for a new version (also OPTIONS > GENERAL > UPDATE CHECK)
+
+OTHER:
     -h, --help         show this text
     -V, --version      show the version
 
-The game contains no original data. On first start it asks for your own The Great Giana Sisters disk image (.g64) and
-extracts what it needs into its data folder ($XDG_DATA_HOME/giana-native/data, ~/.local/share/giana-native/data,
-%APPDATA%\\giana-native\\data); a data folder next to the program is used too.
+The game contains no original data. On the first start it asks for your own disk image and keeps what it needs in
+its data folder: ~/.local/share/giana-native/data (Linux), ~/Library/Application Support/giana-native/data (macOS),
+%APPDATA%\\giana-native\\data (Windows). A data folder next to the program works too.
 
-The game needs the SDL2 library (Fedora: sdl2-compat or SDL2, Debian/Ubuntu: libsdl2-2.0-0, macOS: brew install sdl2).
-Settings, controls and high scores live in the giana-native folder of your configuration directory.";
+If the game does not start because SDL2 is missing, install it (Fedora: sdl2-compat, Debian/Ubuntu: libsdl2-2.0-0, macOS: brew install sdl2).
+Settings, controls and high scores are in the giana-native folder of your configuration directory.";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Options {
@@ -100,24 +104,6 @@ fn is_g64(arg: &str) -> bool {
 
 fn is_grom(arg: &str) -> bool {
     std::path::Path::new(arg).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("grom"))
-}
-
-/// The arguments for the program that replaces this one when the ROM module is switched: those of this run without what
-/// only applied to it (the module of this run, the stage, the files to open).
-pub fn restart_args<I: IntoIterator<Item = String>>(args: I) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--module" | "--stage" => {
-                args.next();
-            }
-            a if a.starts_with("--module=") || a.starts_with("--stage=") => {}
-            a if !a.starts_with('-') && (is_g64(a) || is_grom(a)) => {}
-            _ => out.push(arg),
-        }
-    }
-    out
 }
 
 fn value(args: &mut impl Iterator<Item = String>, what: &str) -> Result<String, String> {
@@ -280,14 +266,6 @@ mod tests {
         assert_eq!(m.version, "2.0");
         let Ok(Command::MakeModule(m)) = p(&["--module-version", "3", "--make-module", "a.bin", "-o", "o.grom", "--name", "N"]) else { panic!() };
         assert_eq!(m.version, "3");
-    }
-
-    #[test]
-    fn a_restart_keeps_the_options_that_stay() {
-        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let kept = restart_args(args(&["--data", "/d", "--module", "abcd", "--stage", "3", "--debug", "x.g64", "y.grom", "--stage=4", "--module=ff"]));
-        assert_eq!(kept, args(&["--data", "/d", "--debug"]));
-        assert!(restart_args(Vec::new()).is_empty());
     }
 
     #[test]

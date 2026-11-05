@@ -652,7 +652,7 @@ impl Finder {
     }
 
     pub fn poll(&mut self) {
-        if self.last.map_or(true, |t| t.elapsed() > Duration::from_secs(1)) {
+        if self.last.is_none_or(|t| t.elapsed() > Duration::from_secs(1)) {
             self.last = Some(Instant::now());
             self.send_failed = self.socket.send_to(SEARCH, ("255.255.255.255", PORT)).is_err();
         }
@@ -824,7 +824,7 @@ impl Session {
                 _ => self.left = true,
             }
         }
-        closed |= self.write_failed.map_or(false, |t| t.elapsed() >= WRITE_FAILED_GRACE);
+        closed |= self.write_failed.is_some_and(|t| t.elapsed() >= WRITE_FAILED_GRACE);
         // Inputs that came before the end still count. What is left in `bytes` now is half a message.
         if (closed || self.left) && self.inputs.is_empty() && self.ended.is_none() {
             self.ended = Some(if self.left { "THE OTHER PLAYER LEFT" } else { "CONNECTION LOST" });
@@ -854,7 +854,7 @@ impl Session {
     fn step(&mut self, game: &mut GameState, input: &ControllerInput) {
         game.update(input);
         self.tick += 1;
-        if self.tick % CHECK_EVERY == 0 {
+        if self.tick.is_multiple_of(CHECK_EVERY) {
             let sum = checksum(game);
             self.my_checks.push_back((self.tick, sum));
             self.send_check(self.tick, sum);
@@ -875,7 +875,7 @@ impl Session {
             self.send(&[MSG_INPUT, bits]);
             mine.update(&input_from_bits(bits));
             self.my_tick += 1;
-            if self.my_tick % CHECK_EVERY == 0 {
+            if self.my_tick.is_multiple_of(CHECK_EVERY) {
                 self.send_check(self.my_tick, checksum(mine));
             }
         }
@@ -886,7 +886,7 @@ impl Session {
             theirs.update(&input_from_bits(bits));
             self.tick += 1;
             steps += 1;
-            if self.tick % CHECK_EVERY == 0 {
+            if self.tick.is_multiple_of(CHECK_EVERY) {
                 self.my_checks.push_back((self.tick, checksum(theirs)));
             }
         }
@@ -987,7 +987,7 @@ mod tests {
         // every 75 ticks the network holds 5 inputs back (100 ms) and delivers them at once
         let mut arrivals = Vec::new();
         for _ in 0..40 {
-            arrivals.extend(std::iter::repeat(1).take(70));
+            arrivals.extend(std::iter::repeat_n(1, 70));
             arrivals.extend([0, 0, 0, 0, 0, 6]);
         }
         let mut p = Playout::new();

@@ -173,7 +173,7 @@ pub enum InstallError {
 impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InstallError::NotWritable => write!(f, "the program cannot be replaced here"),
+            InstallError::NotWritable => write!(f, "the game cannot update itself here (no permission to replace the program)"),
             InstallError::Checksum(m) | InstallError::Other(m) => write!(f, "{m}"),
         }
     }
@@ -183,23 +183,23 @@ impl std::fmt::Display for InstallError {
 
 fn read_limited(r: &mut impl Read, size_hint: u64) -> Result<Vec<u8>, InstallError> {
     if size_hint > MAX_EXE {
-        return Err(InstallError::Other("the program in the package is too big".into()));
+        return Err(InstallError::Other("the download looks wrong (the program in it is too big)".into()));
     }
     let mut out = Vec::new();
-    r.take(MAX_EXE + 1).read_to_end(&mut out).map_err(|e| InstallError::Other(format!("could not unpack: {e}")))?;
+    r.take(MAX_EXE + 1).read_to_end(&mut out).map_err(|e| InstallError::Other(format!("could not unpack the download: {e}")))?;
     if out.len() as u64 > MAX_EXE {
-        return Err(InstallError::Other("the program in the package is too big".into()));
+        return Err(InstallError::Other("the download looks wrong (the program in it is too big)".into()));
     }
     Ok(out)
 }
 
 /// The executable (`exe`: its file name) out of a `.tar.gz` or `.zip` package. In a macOS package it is the one inside the app bundle.
 pub fn extract_exe(archive_name: &str, data: &[u8], exe: &str) -> Result<Vec<u8>, InstallError> {
-    let missing = || InstallError::Other(format!("{exe} is not in the package"));
+    let missing = || InstallError::Other(format!("the download looks wrong ({exe} is missing in it)"));
     if archive_name.ends_with(".zip") {
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| InstallError::Other(format!("bad package: {e}")))?;
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| InstallError::Other(format!("the download is damaged: {e}")))?;
         for i in 0..zip.len() {
-            let mut f = zip.by_index(i).map_err(|e| InstallError::Other(format!("bad package: {e}")))?;
+            let mut f = zip.by_index(i).map_err(|e| InstallError::Other(format!("the download is damaged: {e}")))?;
             let is_exe = f.is_file() && f.enclosed_name().is_some_and(|p| p.file_name().is_some_and(|n| n == exe));
             if is_exe {
                 let size = f.size();
@@ -209,9 +209,9 @@ pub fn extract_exe(archive_name: &str, data: &[u8], exe: &str) -> Result<Vec<u8>
         Err(missing())
     } else {
         let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(data));
-        let entries = tar.entries().map_err(|e| InstallError::Other(format!("bad package: {e}")))?;
+        let entries = tar.entries().map_err(|e| InstallError::Other(format!("the download is damaged: {e}")))?;
         for entry in entries {
-            let mut entry = entry.map_err(|e| InstallError::Other(format!("bad package: {e}")))?;
+            let mut entry = entry.map_err(|e| InstallError::Other(format!("the download is damaged: {e}")))?;
             let is_exe = entry.header().entry_type().is_file() && entry.path().ok().is_some_and(|p| p.file_name().is_some_and(|n| n == exe));
             if is_exe {
                 let size = entry.size();
@@ -269,7 +269,7 @@ pub fn replace_exe(exe: &Path, new: &[u8], windows: bool) -> Result<(), InstallE
         let _ = std::fs::remove_file(&staged);
         return Err(match e.kind() {
             std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => InstallError::NotWritable,
-            _ => InstallError::Other(format!("could not write the new program: {e}")),
+            _ => InstallError::Other(format!("could not save the new version: {e}")),
         });
     }
     let result = if windows {
@@ -288,7 +288,7 @@ pub fn replace_exe(exe: &Path, new: &[u8], windows: bool) -> Result<(), InstallE
         let _ = std::fs::remove_file(&staged);
         match e.kind() {
             std::io::ErrorKind::PermissionDenied => InstallError::NotWritable,
-            _ => InstallError::Other(format!("could not replace the program: {e}")),
+            _ => InstallError::Other(format!("could not install the new version: {e}")),
         }
     })
 }
@@ -312,17 +312,17 @@ fn write_staged(exe: &Path, staged: &Path, data: &[u8]) -> std::io::Result<()> {
 
 /// Everything after the download: verify the checksum, unpack, replace. Nothing is touched before the checksum matches.
 pub fn install_from_bytes(archive_name: &str, archive: &[u8], sums: &str, exe: &Path, os: &str) -> Result<(), InstallError> {
-    let expected = parse_sums(sums, archive_name).ok_or_else(|| InstallError::Checksum(format!("no checksum for {archive_name}")))?;
+    let expected = parse_sums(sums, archive_name).ok_or_else(|| InstallError::Checksum(format!("the release has no checksum for {archive_name}")))?;
     let actual = sha256_hex(archive);
     if actual != expected {
-        return Err(InstallError::Checksum("the download does not match its checksum".into()));
+        return Err(InstallError::Checksum("the download is damaged (its checksum does not match)".into()));
     }
     if is_managed_path(exe) {
         return Err(InstallError::NotWritable);
     }
     let new = extract_exe(archive_name, archive, exe_name(os))?;
     if new.is_empty() {
-        return Err(InstallError::Other("the program in the package is empty".into()));
+        return Err(InstallError::Other("the download looks wrong (the program in it is empty)".into()));
     }
     replace_exe(exe, &new, os == "windows")
 }
@@ -349,18 +349,18 @@ pub fn fetch_latest() -> Result<Release, CheckError> {
     })?;
     let mut body = String::new();
     resp.into_reader().take(2 * 1024 * 1024).read_to_string(&mut body).map_err(|e| CheckError::Failed(e.to_string()))?;
-    parse_release(&body).ok_or_else(|| CheckError::Failed("unexpected answer".into()))
+    parse_release(&body).ok_or_else(|| CheckError::Failed("GitHub sent an answer the game does not understand".into()))
 }
 
 fn download(url: &str) -> Result<Vec<u8>, InstallError> {
     if !url.starts_with(DOWNLOAD_PREFIX) {
-        return Err(InstallError::Other("the download is not from the project's releases".into()));
+        return Err(InstallError::Other("refusing to download from outside the project's releases".into()));
     }
-    let resp = agent(Duration::from_secs(300)).get(url).call().map_err(|e| InstallError::Other(format!("download failed: {e}")))?;
+    let resp = agent(Duration::from_secs(300)).get(url).call().map_err(|e| InstallError::Other(format!("the download failed: {e}")))?;
     let mut data = Vec::new();
-    resp.into_reader().take(MAX_DOWNLOAD + 1).read_to_end(&mut data).map_err(|e| InstallError::Other(format!("download failed: {e}")))?;
+    resp.into_reader().take(MAX_DOWNLOAD + 1).read_to_end(&mut data).map_err(|e| InstallError::Other(format!("the download failed: {e}")))?;
     if data.len() as u64 > MAX_DOWNLOAD {
-        return Err(InstallError::Other("the download is too big".into()));
+        return Err(InstallError::Other("the download is too big, giving up".into()));
     }
     Ok(data)
 }
@@ -369,14 +369,14 @@ fn download(url: &str) -> Result<Vec<u8>, InstallError> {
 pub fn install_release(release: &Release) -> Result<(), InstallError> {
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
     let name = asset_name(&release.version, os, arch).ok_or(InstallError::NotWritable)?;
-    let asset = release.asset(&name).ok_or_else(|| InstallError::Other(format!("{name} is not part of the release")))?;
-    let sums = release.asset(SUMS_NAME).ok_or_else(|| InstallError::Checksum(format!("{SUMS_NAME} is not part of the release")))?;
+    let asset = release.asset(&name).ok_or_else(|| InstallError::Other(format!("this release has no package for your system ({name})")))?;
+    let sums = release.asset(SUMS_NAME).ok_or_else(|| InstallError::Checksum(format!("this release has no checksum file ({SUMS_NAME})")))?;
     let exe = std::env::current_exe().map_err(|e| InstallError::Other(e.to_string()))?;
     // fail early, before the big download
     if is_managed_path(&exe) {
         return Err(InstallError::NotWritable);
     }
-    let sums = String::from_utf8(download(&sums.url)?).map_err(|_| InstallError::Checksum("unreadable checksum file".into()))?;
+    let sums = String::from_utf8(download(&sums.url)?).map_err(|_| InstallError::Checksum("the checksum file is unreadable".into()))?;
     let archive = download(&asset.url)?;
     install_from_bytes(&name, &archive, &sums, &exe, os)
 }
@@ -531,16 +531,16 @@ impl Updater {
                 Ok(r) => match install_release(&r) {
                     Ok(()) => View::Done,
                     Err(InstallError::NotWritable) => {
-                        println!("Update {} available: {}", r.version, r.page);
+                        println!("Version {} is available, but the game cannot install it here. Download it from {}", r.version, r.page);
                         open_page(&r.page);
                         View::Manual
                     }
                     Err(InstallError::Checksum(m)) => {
-                        eprintln!("Update refused: {m}");
+                        eprintln!("The update was not installed, nothing was changed: {m}");
                         View::Failed("CHECKSUM MISMATCH".into())
                     }
                     Err(InstallError::Other(m)) => {
-                        eprintln!("Update failed: {m}");
+                        eprintln!("The update did not work: {m}");
                         View::Failed("SEE THE TERMINAL".into())
                     }
                 },
@@ -556,13 +556,13 @@ impl Updater {
 pub fn check_report() -> (String, bool) {
     let current = env!("CARGO_PKG_VERSION");
     match fetch_latest() {
-        Ok(r) if is_newer(&r.version, current) && r.has_package() => (format!("A new version is available: {} (you have {current})\n{}", r.version, r.page), true),
-        Ok(r) if is_newer(&r.version, current) => (format!("Version {} is out, its package for this system is still being uploaded (you have {current})", r.version), true),
+        Ok(r) if is_newer(&r.version, current) && r.has_package() => (format!("A new version is available: {} (you have {current}).\nDownload it from {}", r.version, r.page), true),
+        Ok(r) if is_newer(&r.version, current) => (format!("Version {} is out (you have {current}), but its download for your system is not ready yet. Try again later.", r.version), true),
         // (a newer release whose package for this system is not uploaded yet is reported as such)
-        Ok(r) => (format!("Up to date: {current} (latest release: {})", r.version), true),
-        Err(CheckError::Status(404)) => (format!("No release found (you have {current}). {RELEASES_URL}"), true),
-        Err(CheckError::Status(code)) => (format!("The update check failed: the server answered {code}"), false),
-        Err(CheckError::Failed(m)) => (format!("The update check failed: {m}"), false),
+        Ok(_) => (format!("You have the newest version ({current})."), true),
+        Err(CheckError::Status(404)) => (format!("No release has been published yet (you have {current}). {RELEASES_URL}"), true),
+        Err(CheckError::Status(code)) => (format!("Could not check for updates: GitHub answered with error {code}. Try again later."), false),
+        Err(CheckError::Failed(m)) => (format!("Could not check for updates: {m}."), false),
     }
 }
 

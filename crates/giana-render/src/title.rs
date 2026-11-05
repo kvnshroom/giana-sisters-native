@@ -128,7 +128,7 @@ pub fn draw_line(st: &LineState, out: &mut [u8]) {
     for x in 0..WIDTH {
         out[x] = match row[x] {
             0x10 => d021_at(st, x as i32),
-            0x11 | 0x12 | 0x13 => 0,
+            0x11..=0x13 => 0,
             c => c,
         };
         if st.vborder || x < lx || x >= rx {

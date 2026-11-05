@@ -167,7 +167,7 @@ pub fn verify_dir(dir: &Path) -> Vec<String> {
 pub fn missing_optional(dir: &Path) -> Vec<&'static str> {
     MANIFEST
         .iter()
-        .filter(|e| e.optional && !std::fs::read(dir.join(e.name)).map_or(false, |d| matches_manifest(e.name, &d)))
+        .filter(|e| e.optional && !std::fs::read(dir.join(e.name)).is_ok_and(|d| matches_manifest(e.name, &d)))
         .map(|e| e.name)
         .collect()
 }

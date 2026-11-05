@@ -1,6 +1,6 @@
 use crate::collision::Rect;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EnemyType {
     Monster,    // Authentic Stage 1 horned owl / monster ($92 / $93)
     RollingEye, // Rolling spiked eye ($C0)
@@ -9,7 +9,7 @@ pub enum EnemyType {
     Dragon,     // Stage 33 boss ($B5)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Enemy {
     pub enemy_type: EnemyType,
     pub x: f32,
@@ -109,7 +109,7 @@ impl Enemy {
 }
 
 /// Brick particle debris flying out when a block is shattered
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DebrisParticle {
     pub x: f32,
     pub y: f32,
@@ -143,7 +143,7 @@ impl DebrisParticle {
 }
 
 /// Floating diamond or powerup item popping out of a hit block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PowerupItem {
     pub x: f32,
     pub y: f32,
@@ -180,7 +180,7 @@ impl PowerupItem {
 }
 
 /// Projectile shot by Giana (Dream Bubble / Fireball)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Projectile {
     pub x: f32,
     pub y: f32,

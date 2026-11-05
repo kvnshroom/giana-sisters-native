@@ -75,6 +75,23 @@ pub fn check_f2(f2: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// First and last byte of the disk file `GAME PART 2` in memory: the sound driver (jump table `$41C0`, code `$4346..$4A79`,
+/// tables) and the music data it reads (`$4AE8..` and on, up to `$5FFF`).
+pub const SOUND_DRIVER: (usize, usize) = (0x41C0, 0x5FFF);
+
+/// A hack made with the 7A3 construction set (the example game of the C-Set V3.12) is stored as a memory snapshot taken when the
+/// game program starts, before its disk file `GAME PART 2` is loaded: the whole driver code area (`$4346..$4A79`) is empty. That
+/// file carries the original's driver and music data (checked against the file on the C-Set disk: it equals the original's
+/// `$41C0..$5FFF` except for the driver's run-time variables), so the area gets the base image's bytes back. A module whose driver
+/// code area holds something is left alone. Returns whether the area was completed.
+pub fn complete_sound_driver(base: &[u8], ingame: &mut [u8]) -> bool {
+    if ingame[0x4346..=0x4A79].iter().any(|&b| b != 0) {
+        return false;
+    }
+    ingame[SOUND_DRIVER.0..=SOUND_DRIVER.1].copy_from_slice(&base[SOUND_DRIVER.0..=SOUND_DRIVER.1]);
+    true
+}
+
 /// Applies the module's patches to the base files and checks the results.
 pub fn apply(module: &Module, base_ingame: &[u8], base_f2: &[u8]) -> Result<Applied, String> {
     if module.meta.base != sha256_hex(base_ingame) {
@@ -92,12 +109,14 @@ pub fn apply(module: &Module, base_ingame: &[u8], base_f2: &[u8]) -> Result<Appl
         None => base_f2.to_vec(),
     };
     check_f2(&f2)?;
-    let code_changes = code_changes(base_ingame, &ingame);
     let mut files = module.files.clone();
     files.sort_by(|a, b| a.name.cmp(&b.name));
     let engine = module.meta.engine.clone();
     let id = module_id_with_files(&ingame, &f2, &files, engine.as_deref());
     let family = detect_family(&ingame);
+    let mut ingame = ingame;
+    complete_sound_driver(base_ingame, &mut ingame);
+    let code_changes = code_changes(base_ingame, &ingame);
     if engine.as_deref() == Some(crate::tnw::ENGINE_T) {
         // family T: the stored files refer to the original stages (the id above covers them as they are stored)
         files = crate::tnw::expand_files(&files, base_ingame)?;

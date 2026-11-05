@@ -22,7 +22,7 @@ fn play(mut s: Session, frames: usize, seed: u32, tamper_at: Option<usize>) -> (
         turns[player] += n;
         done += n;
         // Change the score once: toggling it on every call could undo itself by the next checksum
-        if tamper_at.map_or(false, |t| done >= t) && !tampered {
+        if tamper_at.is_some_and(|t| done >= t) && !tampered {
             g.score_bcd[0] ^= 0x11;
             tampered = true;
         }

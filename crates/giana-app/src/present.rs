@@ -41,7 +41,7 @@ pub struct Layout {
 impl Layout {
     /// The picture is not a whole multiple of the part that it shows: its pixels have to be blended at the edges.
     pub fn is_fractional(&self) -> bool {
-        self.dst.w % self.src.w != 0 || self.dst.h % self.src.h != 0
+        !self.dst.w.is_multiple_of(self.src.w) || !self.dst.h.is_multiple_of(self.src.h)
     }
 
     /// The size of a picture pixel in window pixels (the larger one of both directions).
@@ -121,7 +121,7 @@ impl<'r, C> Presenter<'r, C> {
     /// pixels), a small blurred copy is added on top (glow), and a precomputed picture of scanlines (aligned to the C64
     /// rows), an aperture grille and a vignette darkens it (multiplied). False when the renderer cannot do it.
     fn draw_crt<T: RenderTarget<Context = C>>(&mut self, canvas: &mut Canvas<T>, layout: Layout, src: SdlRect, dst: SdlRect) -> bool {
-        if self.crt_mask.as_ref().map_or(true, |(l, _)| *l != layout) {
+        if self.crt_mask.as_ref().is_none_or(|(l, _)| *l != layout) {
             let Some(mask) = self.make_crt_mask(layout) else { return false };
             self.crt_mask = Some((layout, mask));
         }
@@ -179,7 +179,7 @@ impl<'r, C> Presenter<'r, C> {
         // a whole number of times at least as big as the window picture, but not absurdly big
         let k = (layout.scale().ceil() as u32).clamp(1, 8);
         let (w, h) = (layout.src.w * k, layout.src.h * k);
-        if self.enlarged.as_ref().map_or(true, |(ew, eh, _)| (*ew, *eh) != (w, h)) {
+        if self.enlarged.as_ref().is_none_or(|(ew, eh, _)| (*ew, *eh) != (w, h)) {
             let Ok(mut t) = self.creator.create_texture_target(PixelFormatEnum::ARGB8888, w, h) else { return false };
             t.set_scale_mode(ScaleMode::Linear);
             self.enlarged = Some((w, h, t));

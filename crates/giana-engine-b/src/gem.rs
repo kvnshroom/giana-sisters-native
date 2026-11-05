@@ -43,7 +43,7 @@ fn imm(img: &[u8], at: usize) -> u8 {
 }
 
 /// Table addresses (operands of the instructions at the given places).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Tables {
     records: usize,
     objects: usize,
@@ -87,7 +87,7 @@ pub struct LoadReport {
 }
 
 /// The memory of a running Gem Nightmare: the program image with the stage files dropped in.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct GemMemory {
     pub layout: GemLayout,
     tables: Tables,

@@ -17,5 +17,7 @@ pub mod present;
 pub mod result;
 pub mod scores;
 pub mod settings;
+pub mod split_follow;
+pub mod suspend;
 pub mod ui;
 pub mod update;

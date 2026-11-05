@@ -46,7 +46,7 @@ pub fn render_stage(
         }
         let (char_code, fg_color) = if ch == b'$' {
             (0xF7, 2) // Red diamond icon
-        } else if ch >= b'0' && ch <= b'9' {
+        } else if ch.is_ascii_digit() {
             (ascii_to_c64(ch), 1) // White numbers
         } else {
             (ascii_to_c64(ch), 7) // Yellow text
@@ -75,7 +75,7 @@ pub fn render_stage(
             let cx = (i * cloud_period as isize) - (base_x as isize);
             for idx in 0..cloud_w {
                 let px = cx + (idx as isize) * 8;
-                if px >= -8 && px < 320 {
+                if (-8..320).contains(&px) {
                     let dest_x = (BORDER_X as isize + px) as usize;
                     render_char(fb, cloud_chars_r2[idx], dest_x, BORDER_Y + 16, bg0, 1, 3);
                     render_char(fb, cloud_chars_r3[idx], dest_x, BORDER_Y + 24, bg0, 1, 3);

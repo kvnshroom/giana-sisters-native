@@ -6,12 +6,55 @@
 use crate::image::{img, img_word};
 use crate::state::GameState;
 
+/// Stores of sub_0E66 (16 + 10 screen cells, 120 colour cells).
+pub const STATUS_FRAME_STORES: usize = 146;
+
 impl GameState {
     pub(crate) fn text_cell(&mut self, index: usize, ch: u8) {
         if index < 1000 {
-            self.screen_ram[index] = ch;
-            self.color_ram[index] = 0x07;
+            self.put_cell(false, index, ch);
+            self.put_cell(true, index, 0x07);
         }
+    }
+
+    /// One store into screen RAM (`colour` false) or colour RAM. With a `store_budget` (the sample cuts the routine: see
+    /// `StageTiming::header_cut`) the stores after the budget wait in `store_deferred` for `header_rest`.
+    pub(crate) fn put_cell(&mut self, colour: bool, index: usize, v: u8) {
+        if let Some(log) = self.store_log.as_mut() {
+            log.push((colour, index, v));
+        }
+        if let Some(b) = self.store_budget.as_mut() {
+            if *b == 0 {
+                self.store_deferred.push((colour, index, v));
+                return;
+            }
+            *b -= 1;
+        }
+        if colour {
+            self.color_ram[index] = v;
+        } else {
+            self.screen_ram[index] = v;
+        }
+    }
+
+    /// The stores of the status bar header that the cut left for the next chain.
+    pub fn header_rest(&mut self) {
+        for (colour, index, v) in std::mem::take(&mut self.store_deferred) {
+            if colour {
+                self.color_ram[index] = v;
+            } else {
+                self.screen_ram[index] = v;
+            }
+        }
+    }
+
+    /// The stores of the status bar header `sub_0DE7` in the order of the 6502 (for the harness: where the sample cut it).
+    pub fn header_stores_for_test(&mut self) -> Vec<(bool, usize, u8)> {
+        self.store_log = Some(Vec::new());
+        self.timing.tile_progress = vec![0];
+        self.music_paused = 0;
+        self.status_bar_header_l0de7();
+        self.store_log.take().unwrap_or_default()
     }
 
     /// sub_9881 ($9881..$98D8): print the string with number `string` of the table at `$9BD2` at row `row`, offset `x`
@@ -64,29 +107,56 @@ impl GameState {
         self.print_bcd_sub_98d9(&[self.timer_seconds_low], 0, 0x4B);
     }
 
+    /// The stores of sub_0E66 (`$0E6C..$0E9C`, `$1E == 0`) in the order of the 6502: (colour RAM?, offset, value).
+    pub fn status_bar_frame_stores_for_test(&self) -> Vec<(bool, usize, u8)> {
+        self.status_bar_frame_stores()
+    }
+
+    fn status_bar_frame_stores(&self) -> Vec<(bool, usize, u8)> {
+        let mut v = Vec::with_capacity(STATUS_FRAME_STORES);
+        // L0E6C: Y = 3..0: $C851,Y and $C887,Y from $93C8,Y; $C879,Y and $C8AF,Y from $93CC,Y
+        for y in (0..4usize).rev() {
+            let (a, b) = (img(0x93C8 + y), img(0x93CC + y));
+            v.extend([(false, 0x51 + y, a), (false, 0x87 + y, a), (false, 0x79 + y, b), (false, 0xAF + y, b)]);
+        }
+        // L0E83: Y = 4..0: $C86A,Y from $93D3,Y and $C892,Y from $93D8,Y
+        for y in (0..5usize).rev() {
+            v.extend([(false, 0x6A + y, img(0x93D3 + y)), (false, 0x92 + y, img(0x93D8 + y))]);
+        }
+        // L0E96: Y = $78..1: $D84F,Y = 1
+        for y in (1..=0x78usize).rev() {
+            v.push((true, 0x4F + y, 1));
+        }
+        v
+    }
+
     /// sub_0E66 ($0E66..$0EAA): the frame graphics of the status bar (cleared when `$1E != 0`)
     pub fn status_bar_frame_sub_0e66(&mut self) {
+        self.status_bar_frame_steps(0, usize::MAX);
+    }
+
+    /// The stores `from..to` of sub_0E66 (all of them in the `$1E != 0` case, which is one loop)
+    pub fn status_bar_frame_steps(&mut self, from: usize, to: usize) {
         if self.zp_1e != 0 {
-            for y in 1..=0x78usize {
-                self.screen_ram[0x4F + y] = 0;
-                self.color_ram[0x4F + y] = 0;
+            if from == 0 {
+                for y in 1..=0x78usize {
+                    self.screen_ram[0x4F + y] = 0;
+                    self.color_ram[0x4F + y] = 0;
+                }
             }
             return;
         }
-        for y in 0..4usize {
-            let a = img(0x93C8 + y);
-            self.screen_ram[0x51 + y] = a;
-            self.screen_ram[0x87 + y] = a;
-            let b = img(0x93CC + y);
-            self.screen_ram[0x79 + y] = b;
-            self.screen_ram[0xAF + y] = b;
+        let stores = self.status_bar_frame_stores();
+        let to = to.min(stores.len());
+        if from >= to {
+            return;
         }
-        for y in 0..5usize {
-            self.screen_ram[0x6A + y] = img(0x93D3 + y);
-            self.screen_ram[0x92 + y] = img(0x93D8 + y);
-        }
-        for y in 1..=0x78usize {
-            self.color_ram[0x4F + y] = 0x01;
+        for &(colour, at, v) in &stores[from..to] {
+            if colour {
+                self.color_ram[at] = v;
+            } else {
+                self.screen_ram[at] = v;
+            }
         }
     }
 
@@ -97,6 +167,8 @@ impl GameState {
         self.print_string_sub_9881(self.player as usize, 0x0F, 7); // string `$1568`: GIANA or MARIA
         self.print_string_sub_9881(2, 0x0E, 9);
         self.print_string_sub_9881(3, 0x0E, 0x0B);
+        // $0A56 comes right before the text in the 6502 (no wait between): the harness may place the text a chain earlier
+        self.stage_number_l0a56();
         // $0A80: $02/$03 = $0466; Y = $0B; X = 0; A = $15
         self.print_bcd_sub_98d9(&[self.death_arc_idx], 0x0B, 0x15);
         self.request_music_sub_150c(6);
@@ -107,8 +179,8 @@ impl GameState {
         self.print_string_sub_9881(self.player as usize, 1, 0);
         self.print_string_sub_9881(4, 8, 0);
         // $0DFC: LDA #$F7; STA $C833; LDA #$01; STA $D833
-        self.screen_ram[0x33] = 0xF7;
-        self.color_ram[0x33] = 0x01;
+        self.put_cell(false, 0x33, 0xF7);
+        self.put_cell(true, 0x33, 0x01);
         // $0E06: LDX $20; LDA $9FAE,X; STA $043D
         self.warp_stage_id = self.bcd_table(self.stage as usize);
         self.print_bcd_sub_98d9(&[self.warp_stage_id], 0, 0x45);
@@ -116,7 +188,8 @@ impl GameState {
         self.draw_lives_sub_0e1f();
         // The first main loop pass (`$0BF6` -> sub_1CD7) follows directly and, in the recording, lies before the sample
         // point of the first gameplay frame: do it here so that this frame already shows score, diamonds and time.
-        if self.hazard_hit == 0 {
+        // (measured restarts do this when the main loop starts: `restart_first_pass`)
+        if self.hazard_hit == 0 && self.timing.tile_progress.is_empty() {
             self.status_bar_sub_1cd7();
         }
     }
