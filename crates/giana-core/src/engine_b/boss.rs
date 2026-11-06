@@ -61,9 +61,10 @@ impl GameState {
             } else {
                 self.sprite_x_msb |= 0xE0;
             }
-            self.set_spr(14, 0x4F);
-            self.set_spr(12, 0x67);
-            self.set_spr(10, 0x7F);
+            let e = (self.wide_e() - self.wide_back) as u8; // WIDESCREEN ON: the boss starts `E` further out
+            self.set_spr(14, 0x4F + e);
+            self.set_spr(12, 0x67 + e);
+            self.set_spr(10, 0x7F + e);
             let y = ty.wrapping_add(0x1D);
             self.set_spr(11, y);
             self.set_spr(13, y);
@@ -83,7 +84,7 @@ impl GameState {
             self.en.vic_col[7] = 1;
             self.sprite_x_msb |= 0xF0;
             for off in [14, 12, 10, 8] {
-                self.set_spr(off, 0x4F);
+                self.set_spr(off, 0x4F + (self.wide_e() - self.wide_back) as u8);
             }
             self.set_spr(11, ty);
             self.set_spr(15, ty);
@@ -301,7 +302,8 @@ impl GameState {
             if borrow {
                 self.sprite_x_msb ^= 0x10;
             }
-            if self.sprite_x_msb & 0x10 == 0 && self.spr(8) < 0x10 {
+            let gone = if self.wide_on() { self.wide_x9(4) < 0x10 - self.wide_e() as i32 } else { self.sprite_x_msb & 0x10 == 0 && self.spr(8) < 0x10 };
+            if gone {
                 self.en.vic_me &= 0xEF;
                 return;
             }

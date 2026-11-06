@@ -22,3 +22,6 @@ pub const C64_PALETTE: [u32; 16] = [
 pub fn c64_color(index: u8) -> u32 {
     C64_PALETTE[(index & 0x0F) as usize]
 }
+
+/// C64 colour -> the darker neighbour (the dimmed picture behind a menu).
+pub const DARKER: [u8; 16] = [0, 11, 0, 6, 0, 11, 0, 8, 9, 0, 2, 0, 11, 5, 6, 12];

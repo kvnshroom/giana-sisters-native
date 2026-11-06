@@ -25,6 +25,19 @@ OPTIONS is a hub with three pages: VIDEO, SOUND and GENERAL. Every line shows a 
 
 - **Fullscreen**, and **picture size**: *with border* (sharp, with the C64 border), *no border* (sharp and as large as
   possible – 5× on a 1920×1080 screen) or *fill screen*.
+- **Widescreen: ON / VIEW ONLY / OFF** (off by default; never in the AUTHENTIC style). The picture shows 48 more pixels of
+  the level on each side (24 with *no border* / *fill screen*): 480×272 with the border, 352×200 without, both about 16:9.
+  *On* moves the edges of the game to the new picture: enemies, shots and items are created beyond the new right edge and
+  removed beyond the new edges, so nothing pops in or out in view, and they walk, fall and turn correctly in the extra
+  columns. Giana herself stays exactly as on the C64 (same walls, same scroll point, same collision), and so do the
+  levels, the bosses (they start 48 pixels further out and move by the same script), the four enemy slots and the rooms
+  (statue and bonus rooms play like on the C64 with blank margins). One thing changes: an enemy now lives 48 pixels
+  longer on each side, so in the busiest places (stages 27 to 32 of the original) a few more of the enemies that the C64
+  already loses for lack of a free sprite are lost. *View only* plays exactly like the C64: enemies still appear and
+  vanish at the old edges, so the extra parts are darker towards the outer edge and enemies fade in and out there. *Off*
+  is the 4:3 picture of the C64. Beyond the ends of a level the border colour shows. The rules of a game are fixed when
+  it starts (switching the setting during a game changes the picture only). In a network game each computer chooses its
+  own picture, but the game follows the host's setting on both computers; a game that is suspended keeps its rules.
 - **Screen filter: sharp or CRT TV**: CRT TV makes the picture look like on a tube television (scanlines, glow, soft pixels).
 - **50 Hz mode**: the game runs at 50 frames per second like a European C64. In fullscreen it picks a 50, 100,
   150 or 200 Hz mode if your monitor has one, so every frame is shown evenly.

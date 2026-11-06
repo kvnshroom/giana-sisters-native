@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "giana-app"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "giana-audio",

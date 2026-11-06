@@ -396,8 +396,7 @@ pub fn backdrop_black(fb: &mut Framebuffer) {
 
 /// Darken the whole frame, for panels over the running game.
 pub fn dim(fb: &mut Framebuffer) {
-    // C64 colour -> the darker neighbour
-    const DARKER: [u8; 16] = [0, 11, 0, 6, 0, 11, 0, 8, 9, 0, 2, 0, 11, 5, 6, 12];
+    use giana_render::palette::DARKER;
     for p in fb.pixels.iter_mut() {
         if let Some(i) = C64_PALETTE.iter().position(|&k| k == *p) {
             *p = px(DARKER[i]);

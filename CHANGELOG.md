@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.0]
+
+- WIDESCREEN (OPTIONS > VIDEO, off by default): about 16:9, with 48 more pixels of the level on each side (24 with
+  *no border* / *fill screen*); the status bar spreads over the full width.
+  - *ON*: enemies, shots and items come and go at the new edges, so nothing pops in or out in view. Giana, the levels
+    and the bosses stay as on the C64; in the busiest places a few more enemies are lost for lack of a free sprite.
+  - *VIEW ONLY*: the wider picture, and the game plays exactly like on the C64.
+  - Not available in the AUTHENTIC style.
+
 ## [0.3.0]
 
 - Stop in the middle of a game: closing the program saves it, and CONTINUE 1 PLAYER / CONTINUE 2 PLAYERS in the main

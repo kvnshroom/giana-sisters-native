@@ -230,6 +230,12 @@ pub fn checksum(g: &GameState) -> u32 {
     g.en.col.iter().for_each(|&b| add(b));
     g.en.vic_frame.xy.iter().for_each(|&b| add(b));
     [g.player, g.lives_c64, g.scroll_fine, g.stage as u8].iter().for_each(|&b| add(b));
+    // WIDESCREEN ON: the rules and what the objects there walk on (nothing is added for the C64 rules)
+    if g.wide_k != 0 {
+        add(g.wide_k);
+        g.wide_left.iter().flatten().for_each(|&b| add(b));
+        g.en.col.iter().for_each(|&b| add(b ^ 0xA5));
+    }
     // a ROM module on the 7A3 engine keeps its objects in its own slot arrays
     if let Some(b) = g.engine_b.as_ref() {
         b.sprites.m.iter().for_each(|&x| add(x));
@@ -249,8 +255,9 @@ pub enum NetMode {
 
 /// The rules byte after the mode byte: the enhancements that change how the game plays (`Enhancements::rules`), as the host
 /// chose them. Both computers have to play by the same rules, so the host decides and the other computer takes them over.
-/// No such enhancement exists yet, so this build knows no bit: a host that sends one is from a newer build and is refused.
-pub const KNOWN_RULES: u8 = 0;
+/// Bit 7: the objects work from the edges of the wide picture (WIDESCREEN ON), bits 4..6: the extra columns `k` per side
+/// (`settings::WideRules::byte`). A host that sends another bit is from a newer build and is refused.
+pub const KNOWN_RULES: u8 = 0xF0;
 
 /// The byte after the handshake: bit 0 is the game mode, bit 1 the rule for the winner. Both computers show the same result.
 fn mode_byte(m: NetMode, w: Winner) -> u8 {
@@ -754,9 +761,15 @@ impl Session {
 
     /// The game of this computer, and the copy of the other player's game when each has their own.
     pub fn new_games(&self) -> (GameState, Option<GameState>) {
+        // the host's rules apply to both computers (both games of one computer too)
+        let k = crate::settings::WideRules::from_byte(self.rules).k();
+        let wide = |mut g: GameState| {
+            g.set_wide(k);
+            g
+        };
         match self.mode {
-            NetMode::TakeTurns => (GameState::new_port_game_two(), None),
-            NetMode::SameTime => (GameState::new_port_game_as(self.me), Some(GameState::new_port_game_as(self.me ^ 1))),
+            NetMode::TakeTurns => (wide(GameState::new_port_game_two()), None),
+            NetMode::SameTime => (wide(GameState::new_port_game_as(self.me)), Some(wide(GameState::new_port_game_as(self.me ^ 1)))),
         }
     }
 

@@ -84,6 +84,7 @@ impl<'a> FrameState<'a> {
             ptr,
             spr_col,
             spr_mc: [self.vic[0x25] & 15, self.vic[0x26] & 15],
+            wide: None,
         }
     }
 }

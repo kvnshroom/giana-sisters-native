@@ -9,6 +9,7 @@ pub mod text;
 pub mod title;
 mod fallback_font;
 pub mod vic;
+pub mod wide;
 
 #[cfg(test)]
 mod tests {

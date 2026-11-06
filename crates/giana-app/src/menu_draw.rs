@@ -8,7 +8,7 @@ use crate::menu::{label_room, progress_text, AuthenticAvail, DetailItem, General
 use crate::padicons::Icon;
 use crate::result::Winner;
 use crate::scores::{Scores, MAX_ENTRIES, NAME_LEN};
-use crate::settings::{MenuSoundMode, Presentation, Scaling, MAX_VOLUME};
+use crate::settings::{MenuSoundMode, Presentation, Scaling, Widescreen, MAX_VOLUME};
 use crate::ui::{self, Hint, ItemState, Panel, PillTone, Pitch, View};
 use giana_render::framebuffer::{Framebuffer, WIDTH};
 use giana_render::palette::c64_color;
@@ -530,7 +530,7 @@ fn draw_options(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         p.item(fb, p.item_y(n), item.label(), state(n, menu.cursor), ctx.nudge);
     }
     let lines: [&str; 2] = match OPTION_ITEMS[menu.cursor.min(OPTION_ITEMS.len() - 1)] {
-        OptionItem::Video => ["FULLSCREEN, PICTURE SIZE,", "FILTER, 50 HZ, SMOOTH MOTION"],
+        OptionItem::Video => ["FULLSCREEN, SIZE, WIDESCREEN,", "FILTER, 50 HZ, SMOOTH MOTION"],
         OptionItem::Sound => ["VOLUME, MUSIC, EFFECTS,", "MENU SOUNDS"],
         OptionItem::General => ["WINNER RULE, STYLE,", "UPDATE CHECK"],
         OptionItem::Back => root_back(menu),
@@ -540,7 +540,7 @@ fn draw_options(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
 
 fn draw_video(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     let s = &menu.settings;
-    let p = Panel::for_list(VIDEO_ITEMS.len(), wide(ctx), Pitch::Roomy, true, NOTE_ROWS).in_view(ctx.view);
+    let p = Panel::for_list(VIDEO_ITEMS.len(), wide(ctx), Pitch::Tight, true, NOTE_ROWS).in_view(ctx.view);
     p.draw(fb, Some("VIDEO"));
     for (n, item) in VIDEO_ITEMS.iter().enumerate() {
         let (y, st) = (p.item_y(n), state(n, menu.cursor));
@@ -548,6 +548,7 @@ fn draw_video(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         match item {
             VideoItem::Fullscreen => p.value_row(fb, y, label, on_off(s.fullscreen), VALUE_W, st, ctx.nudge),
             VideoItem::Scaling => p.value_row(fb, y, label, s.scaling.label(), VALUE_W, st, ctx.nudge),
+            VideoItem::Widescreen => p.value_row(fb, y, label, s.widescreen.label(), VALUE_W, st, ctx.nudge),
             VideoItem::Crt => p.value_row(fb, y, label, if s.crt { "CRT TV" } else { "SHARP" }, VALUE_W, st, ctx.nudge),
             VideoItem::Display50 => p.value_row(fb, y, label, if s.display_50 { "AUTO" } else { "OFF" }, VALUE_W, st, ctx.nudge),
             VideoItem::SmoothMotion => p.value_row(fb, y, label, on_off(s.enhancements.smooth_motion()), VALUE_W, st, ctx.nudge),
@@ -560,6 +561,11 @@ fn draw_video(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
             Scaling::Whole => ["THE WHOLE C64 PICTURE, SHARP", "PIXELS, BLACK BARS AROUND"],
             Scaling::NoBorder => ["CUTS THE BORDER WHILE PLAYING", "SO THE GAME FILLS MORE"],
             Scaling::Fill => ["FULL HEIGHT, NO BORDER", "EDGES ARE SMOOTHED"],
+        },
+        VideoItem::Widescreen => match s.widescreen {
+            Widescreen::On => ["MORE TO SEE, ENEMIES COME", "FROM THE NEW EDGE"],
+            Widescreen::ViewOnly => ["MORE TO SEE, PLAYS EXACTLY", "LIKE THE C64"],
+            Widescreen::Off => ["THE ORIGINAL 4:3 PICTURE", ""],
         },
         VideoItem::Crt => {
             if s.crt {
@@ -578,7 +584,7 @@ fn draw_video(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         VideoItem::SmoothMotion => ["ON 60, 120, 144 HZ SCREENS THE", "PICTURE MOVES BETWEEN STEPS"],
         VideoItem::Back => ["BACK TO OPTIONS", ""],
     };
-    note_lines(&p, fb, VIDEO_ITEMS.len(), Pitch::Roomy, &lines);
+    note_lines(&p, fb, VIDEO_ITEMS.len(), Pitch::Tight, &lines);
 }
 
 fn draw_general(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
@@ -960,7 +966,7 @@ mod tests {
                 Panel::for_list(CONTROLS_ITEMS.len(), w, Pitch::Roomy, true, NOTE_ROWS).in_view(view),
                 Panel::for_list(4, 30, Pitch::Roomy, false, 0).in_view(view),
                 Panel::for_list(OPTION_ITEMS.len(), w, Pitch::Roomy, true, NOTE_ROWS).in_view(view),
-                Panel::for_list(VIDEO_ITEMS.len(), w, Pitch::Roomy, true, NOTE_ROWS).in_view(view),
+                Panel::for_list(VIDEO_ITEMS.len(), w, Pitch::Tight, true, NOTE_ROWS).in_view(view),
                 Panel::for_list(GENERAL_ITEMS.len(), w, Pitch::Roomy, true, NOTE_ROWS).in_view(view),
                 Panel::for_list(SOUND_ITEMS.len(), w, Pitch::Roomy, true, SOUND_EXTRA_ROWS).in_view(view),
                 Panel::for_list(MAX_ENTRIES, 30, Pitch::Tight, true, 2).in_view(view),
@@ -983,7 +989,7 @@ mod tests {
             Panel::for_list(8, 20, Pitch::Roomy, true, 0).at_row(2),
             Panel::for_list(NETWORK_ITEMS.len(), WIDE, Pitch::Roomy, true, 5),
             Panel::for_list(OPTION_ITEMS.len(), WIDE, Pitch::Roomy, true, NOTE_ROWS),
-            Panel::for_list(VIDEO_ITEMS.len(), WIDE, Pitch::Roomy, true, NOTE_ROWS),
+            Panel::for_list(VIDEO_ITEMS.len(), WIDE, Pitch::Tight, true, NOTE_ROWS),
             Panel::for_list(GENERAL_ITEMS.len(), WIDE, Pitch::Roomy, true, NOTE_ROWS),
             Panel::for_list(SOUND_ITEMS.len(), WIDE, Pitch::Roomy, true, SOUND_EXTRA_ROWS),
             Panel::for_list(MAX_ENTRIES, 30, Pitch::Tight, true, 2),

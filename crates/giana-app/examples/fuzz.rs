@@ -8,6 +8,8 @@ fn main() {
         let r = std::panic::catch_unwind(|| {
             let st: u32 = std::env::var("STAGE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
             let mut g = GameState::new_port_game_at(st);
+            // `WIDE=<k>`: play by the rules of WIDESCREEN ON with k extra columns per side
+            g.set_wide(std::env::var("WIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
             let mut s = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let mut keys = 0u8;
             let mut max_stage = 1; let mut statue = 0u32;

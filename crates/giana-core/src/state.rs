@@ -294,6 +294,21 @@ pub struct GameState {
     pub engine_b: Option<Box<crate::engine_b::EngineB>>,
     /// Family T (TNW Giana Sisters 2): `None` = the original game (see `features/tnw.rs`)
     pub tnw: Option<Box<crate::features::tnw::TnwState>>,
+    /// WIDESCREEN ON (`wide.rs`): extra columns per side that the rules of the objects use, 0 = the C64's rules
+    #[serde(default)]
+    pub wide_k: u8,
+    /// the columns that scrolled out of the screen on the left (newest first, rows 5..25), for the enemy tile probes
+    #[serde(default)]
+    pub wide_left: Vec<[u8; 20]>,
+    /// the column that is being collected while the rows of a scroll are shifted
+    #[serde(default)]
+    pub wide_stage: [u8; 20],
+    /// counters of what WIDESCREEN ON does to the objects (tests and the soak report; not part of the game)
+    /// pixels that the object that is being created is placed left of the spawn X (the first screen of ON, see `wide.rs`); 0 else
+    #[serde(skip)]
+    pub wide_back: u16,
+    #[serde(default)]
+    pub wide_stats: crate::wide::WideStats,
 }
 
 /// IRQ chains that run during the busy wait of sub_1474 (measured in the oracle).
@@ -800,6 +815,11 @@ impl GameState {
             player_save: { let mut a = [0u8; 16]; a[8] = 1; a[9] = 1; a[10] = 3; a[11] = 3; a[13] = 1; a },
             engine_b: crate::engine_b::EngineB::from_installed(crate::image::image()),
             tnw: crate::features::tnw::TnwState::from_installed(),
+            wide_k: 0,
+            wide_left: Vec::new(),
+            wide_stage: [0; 20],
+            wide_back: 0,
+            wide_stats: Default::default(),
         };
         s.init_system();
         s.b_init_charset();

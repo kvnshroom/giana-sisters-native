@@ -8,6 +8,7 @@
 use crate::settings::Scaling;
 use giana_render::framebuffer::{Framebuffer, HEIGHT, WIDTH};
 use giana_render::vic::{ORIGIN_X, ORIGIN_Y};
+use giana_render::wide::{self, Strips, EXTRA, EXTRA_CROP, WIDE_WIDTH};
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect as SdlRect;
 use sdl2::render::{BlendMode, Canvas, RenderTarget, ScaleMode, Texture, TextureCreator};
@@ -31,6 +32,12 @@ pub const FRAME: Rect = Rect { x: 0, y: 0, w: WIDTH as u32, h: HEIGHT as u32 };
 /// What a game fills: the 38 columns x 25 rows of the screen, everything else of the frame is empty border.
 pub const PLAY: Rect = Rect { x: ORIGIN_X as u32 + 8, y: ORIGIN_Y as u32, w: 304, h: 200 };
 
+/// The widescreen frame (`WIDESCREEN` is on while a game is shown): the border, `EXTRA` pixels of level on each side of the
+/// playing area, the playing area, and the border again: 480 x 272.
+pub const WIDE_FRAME: Rect = Rect { x: 0, y: 0, w: WIDE_WIDTH as u32, h: HEIGHT as u32 };
+/// The widescreen playing area without the border: `EXTRA_CROP` pixels of level on each side, 352 x 200.
+pub const WIDE_PLAY: Rect = Rect { x: (PLAY.x as usize + EXTRA - EXTRA_CROP) as u32, y: ORIGIN_Y as u32, w: (304 + 2 * EXTRA_CROP) as u32, h: 200 };
+
 /// Which part of the frame is drawn where in the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
@@ -39,6 +46,12 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Messages and menus over the game stay inside the playing area (`ui::View::CROP`): in the cut-down pictures, and in
+    /// the widescreen frame, where the strips of extra level are put in between the border and the playing area.
+    pub fn crops_overlays(&self) -> bool {
+        self.src == PLAY || self.src == WIDE_PLAY || self.src == WIDE_FRAME
+    }
+
     /// The picture is not a whole multiple of the part that it shows: its pixels have to be blended at the edges.
     pub fn is_fractional(&self) -> bool {
         !self.dst.w.is_multiple_of(self.src.w) || !self.dst.h.is_multiple_of(self.src.h)
@@ -56,7 +69,19 @@ impl Layout {
 /// * `NoBorder`: while playing the `PLAY` part, a whole number of times (5 x on a 1920 x 1080 screen); otherwise as `Whole`.
 /// * `Fill`: while playing the `PLAY` part, otherwise the whole frame, as big as the window allows with its proportions.
 pub fn layout(scaling: Scaling, playing: bool, win: (u32, u32)) -> Layout {
-    let src = if playing && scaling != Scaling::Whole { PLAY } else { FRAME };
+    layout_wide(scaling, playing, win, false)
+}
+
+/// [`layout`] for the widescreen view: `wide` says that the frame of the game is the widescreen one (it only counts while
+/// `playing`). The whole frame is then 480 x 272 (16:9 within 1 %), the playing area 352 x 200.
+pub fn layout_wide(scaling: Scaling, playing: bool, win: (u32, u32), wide: bool) -> Layout {
+    let wide = wide && playing;
+    let src = match (playing && scaling != Scaling::Whole, wide) {
+        (true, true) => WIDE_PLAY,
+        (true, false) => PLAY,
+        (false, true) => WIDE_FRAME,
+        (false, false) => FRAME,
+    };
     let whole = (win.0 / src.w).min(win.1 / src.h);
     let (w, h) = if scaling != Scaling::Fill && whole >= 1 {
         (src.w * whole, src.h * whole)
@@ -82,13 +107,29 @@ pub struct Presenter<'r, C> {
     crt_mask: Option<(Layout, Texture<'r>)>,
     /// a small blurred copy of the frame for the glow of the CRT look
     crt_glow: Option<Texture<'r>>,
+    wide_scratch: Vec<u32>,
 }
 
 impl<'r, C> Presenter<'r, C> {
     pub fn new(creator: &'r TextureCreator<C>) -> Result<Self, String> {
-        let mut frame = creator.create_texture_streaming(PixelFormatEnum::ARGB8888, WIDTH as u32, HEIGHT as u32).map_err(|e| e.to_string())?;
+        let mut frame = creator.create_texture_streaming(PixelFormatEnum::ARGB8888, WIDE_WIDTH as u32, HEIGHT as u32).map_err(|e| e.to_string())?;
         frame.set_scale_mode(ScaleMode::Nearest);
-        Ok(Self { creator, frame, enlarged: None, crt: false, crt_mask: None, crt_glow: None })
+        Ok(Self { creator, frame, enlarged: None, crt: false, crt_mask: None, crt_glow: None, wide_scratch: Vec::new() })
+    }
+
+    /// Copy the frame buffer and the strips of the widescreen view to the texture (see `wide::compose`).
+    pub fn upload_wide(&mut self, fb: &Framebuffer, strips: &Strips) -> Result<(), String> {
+        self.wide_scratch.resize(WIDE_WIDTH * HEIGHT, 0);
+        wide::compose(fb, strips, &mut self.wide_scratch);
+        let scratch = &self.wide_scratch;
+        self.frame.with_lock(None, |buffer: &mut [u8], pitch: usize| {
+            for y in 0..HEIGHT {
+                let row = &mut buffer[y * pitch..y * pitch + WIDE_WIDTH * 4];
+                for (x, &pixel) in scratch[y * WIDE_WIDTH..(y + 1) * WIDE_WIDTH].iter().enumerate() {
+                    row[x * 4..x * 4 + 4].copy_from_slice(&pixel.to_ne_bytes());
+                }
+            }
+        })
     }
 
     /// Copy the frame buffer to the texture.

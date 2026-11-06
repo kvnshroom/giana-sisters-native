@@ -6,6 +6,8 @@ fn main() {
     let frames: usize = a[2].parse().unwrap();
     for seed in 0..seeds {
         let mut g = GameState::new_port_game();
+        // `WIDE=<k>`: play by the rules of WIDESCREEN ON with k extra columns per side
+        g.set_wide(std::env::var("WIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
         let mut s = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         let mut jump_left = 0usize;
         let mut log: Vec<u8> = Vec::new();

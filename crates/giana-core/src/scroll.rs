@@ -95,6 +95,7 @@ impl GameState {
     /// Rows `from..to` of screen RAM and colour RAM shifted left by one column, new column 39 from the map.
     fn shift_rows_sub_9600(&mut self, from: usize, to: usize) {
         let x = self.map_column as usize;
+        self.wide_note_shift(from, to);
         // Rows 5..24 of screen RAM ($C8C8..$CBE7): shift left by one column, new column 39 from the map
         for r in from..to {
             let base = r * 40;

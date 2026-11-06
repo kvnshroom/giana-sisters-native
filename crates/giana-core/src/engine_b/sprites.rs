@@ -95,6 +95,10 @@ impl GameState {
         }
     }
     #[inline]
+    pub(crate) fn bm_chain(&self, slot: usize) -> bool {
+        self.bm(0x79C + slot) != 0
+    }
+    #[inline]
     pub(super) fn bm(&self, a: usize) -> u8 {
         self.eb().sprites.m[a - 0x700]
     }
@@ -160,10 +164,17 @@ impl GameState {
             // `$0456 != 0` (checkpoint start): `$21 = $59`, else 0; 39 columns
             let base = if self.spawn_variant == 0 { 0 } else { 0x59 };
             self.map_column = base;
-            for _ in 0..=0x26 {
+            // WIDESCREEN ON: the columns up to the new right edge are part of the first screen
+            let extra = self.wide_k_now();
+            for i in 0..=0x26 + extra as usize {
                 self.b_spawn_column(true);
+                if i > 0x26 {
+                    self.wide_stats.prefilled += 1;
+                }
                 self.map_column = self.map_column.wrapping_add(1);
             }
+            self.map_column = base.wrapping_add(0x27);
+            self.wide_rebuild_left();
             self.engine_b.as_mut().unwrap().sprites.fe = false;
         }
         self.b_spawn_column(false);
@@ -172,14 +183,22 @@ impl GameState {
     /// `$7869`: spawn the objects whose trigger column has been reached.
     fn b_spawn_column(&mut self, prefill: bool) {
         let stage = self.stage as u8;
+        let mut first = false;
         if stage != self.v47(0x484) {
             self.set_v47(0x484, stage);
             self.engine_b.as_mut().unwrap().spawn_next = 0;
+            first = true;
+            if !prefill && self.wide_on() {
+                self.wide_rebuild_left();
+            }
         }
-        if self.map_column == self.v47(0x475) {
+        // WIDESCREEN ON: the trigger looks `k` columns ahead (not in the loop of the first screen, which has the columns itself)
+        let k = if prefill { 0 } else { self.wide_k_now() };
+        let look = self.map_column as u16 + k as u16;
+        if self.map_column.wrapping_add(k) == self.v47(0x475) {
             return;
         }
-        self.set_v47(0x475, self.map_column);
+        self.set_v47(0x475, self.map_column.wrapping_add(k));
         if self.en.vic_me == 0xFF {
             return;
         }
@@ -196,24 +215,44 @@ impl GameState {
             v.push(0xFF);
             v
         };
+        // ON, after a room (the first screen is not rebuilt, the objects scroll in): the columns the C64 would create beyond its
+        // edge one by one are due at once, each at its own X (one pass per column)
+        let m0 = self.map_column as u16;
+        if first && k != 0 {
+            for d in 0..k as u16 {
+                self.wide_back = 8 * (k as u16 - d);
+                if self.b_spawn_scan(&raw, m0 + d, prefill) {
+                    self.wide_stats.prefilled += 1;
+                }
+            }
+            self.wide_back = 0;
+        }
+        self.b_spawn_scan(&raw, look, prefill);
+    }
+
+    /// One look at the object list `raw` for the map column `look`: the entries before it are skipped, the one at it is created.
+    /// True when an entry was created.
+    fn b_spawn_scan(&mut self, raw: &[u8], look: u16, prefill: bool) -> bool {
         let rd = |o: u8| raw.get(o as usize).copied().unwrap_or(0xFF);
         // at most one round over all offsets (the hack would loop for ever on a list without a way out)
         for _ in 0..=256 {
             let o = self.eb().spawn_next as u8;
             let t = rd(o);
             if t == 0xFF {
-                return;
+                return false;
             }
-            let x = t.wrapping_sub(1);
-            if x == self.map_column {
+            let x = t.wrapping_sub(1) as u16;
+            if x == look {
                 self.engine_b.as_mut().unwrap().spawn_next = o.wrapping_add(3) as usize;
                 self.b_create(rd(o.wrapping_add(1)), rd(o.wrapping_add(2)), t, prefill);
-            } else if x > self.map_column {
-                return;
+                return true;
+            } else if x > look {
+                return false;
             } else {
                 self.engine_b.as_mut().unwrap().spawn_next = o.wrapping_add(3) as usize;
             }
         }
+        false
     }
 
     /// `$78B5..`: create one object (for a chain: the head and its followers).
@@ -223,9 +262,23 @@ impl GameState {
         let kind = if kind == 0x0B { img(0x8ECF + self.anim_counter as usize) } else { kind };
         self.set_d32(0x3223, kind);
         let Some(rec) = self.eb().type_record(kind).map(|r| r.raw) else { return };
+        if !prefill {
+            self.wide_stats.spawned += 1;
+        }
+        if let Some(l) = self.wide_stats.log.as_mut() {
+            l.push((self.stage as u8, trigger, row, kind));
+        }
         self.set_bz(0xF4, 0xFF);
         if rec[19] == 3 {
             // `$78F0`: a chain of four takes all four enemy sprites
+            if self.wide_on() && !prefill && (4..8).any(|s| self.wide_enemy_in_view(s)) {
+                // ON: it does not wipe enemies that the player sees: the chain is not created
+                self.wide_stats.lost_spawns += 1;
+                return;
+            }
+            if self.en.vic_me & 0xF0 != 0 {
+                self.wide_stats.wipes += 1;
+            }
             self.en.vic_me &= 0x0F;
         }
         // `$78F8`: one pass per sprite of a chain (a chain of n followers has n + 1 sprites)
@@ -248,6 +301,14 @@ impl GameState {
             }
         }
         let mut x = slot.unwrap_or_else(|| (4..=7).rev().find(|&y| self.bm(0x7C4 + y) != 0).unwrap_or(7));
+        if slot.is_none() && self.bm(0x7C4 + x) == 0 && rec[3] < 3 {
+            if self.wide_on() && !prefill && self.bz(0xF4) & 0x80 != 0 && self.wide_enemy_in_view(x) {
+                // ON: no free sprite, and slot 7 holds an enemy that the player sees: it stays, the new object is lost
+                self.wide_stats.lost_spawns += 1;
+                return true;
+            }
+            self.wide_stats.overwrites += 1;
+        }
         let boss = rec[3] >= 3;
         if boss {
             // `$791E`: bosses always use slot 7 and clear the state of the parts
@@ -315,7 +376,7 @@ impl GameState {
             }
         } else {
             self.sprite_x_msb |= mask;
-            self.set_spr(2 * x, 0x4F);
+            self.set_spr(2 * x, 0x4F + (self.wide_e() - self.wide_back) as u8);
         }
         let ty = img(0x3205 + row as usize).wrapping_add(0x1D); // bounds: `img` wraps at 64K, rows come from untrusted files
         self.set_spr(2 * x + 1, ty);
@@ -450,6 +511,13 @@ impl GameState {
             return;
         }
         let r0a = ypos.wrapping_sub(0x23);
+        // WIDESCREEN ON: an object outside of the 38 columns reads the cells of the wide picture instead of stale values
+        if let Some(t) = self.wide_probe(x, (r0a >> 3) as usize, 0x9BB9) {
+            for (a, v) in [0x47C, 0x481, 0x47D, 0x47E, 0x47F].into_iter().zip(t) {
+                self.set_v47(a, v);
+            }
+            return;
+        }
         let hi = u8::from(self.bit(x) & self.sprite_x_msb != 0);
         let (r0c, b) = self.spr(xs).overflowing_sub(self.scroll_fine);
         let r0d = hi.wrapping_sub(b as u8);
@@ -843,11 +911,26 @@ impl GameState {
 
     /// `$7BC7`: objects with the extra flag stop at the left edge; objects far off the right edge are retired.
     fn b_wrap_hold(&mut self) {
+        // WIDESCREEN ON: every limit moves out by `E` (0 = the C64's)
+        let e = self.wide_e() as u8;
         for y in (3..=7usize).rev() {
             let mut xs = 2 * y;
             let extra = self.bm(0x78C + y);
+            let bound = extra != 0 && extra & 0x80 == 0;
+            if e != 0 && bound {
+                // the left wall of an edge-bound object is `E` further left, which for a wide view is X < 0: signed
+                let wall = 0x20 - e as i32;
+                if self.wide_x9(y) < wall {
+                    self.wide_set_x9(y, wall);
+                    if self.bm(0x7B4 + y) != 0 {
+                        self.set_bm(0x7B4 + y, 0);
+                        let p = self.bm(0x724 + y);
+                        self.set_sptr(y, p);
+                    }
+                }
+            }
             if self.sprite_x_msb & self.bit(y) == 0 {
-                if extra != 0 && extra & 0x80 == 0 && self.spr(xs) < 0x20 {
+                if e == 0 && bound && self.spr(xs) < 0x20 {
                     self.set_spr(xs, 0x20);
                     if self.bm(0x7B4 + y) != 0 {
                         self.set_bm(0x7B4 + y, 0);
@@ -857,21 +940,27 @@ impl GameState {
                 }
                 continue;
             }
-            if self.bm(0x79C + y) != 0 {
+            let chain = self.bm(0x79C + y) != 0;
+            if chain {
                 xs = 2 * self.bm(0x7F0 + y) as usize;
             }
-            if extra != 0 && extra & 0x80 == 0 && self.spr(xs) >= 0x40 && self.bm(0x7B4 + y) == 0 {
+            // msb set: right of X = 255, or (ON) already left of X = 0 (an edge-bound object at its left wall)
+            if bound && self.spr(xs) >= 0x40 + e && (e == 0 || self.spr(xs) < 0x80) && self.bm(0x7B4 + y) == 0 {
                 self.set_bm(0x7B4 + y, 1);
                 // `STA $0605,X` with X = 2 * slot: the hack writes into the pointer area of another sprite
                 let p = self.bm(0x734 + y);
                 self.set_sptr(xs, p);
             }
             let xv = self.spr(xs);
-            if xv >= 0x5A {
-                let limit = if self.bm(0x79C + y) != 0 { xv < 0xB8 } else { xv < 0xF0 };
-                if limit {
-                    self.b_retire_far(y);
-                }
+            // a chain (head plus followers up to 72 px to its right) leaves a little earlier on the right and later on the left
+            // (`+ 8`: with E = 48 the C64's hole `$5A..$B8` would be shorter than 2 E, so the two edges would cross)
+            let (lo, hi) = match (chain, e != 0) {
+                (false, _) => (0x5A + e, 0xF0 - e),
+                (true, false) => (0x5A, 0xB8),
+                (true, true) => (0x5A + e - 8, 0xB8 - e + 8),
+            };
+            if xv >= lo && xv < hi {
+                self.b_retire_far(y);
             }
         }
     }
@@ -884,6 +973,7 @@ impl GameState {
         if self.bm(0x71C + 7) >= 3 && y != 3 {
             return;
         }
+        self.wide_note_clip(y);
         self.b_retire(y);
     }
 

@@ -20,6 +20,7 @@ pub mod stage;
 pub mod stages_enemies;
 pub mod entities;
 pub mod state;
+pub mod wide;
 pub mod snapshot;
 pub mod features;
 pub mod engine_b;

@@ -54,6 +54,119 @@ impl Scaling {
     }
 }
 
+/// `WIDESCREEN` on the video page: how much of the level is shown to the left and right of the C64 picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Widescreen {
+    /// a wider view, and the game works from the new edges: enemies, shots and items are created and removed at the edges of
+    /// the wide picture (see `Widescreen::rules`)
+    On,
+    /// a wider view, the game plays exactly like on the C64: enemies still come and go at the old edges
+    ViewOnly,
+    /// the 4:3 picture of the C64
+    #[default]
+    Off,
+}
+
+impl Widescreen {
+    pub fn label(self) -> &'static str {
+        match self {
+            Widescreen::On => "ON",
+            Widescreen::ViewOnly => "VIEW ONLY",
+            Widescreen::Off => "OFF",
+        }
+    }
+
+    pub fn next(self, forward: bool) -> Self {
+        match (self, forward) {
+            (Widescreen::On, true) | (Widescreen::Off, false) => Widescreen::ViewOnly,
+            (Widescreen::ViewOnly, true) | (Widescreen::On, false) => Widescreen::Off,
+            (Widescreen::Off, true) | (Widescreen::ViewOnly, false) => Widescreen::On,
+        }
+    }
+
+    /// The picture is wider than the C64's.
+    pub fn is_wide(self) -> bool {
+        self != Widescreen::Off
+    }
+
+    /// Shade the extra picture and fade the sprites there, to hide that enemies still come and go at the old edges. Only the
+    /// view that plays by the C64's rules needs it: `On` works from the new edges. (A game that was started with other rules
+    /// than the setting says now keeps its own: see `WideRules::of_game`.)
+    pub fn masks_edge(self) -> bool {
+        self == Widescreen::ViewOnly
+    }
+
+    /// Which rules the game logic follows: `On` makes the objects work from the edges of the wide picture, the others play
+    /// like the C64.
+    pub fn rules(self) -> WideRules {
+        match self {
+            Widescreen::On => WideRules::NewEdges(giana_core::wide::WIDE_K),
+            _ => WideRules::C64,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Widescreen::On => "on",
+            Widescreen::ViewOnly => "view",
+            Widescreen::Off => "off",
+        }
+    }
+
+    fn from_name(s: &str) -> Option<Self> {
+        Some(match s {
+            "on" => Widescreen::On,
+            "view" => Widescreen::ViewOnly,
+            "off" => Widescreen::Off,
+            _ => return None,
+        })
+    }
+}
+
+/// Where the game logic puts the edges of the world (the hook for phase 2 of the widescreen work).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WideRules {
+    /// the edges of the C64 picture: enemies come and go there
+    C64,
+    /// the edges of the wide picture, `k` columns (8 pixels each) beyond the C64's on each side (`GameState::set_wide`)
+    NewEdges(u8),
+}
+
+impl WideRules {
+    /// The columns of extra width the game logic uses (0 = the C64's rules).
+    pub fn k(self) -> u8 {
+        match self {
+            WideRules::C64 => 0,
+            WideRules::NewEdges(k) => k,
+        }
+    }
+
+    /// The part of the rules byte of the network handshake: bit 7 = the objects work from the wide edges, bits 4..6 = `k`.
+    pub fn byte(self) -> u8 {
+        match self {
+            WideRules::C64 => 0,
+            WideRules::NewEdges(k) => 0x80 | (k.min(7) << 4),
+        }
+    }
+
+    /// The rules of a rules byte (the host's choice).
+    pub fn from_byte(b: u8) -> Self {
+        if b & 0x80 != 0 {
+            WideRules::NewEdges((b >> 4) & 7)
+        } else {
+            WideRules::C64
+        }
+    }
+
+    /// What the game that runs plays by, whatever the setting is now (the rules are fixed when a game starts).
+    pub fn of_game(game: &giana_core::state::GameState) -> Self {
+        match game.wide_k {
+            0 => WideRules::C64,
+            k => WideRules::NewEdges(k),
+        }
+    }
+}
+
 /// What the player sees: the new design with menus (`MODERN`) or exactly what the C64 showed (`AUTHENTIC`): the original
 /// title sequence, high score table and name entry, no menus, no hints, and the original program running as it was.
 /// Independent of `MODE`. See `docs/authentic-mode.md`.
@@ -233,6 +346,13 @@ impl Enhancements {
     }
 }
 
+impl Settings {
+    /// The rules byte for the network handshake (the host's choice): the enhancements and the widescreen rules.
+    pub fn net_rules(&self) -> u8 {
+        self.enhancements.rules() | self.widescreen.rules().byte()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub fullscreen: bool,
@@ -240,6 +360,7 @@ pub struct Settings {
     pub volume: u8,
     pub muted: bool,
     pub scaling: Scaling,
+    pub widescreen: Widescreen,
     /// `SCREEN: CRT`: the picture looks like on a tube television (scanlines, glow); off is sharp pixels
     pub crt: bool,
     /// 0 to `MAX_VOLUME`: music and effects on their own (both at `MAX_VOLUME` is the original sound from one chip)
@@ -280,6 +401,7 @@ impl Default for Settings {
             volume: MAX_VOLUME,
             muted: false,
             scaling: Scaling::Whole,
+            widescreen: Widescreen::Off,
             crt: false,
             music_volume: MAX_VOLUME,
             effects_volume: MAX_VOLUME,
@@ -389,11 +511,12 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# The Great Giana Sisters: settings.\nfullscreen = {}\nvolume = {}\nmuted = {}\nscaling = {}\ncrt = {}\nwinner = {}\ndisplay_50hz = {}\nmusic_volume = {}\neffects_volume = {}\nmode = {}\nsmooth_motion = {}\npresentation = {}\nmenu_sounds = {}\nupdate_check = {}\nlast_update_check = {}\nupdate_seen = {}\nmodule = {}\nfavorites = {}\nmodule_sort = {}\nlast_played = {}\nprogress = {}\nlast_address = {}\n",
+            "# The Great Giana Sisters: settings.\nfullscreen = {}\nvolume = {}\nmuted = {}\nscaling = {}\nwidescreen = {}\ncrt = {}\nwinner = {}\ndisplay_50hz = {}\nmusic_volume = {}\neffects_volume = {}\nmode = {}\nsmooth_motion = {}\npresentation = {}\nmenu_sounds = {}\nupdate_check = {}\nlast_update_check = {}\nupdate_seen = {}\nmodule = {}\nfavorites = {}\nmodule_sort = {}\nlast_played = {}\nprogress = {}\nlast_address = {}\n",
             self.fullscreen,
             self.volume,
             self.muted,
             self.scaling.name(),
+            self.widescreen.name(),
             if self.crt { "on" } else { "off" },
             self.winner.label().to_lowercase(),
             if self.display_50 { "auto" } else { "off" },
@@ -426,6 +549,7 @@ impl Settings {
                 "muted" => s.muted = value.parse().unwrap_or(s.muted),
                 "volume" => s.volume = value.parse::<u8>().map_or(s.volume, |v| v.min(MAX_VOLUME)),
                 "scaling" => s.scaling = Scaling::from_name(value).unwrap_or(s.scaling),
+                "widescreen" => s.widescreen = Widescreen::from_name(value).unwrap_or(s.widescreen),
                 "crt" => s.crt = value == "on",
                 "music_volume" => s.music_volume = value.parse::<u8>().map_or(s.music_volume, |v| v.min(MAX_VOLUME)),
                 "effects_volume" => s.effects_volume = value.parse::<u8>().map_or(s.effects_volume, |v| v.min(MAX_VOLUME)),
@@ -481,6 +605,7 @@ mod tests {
             volume: 4,
             muted: true,
             scaling: Scaling::Fill,
+            widescreen: Widescreen::ViewOnly,
             crt: true,
             music_volume: 3,
             effects_volume: 0,
@@ -514,6 +639,20 @@ mod tests {
             let s = Settings { scaling, ..Settings::default() };
             assert_eq!(Settings::from_text(&s.to_text()).scaling, scaling);
         }
+        // WIDESCREEN: round trip, and the default for old files and damaged values
+        for widescreen in [Widescreen::On, Widescreen::ViewOnly, Widescreen::Off] {
+            let s = Settings { widescreen, ..Settings::default() };
+            assert_eq!(Settings::from_text(&s.to_text()).widescreen, widescreen);
+        }
+        assert_eq!(Settings::default().widescreen, Widescreen::Off);
+        assert_eq!(Settings::from_text("volume = 3\nscaling = fill\n").widescreen, Widescreen::Off);
+        assert_eq!(Settings::from_text("widescreen = sideways\n").widescreen, Widescreen::Off);
+        assert_eq!(Settings::from_text("widescreen = view\n").widescreen, Widescreen::ViewOnly);
+        assert_eq!(Widescreen::On.next(true), Widescreen::ViewOnly);
+        assert_eq!(Widescreen::ViewOnly.next(true), Widescreen::Off);
+        assert_eq!(Widescreen::Off.next(true), Widescreen::On);
+        assert_eq!(Widescreen::On.next(false), Widescreen::Off);
+        assert!(Widescreen::On.is_wide() && Widescreen::ViewOnly.is_wide() && !Widescreen::Off.is_wide());
     }
 
     #[test]

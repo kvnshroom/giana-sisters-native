@@ -27,7 +27,8 @@ use giana_core::state::{ControllerInput, GameScreen, GameState, stage_palettes};
 use giana_render::framebuffer::{Framebuffer, BORDER_X, BORDER_Y, HEIGHT, WIDTH};
 use giana_render::palette::c64_color;
 use giana_render::parallax::render_stage;
-use giana_render::vic::{render_vic, render_vic_between, VicSnapshot, VicView};
+use giana_render::vic::{render_vic_between_wide, render_vic_wide, VicSnapshot, VicView};
+use giana_render::wide::{Strips, WideCols, WideHistory};
 use giana_render::sprites::{render_sprite_hires, render_sprite_multicolor};
 use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::controller::Button;
@@ -750,6 +751,7 @@ where
                 OptionChange::EffectsDown | OptionChange::EffectsUp => settings.change_effects(change == OptionChange::EffectsUp),
                 OptionChange::MenuSounds(forward) => settings.menu_sounds = settings.menu_sounds.next(forward),
                 OptionChange::Scaling(forward) => settings.scaling = settings.scaling.next(forward),
+                OptionChange::Widescreen(forward) => settings.widescreen = settings.widescreen.next(forward),
                 OptionChange::SmoothMotion => settings.enhancements.toggle_smooth_motion(),
                 OptionChange::Winner => settings.winner = settings.winner.other(),
                 OptionChange::Display50 => {
@@ -1100,6 +1102,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let audio_ok = audio_device.is_some();
 
     let mut fb = Framebuffer::new();
+    // the extra columns of the widescreen view (put beside the picture when it is presented)
+    let mut strips = Strips::new();
+    let mut wide_history = WideHistory::default();
     let mut game = GameState::new();
     let mut input = ControllerInput::new();
     let mut bindings = config_path().map_or_else(Bindings::default, |p| Bindings::load(&p));
@@ -1130,6 +1135,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     // `--stage N` skips the menu and starts in that stage
     if let Some(stage) = options.stage {
         game = GameState::new_port_game_at(stage);
+        game.set_wide(settings.widescreen.rules().k());
         open_menu = None;
     }
     let mut active_track = MusicTrack::Title;
@@ -1380,12 +1386,13 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     menu_sound.set_mode(settings.menu_sounds);
                 }
                 OptionChange::Scaling(forward) => settings.scaling = settings.scaling.next(forward),
+                OptionChange::Widescreen(forward) => settings.widescreen = settings.widescreen.next(forward),
                 OptionChange::Crt => settings.crt = !settings.crt,
                 OptionChange::SmoothMotion => {
                     settings.enhancements.toggle_smooth_motion();
                     // A game that is waiting for the other player carries the rules of the host to the one who joins
                     if let Some(h) = hosting.as_mut() {
-                        h.set_rules(settings.enhancements.rules());
+                        h.set_rules(settings.net_rules());
                     }
                 }
                 OptionChange::Winner => {
@@ -1584,7 +1591,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             let m = open_menu.as_mut();
             let host = Host::new(mode).map(|mut h| {
                 h.set_winner(settings.winner);
-                h.set_rules(settings.enhancements.rules());
+                h.set_rules(settings.net_rules());
                 h.set_module(&module_id);
                 if let Some(s) = store.as_ref() {
                     h.share_module(s);
@@ -1709,6 +1716,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     GameMode::OnePlayer => GameState::new_port_game(),
                     GameMode::TwoPlayers => GameState::new_port_game_two(),
                 };
+                game.set_wide(settings.widescreen.rules().k());
             } else if open_menu.is_none() {
                 game.update(&input);
             }
@@ -1840,11 +1848,21 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            // WIDESCREEN: the columns that scroll out of the picture are kept for the extra area
+            if settings.widescreen.is_wide() && game.screen == GameScreen::InGame && !game.legacy_model {
+                wide_history.observe(other_game.as_ref().filter(|_| game.game_over).unwrap_or(&game));
+            } else {
+                wide_history.clear();
+            }
+
             // SMOOTH MOTION: keep the picture of this step and the one before it
             if settings.enhancements.smooth_motion() && game.screen == GameScreen::InGame && !game.legacy_model && open_menu.is_none() {
                 let shown = other_game.as_ref().filter(|_| game.game_over).unwrap_or(&game);
                 std::mem::swap(&mut vic_prev, &mut vic_curr);
-                vic_curr.set(&VicView::from_game(shown));
+                let wide_cols = settings.widescreen.is_wide().then(|| WideCols::from_game_with(shown, &wide_history));
+                let mut view = VicView::from_game(shown);
+                view.wide = wide_cols.as_ref();
+                vic_curr.set(&view);
                 vic_steps = (vic_steps + 1).min(2);
             } else {
                 vic_steps = 0;
@@ -1852,6 +1870,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Render pass (per vsync)
+        // WIDESCREEN: the picture of a game gets extra columns of the level beside it (the game itself runs as before: see
+        // `Widescreen::rules`)
+        let wide_on = settings.widescreen.is_wide();
+        let mut wide_frame = false;
         match game.screen {
             GameScreen::Intro => {
                 fb.draw_intro_screen();
@@ -1861,13 +1883,27 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             }
             GameScreen::InGame if !game.legacy_model => {
                 let shown = other_game.as_ref().filter(|_| game.game_over).unwrap_or(&game);
+                wide_frame = wide_on;
+                // a pause menu dims the game; the pages of the options and the like are on black
+                let paused_page = open_menu.as_ref().filter(|m| m.paused).map(|m| m.page);
+                strips.menu_dim = paused_page.is_some();
+                // the edges are masked while the game plays by the C64's rules (VIEW ONLY, or a game from before the setting changed)
+                strips.mask = wide_on && giana_app::settings::WideRules::of_game(shown).k() == 0;
+                strips.crop = settings.scaling != giana_app::settings::Scaling::Whole;
+                let strips_ref = wide_on.then_some(&mut strips);
                 // SMOOTH MOTION on a display that is not a multiple of 50 Hz: the picture between the last two steps
                 let smooth = vic_steps >= 2 && open_menu.is_none() && lock_factor == 0 && display::is_odd_rate(display_hz) && settings.enhancements.smooth_motion();
                 if smooth {
                     let t = accumulator.as_secs_f64() / logic_step.as_secs_f64();
-                    render_vic_between(&mut fb, &vic_prev.view(), &vic_curr.view(), t);
+                    render_vic_between_wide(&mut fb, strips_ref, &vic_prev.view(), &vic_curr.view(), t);
                 } else {
-                    render_vic(&mut fb, &VicView::from_game(shown));
+                    let wide_cols = wide_on.then(|| WideCols::from_game_with(shown, &wide_history));
+                    let mut view = VicView::from_game(shown);
+                    view.wide = wide_cols.as_ref();
+                    render_vic_wide(&mut fb, strips_ref, &view);
+                }
+                if wide_on && paused_page.is_some_and(|p| !matches!(p, menu::Page::Root | menu::Page::ConfirmQuit)) {
+                    strips.blank();
                 }
             }
             GameScreen::InGame | GameScreen::StageClear => {
@@ -1992,8 +2028,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         // jump when it opens. The main menu and the pages after a game have no game behind them: the whole frame.
         let playing = game.screen == GameScreen::InGame && !game.legacy_model && open_menu.as_ref().is_none_or(|m| m.paused);
         let window_size = canvas.output_size().unwrap_or((WIDTH as u32, HEIGHT as u32));
-        let layout = present::layout(settings.scaling, playing, window_size);
-        let cropped = layout.src == present::PLAY;
+        let layout = present::layout_wide(settings.scaling, playing, window_size, wide_frame);
+        let cropped = layout.crops_overlays();
         let view = ui::View::new(cropped);
         // Two lanes for the small messages: in the bottom border, or over the last rows of the picture when it is cut
         let (info_y, hint_y) = if cropped { (224, 208) } else { (240, 256) };
@@ -2035,7 +2071,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             menu_draw::draw(&mut fb, m, &ctx);
         }
 
-        presenter.upload(&fb)?;
+        if playing && wide_frame {
+            presenter.upload_wide(&fb, &strips)?;
+        } else {
+            presenter.upload(&fb)?;
+        }
         presenter.crt = settings.crt;
         presenter.present(&mut canvas, layout)?;
         canvas.present();

@@ -228,6 +228,8 @@ pub enum OptionChange {
     VolumeUp,
     /// the next (true) or the previous way to fill the window
     Scaling(bool),
+    /// the next (true) or previous `WIDESCREEN` setting
+    Widescreen(bool),
     /// `SCREEN FILTER: SHARP / CRT TV`
     Crt,
     /// the rule for the winner of a game of two players
@@ -275,19 +277,21 @@ impl OptionItem {
 pub(crate) enum VideoItem {
     Fullscreen,
     Scaling,
+    Widescreen,
     Crt,
     Display50,
     SmoothMotion,
     Back,
 }
 
-pub(crate) const VIDEO_ITEMS: [VideoItem; 6] = [VideoItem::Fullscreen, VideoItem::Scaling, VideoItem::Crt, VideoItem::Display50, VideoItem::SmoothMotion, VideoItem::Back];
+pub(crate) const VIDEO_ITEMS: [VideoItem; 7] = [VideoItem::Fullscreen, VideoItem::Scaling, VideoItem::Widescreen, VideoItem::Crt, VideoItem::Display50, VideoItem::SmoothMotion, VideoItem::Back];
 
 impl VideoItem {
     pub(crate) fn label(self) -> &'static str {
         match self {
             VideoItem::Fullscreen => "FULLSCREEN",
             VideoItem::Scaling => "PICTURE SIZE",
+            VideoItem::Widescreen => "WIDESCREEN",
             VideoItem::Crt => "SCREEN FILTER",
             VideoItem::Display50 => "50 HZ MODE",
             VideoItem::SmoothMotion => "SMOOTH MOTION",
@@ -1068,6 +1072,8 @@ impl Menu {
             (Nav::Left | Nav::Right | Nav::Confirm, VideoItem::Fullscreen) => return Outcome::Option(OptionChange::Fullscreen),
             (Nav::Left, VideoItem::Scaling) => return Outcome::Option(OptionChange::Scaling(false)),
             (Nav::Right | Nav::Confirm, VideoItem::Scaling) => return Outcome::Option(OptionChange::Scaling(true)),
+            (Nav::Left, VideoItem::Widescreen) => return Outcome::Option(OptionChange::Widescreen(false)),
+            (Nav::Right | Nav::Confirm, VideoItem::Widescreen) => return Outcome::Option(OptionChange::Widescreen(true)),
             (Nav::Left | Nav::Right | Nav::Confirm, VideoItem::Crt) => return Outcome::Option(OptionChange::Crt),
             (Nav::Left | Nav::Right | Nav::Confirm, VideoItem::Display50) => return Outcome::Option(OptionChange::Display50),
             (Nav::Left | Nav::Right | Nav::Confirm, VideoItem::SmoothMotion) => return Outcome::Option(OptionChange::SmoothMotion),
@@ -1510,6 +1516,8 @@ mod tests {
         assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::Option(OptionChange::Fullscreen));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::Option(OptionChange::Scaling(true)));
         assert_eq!(m.step(Nav::Left, &mut b), Outcome::Option(OptionChange::Scaling(false)));
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Right]), Outcome::Option(OptionChange::Widescreen(true)));
+        assert_eq!(m.step(Nav::Left, &mut b), Outcome::Option(OptionChange::Widescreen(false)));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Right]), Outcome::Option(OptionChange::Crt));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::Option(OptionChange::Display50));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Left]), Outcome::Option(OptionChange::SmoothMotion));

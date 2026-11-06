@@ -545,15 +545,20 @@ impl GameState {
     pub fn spawner_sub_2276(&mut self) {
         // $2276: LDA $20; CMP $0484; BEQ L2285
         let stage = self.stage as u8;
+        let mut first = false;
         if stage != self.v47(0x484) {
             self.set_v47(0x484, stage);
             self.set_v47(0x474, 0);
+            first = true;
         }
+        // WIDESCREEN ON: the trigger looks `k` columns ahead (see `wide.rs`)
+        let k = self.wide_k_now();
+        let look8 = self.map_column.wrapping_add(k);
         // L2285: LDA $21; CMP $0475; BEQ L22CC
-        if self.map_column == self.v47(0x475) {
+        if look8 == self.v47(0x475) {
             return;
         }
-        self.set_v47(0x475, self.map_column);
+        self.set_v47(0x475, look8);
         // LDA $D015; CMP #$FF; BEQ L22CC
         if self.en.vic_me == 0xFF {
             return;
@@ -564,6 +569,29 @@ impl GameState {
             Some(l) => l,
             None => img_word(0x3D20 + y),
         };
+        if k == 0 {
+            self.spawner_pass(list, self.map_column as u16, 0);
+            return;
+        }
+        if first {
+            self.wide_rebuild_left(); // a new stage, a restart or the way back from a room: the screen was built from the map
+        }
+        // ON: at the start of a stage (and after a restart or a room) the objects of the columns the C64 creates one by one
+        // beyond its edge as the first screens scroll in are already due: one pass per column, each at its own X
+        let m0 = self.map_column as u16;
+        if first {
+            for d in 0..k as u16 {
+                if self.spawner_pass(list, m0 + d, 8 * (k as u16 - d)) {
+                    self.wide_stats.prefilled += 1;
+                }
+            }
+        }
+        self.spawner_pass(list, m0 + k as u16, 0);
+    }
+
+    /// One look at the object list for the map column `look`: the entries before it are skipped, the one at it is created at
+    /// the X `x_back` pixels left of the spawn X (a pass of the first screen). True when an entry was created.
+    fn spawner_pass(&mut self, list: usize, look: u16, x_back: u16) -> bool {
         // The index is 8 bits and steps by 3, so after 86 steps it has seen every entry: a list without its $FF end (a
         // broken or hostile module's stage file) would loop forever, which a real list never needs.
         for _ in 0..86 {
@@ -571,16 +599,16 @@ impl GameState {
             let y = self.v47(0x474) as usize;
             let a = self.stage_byte(list + y);
             if a == 0xFF {
-                return;
+                return false;
             }
             // SEC; SBC #$01; CMP $21
-            let t = a.wrapping_sub(1);
-            if t == self.map_column {
-                self.spawn_match_l22cd(list, y);
-                return;
+            let t = a.wrapping_sub(1) as u16;
+            if t == look {
+                self.spawn_match_l22cd(list, y, x_back);
+                return true;
             }
-            if t >= self.map_column {
-                return;
+            if t >= look {
+                return false;
             }
             // CLC; LDA $0474; ADC #$03; STA $0474; LDA $0475; ADC #$00; STA $0475
             let (n, c) = self.v47(0x474).overflowing_add(3);
@@ -588,9 +616,10 @@ impl GameState {
             let h = self.v47(0x475).wrapping_add(c as u8);
             self.set_v47(0x475, h);
         }
+        false
     }
 
-    fn spawn_match_l22cd(&mut self, list: usize, y: usize) {
+    fn spawn_match_l22cd(&mut self, list: usize, y: usize, x_back: u16) {
         // L22CD: advance $0474 by 3 (carry into $0475)
         let (n, c) = self.v47(0x474).overflowing_add(3);
         self.set_v47(0x474, n);
@@ -604,6 +633,13 @@ impl GameState {
             a = img(0x3032 + self.anim_counter as usize);
         }
         self.set_d32(0x3223, a);
+        let xoff = self.wide_e() - x_back; // WIDESCREEN ON: the spawn X is `E` further out (0 otherwise)
+        if self.wide_stats.log.is_some() {
+            let (t, r) = (self.stage_byte(list + y), self.stage_byte(list + y + 1));
+            if let Some(l) = self.wide_stats.log.as_mut() {
+                l.push((self.stage as u8, t, r, a));
+            }
+        }
         // ASL A; TAX; pointer from $303B,X
         let rec = img_word(0x303B + ((a << 1) as usize));
         // $2304: LDY #$07; LDA $D015; scan for a free sprite slot 7..4
@@ -624,8 +660,12 @@ impl GameState {
         }
         let slot = match free {
             Some(s) => s,
-            None => return, // L2311: RTS (object is lost)
+            None => {
+                self.wide_stats.lost_spawns += 1;
+                return; // L2311: RTS (object is lost)
+            }
         };
+        self.wide_stats.spawned += 1;
         self.set_v47(0x476, slot as u8);
         let mut x = slot;
         // L2315: LDY #$03; LDA ($12),Y; CMP #$03; BCC L2335
@@ -649,16 +689,17 @@ impl GameState {
         // L234D
         let kind = self.ep(COL_BASE + x);
         if kind < 3 {
-            self.spawn_small_l2444(rec, x);
+            self.spawn_small_l2444(rec, x, xoff);
         } else if kind < 4 {
-            self.spawn_boss_a_l235a(rec, x);
+            self.spawn_boss_a_l235a(rec, x, xoff);
         } else {
-            self.spawn_boss_b_l23d1(rec);
+            self.spawn_boss_b_l23d1(rec, xoff);
         }
     }
 
     /// L235A..$23D0 (type 3)
-    fn spawn_boss_a_l235a(&mut self, rec: usize, x: usize) {
+    fn spawn_boss_a_l235a(&mut self, rec: usize, x: usize, xoff: u16) {
+        let xo = xoff as u8;
         self.set_d32(0x3251, 4);
         let base = img(rec);
         self.en.spr_ptr[4] = base; // $060C
@@ -671,9 +712,9 @@ impl GameState {
         self.en.vic_col[6] = c; // $D02D
         self.en.vic_col[7] = c; // $D02E
         self.sprite_x_msb |= 0xE0;
-        self.en.spr_xy[0x0602 - 0x05FA] = 0x4F;
-        self.en.spr_xy[0x0600 - 0x05FA] = 0x67;
-        self.en.spr_xy[0x05FE - 0x05FA] = 0x7F;
+        self.en.spr_xy[0x0602 - 0x05FA] = 0x4F + xo;
+        self.en.spr_xy[0x0600 - 0x05FA] = 0x67 + xo;
+        self.en.spr_xy[0x05FE - 0x05FA] = 0x7F + xo;
         let y = (self.d32(0x3205 + self.d32(0x3222) as usize)).wrapping_add(0x1D);
         self.en.spr_xy[0x05FF - 0x05FA] = y;
         self.en.spr_xy[0x0601 - 0x05FA] = y;
@@ -686,7 +727,8 @@ impl GameState {
     }
 
     /// L23D1..$2443 (type >= 4)
-    fn spawn_boss_b_l23d1(&mut self, rec: usize) {
+    fn spawn_boss_b_l23d1(&mut self, rec: usize, xoff: u16) {
+        let xo = xoff as u8;
         let base = img(rec);
         self.en.spr_ptr[4] = base;
         self.en.spr_ptr[3] = base.wrapping_add(1);
@@ -699,10 +741,10 @@ impl GameState {
         self.en.vic_col[6] = 0x01;
         self.en.vic_col[7] = 0x01;
         self.sprite_x_msb |= 0xF0;
-        self.en.spr_xy[0x0602 - 0x05FA] = 0x4F;
-        self.en.spr_xy[0x0600 - 0x05FA] = 0x4F;
-        self.en.spr_xy[0x05FE - 0x05FA] = 0x4F;
-        self.en.spr_xy[0x05FC - 0x05FA] = 0x4F;
+        self.en.spr_xy[0x0602 - 0x05FA] = 0x4F + xo;
+        self.en.spr_xy[0x0600 - 0x05FA] = 0x4F + xo;
+        self.en.spr_xy[0x05FE - 0x05FA] = 0x4F + xo;
+        self.en.spr_xy[0x05FC - 0x05FA] = 0x4F + xo;
         let y0 = self.d32(0x3205 + self.d32(0x3222) as usize);
         self.en.spr_xy[0x05FF - 0x05FA] = y0;
         self.en.spr_xy[0x0603 - 0x05FA] = y0;
@@ -716,7 +758,7 @@ impl GameState {
     }
 
     /// L2444..$24F9: normal enemy
-    fn spawn_small_l2444(&mut self, rec: usize, x: usize) {
+    fn spawn_small_l2444(&mut self, rec: usize, x: usize, xoff: u16) {
         self.set_sptr(x, img(rec));
         self.set_ep(0x794 + x, 1);
         self.set_ep(0x7A4 + x, 0);
@@ -752,7 +794,7 @@ impl GameState {
         }
         // L24D4
         self.sprite_x_msb |= mask;
-        self.set_spr(2 * x, 0x4F);
+        self.set_spr(2 * x, 0x4F + xoff as u8);
         let ty = self.d32(0x3205 + self.d32(0x3222) as usize).wrapping_add(0x1D);
         self.set_spr(2 * x + 1, ty);
         self.en.vic_me |= mask;
@@ -786,7 +828,10 @@ impl GameState {
                 // L2508
                 let x = (y as usize) * 2;
                 let xa = self.spr(x);
-                if (0x5A..0xF0).contains(&xa) {
+                // WIDESCREEN ON: the hole moves out by `E` on both sides (a sprite is taken when it is clear of the wide view)
+                let e = self.wide_e() as u8;
+                if (0x5A + e..0xF0 - e).contains(&xa) {
+                    self.wide_note_clip(y as usize);
                     self.sprite_off_sub_253c(y as usize);
                 }
                 y = y.wrapping_sub(1);
@@ -999,6 +1044,15 @@ impl GameState {
         // $0A:$0B = Y - $23
         let w0a = ((ypos as i32) - 0x23) as i16 as u16;
         let r0a = (w0a & 0xFF) as u8;
+        // WIDESCREEN ON: an enemy outside of the 38 columns reads the cells of the wide picture instead of stale values
+        if let Some(t) = self.wide_probe(y, (r0a >> 3) as usize, 0x9BB9) {
+            self.set_v47(0x47C, t[0]);
+            self.set_v47(0x481, t[1]);
+            self.set_v47(0x47D, t[2]);
+            self.set_v47(0x47E, t[3]);
+            self.set_v47(0x47F, t[4]);
+            return;
+        }
         // $0C:$0D = X (9 bit) - scroll
         let hi = if (!self.d32(0x322C + y)) & self.sprite_x_msb != 0 { 1u8 } else { 0 };
         let xl = self.spr(xs);

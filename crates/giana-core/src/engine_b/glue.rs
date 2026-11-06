@@ -45,6 +45,12 @@ impl GameState {
         }
     }
 
+    /// The colour that a character gets when the scroll brings it into colour RAM (read only; the widescreen view uses it for
+    /// the columns beyond the C64 picture).
+    pub fn tile_colour(&self, ch: u8) -> u8 {
+        self.char_colour(ch)
+    }
+
     /// Engine B (`$0924..$092C`): the hack's image holds the first 64 characters inverted (`$C000 != 0`) and the start-up
     /// code inverts them once (`$32C9`).
     pub(crate) fn b_init_charset(&mut self) {

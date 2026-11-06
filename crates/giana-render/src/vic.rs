@@ -7,6 +7,7 @@
 
 use crate::framebuffer::{Framebuffer, WIDTH};
 use crate::palette::c64_color;
+use crate::wide::{self, Strips, WideCols, EXTRA};
 
 /// Everything the video chip reads for one frame.
 pub struct VicView<'a> {
@@ -36,6 +37,8 @@ pub struct VicView<'a> {
     pub spr_col: [u8; 8],
     /// `$D025`, `$D026`
     pub spr_mc: [u8; 2],
+    /// the level columns next to the picture, for the widescreen view (none: the extra columns are empty)
+    pub wide: Option<&'a WideCols>,
 }
 
 impl<'a> VicView<'a> {
@@ -59,6 +62,7 @@ impl<'a> VicView<'a> {
             ptr: game.en.vic_frame.draw_ptr,
             spr_col: game.en.vic_frame.draw_col,
             spr_mc: if game.is_engine_b() { game.vic_mc } else { [10, 2] },
+            wide: None,
         }
     }
 }
@@ -81,6 +85,7 @@ pub struct VicSnapshot {
     ptr: [u8; 8],
     spr_col: [u8; 8],
     spr_mc: [u8; 2],
+    wide: Option<WideCols>,
 }
 
 impl VicSnapshot {
@@ -101,6 +106,7 @@ impl VicSnapshot {
             ptr: v.ptr,
             spr_col: v.spr_col,
             spr_mc: v.spr_mc,
+            wide: v.wide.cloned(),
         }
     }
 
@@ -126,6 +132,7 @@ impl VicSnapshot {
         self.ptr = v.ptr;
         self.spr_col = v.spr_col;
         self.spr_mc = v.spr_mc;
+        self.wide = v.wide.cloned();
     }
 
     pub fn view(&self) -> VicView<'_> {
@@ -145,6 +152,7 @@ impl VicSnapshot {
             ptr: self.ptr,
             spr_col: self.spr_col,
             spr_mc: self.spr_mc,
+            wide: self.wide.as_ref(),
         }
     }
 }
@@ -207,13 +215,18 @@ struct Band<'a> {
 }
 
 pub fn render_vic(fb: &mut Framebuffer, v: &VicView) {
+    render_vic_wide(fb, None, v);
+}
+
+/// [`render_vic`], and with `strips` the extra columns of the widescreen view beside it (the frame itself is the same).
+pub fn render_vic_wide(fb: &mut Framebuffer, strips: Option<&mut Strips>, v: &VicView) {
     let bands = [
         Band { view: v, xscroll: 0, hires: false },
         Band { view: v, xscroll: (v.sky_xscroll & 7) as i32, hires: false },
         Band { view: v, xscroll: (v.xscroll & 7) as i32, hires: false },
     ];
     let sprites: Vec<SpriteDraw> = (0..8usize).filter(|&s| v.me >> s & 1 != 0).map(|s| sprite_of(v, s, sprite_x(v, s), v.xy[2 * s + 1] as isize)).collect();
-    draw(fb, &bands, &sprites, ORACLE);
+    draw(fb, strips, &bands, &sprites, ORACLE);
 }
 
 /// The same picture in the geometry of the AUTHENTIC presentation (the raster beam of `giana_authentic`: text row 0 starts at
@@ -225,7 +238,7 @@ pub fn render_vic_authentic(fb: &mut Framebuffer, v: &VicView) {
         Band { view: v, xscroll: (v.xscroll & 7) as i32, hires: false },
     ];
     let sprites: Vec<SpriteDraw> = (0..8usize).filter(|&s| v.me >> s & 1 != 0).map(|s| sprite_of(v, s, sprite_x(v, s), v.xy[2 * s + 1] as isize)).collect();
-    draw(fb, &bands, &sprites, SLICE);
+    draw(fb, None, &bands, &sprites, SLICE);
 }
 
 /// What differs between the three bands of a frame when the raster IRQs rewrite the video chip between them.
@@ -248,11 +261,18 @@ pub fn render_vic_bands(fb: &mut Framebuffer, v: &VicView, specs: [BandSpec; 3],
     let views = [0, 1, 2].map(|i| VicView { bg: specs[i].bg, ..*v });
     let bands = [0, 1, 2].map(|i| Band { view: &views[i], xscroll: (specs[i].xscroll & 7) as i32, hires: specs[i].hires });
     let sprites: Vec<SpriteDraw> = (0..8usize).filter(|&s| v.me >> s & 1 != 0).map(|s| sprite_of(v, s, sprite_x(v, s), v.xy[2 * s + 1] as isize)).collect();
-    draw(fb, &bands, &sprites, geo);
+    draw(fb, None, &bands, &sprites, geo);
 }
 
 fn sprite_x(v: &VicView, s: usize) -> isize {
-    v.xy[2 * s] as isize | ((v.xy[16] >> s & 1) as isize) << 8
+    let x = v.xy[2 * s] as isize | ((v.xy[16] >> s & 1) as isize) << 8;
+    // the wide view shows what is left of X = 0: with WIDESCREEN ON objects live down to `-17 - E`, so from `0x1B8` on (and a boss
+    // reaches `0x1AF` on the right) the X is a negative one. The plain picture never shows that area: it stays as the chip has it.
+    if v.wide.is_some() && x >= 0x1B8 {
+        x - 512
+    } else {
+        x
+    }
 }
 
 fn sprite_of<'a>(v: &'a VicView, s: usize, x: isize, y: isize) -> SpriteDraw<'a> {
@@ -304,6 +324,11 @@ const MAX_SPRITE_STEP: isize = 40;
 /// Draws a picture between two frames: `t` is how far it is from `a` (0.0) to `b` (1.0). The background is shifted by whole
 /// pixels, the sprites are at the interpolated position, rounded to a pixel. `t` = 0 gives `a` and `t` = 1 gives `b` exactly.
 pub fn render_vic_between(fb: &mut Framebuffer, a: &VicView, b: &VicView, t: f64) {
+    render_vic_between_wide(fb, None, a, b, t);
+}
+
+/// [`render_vic_between`] with the strips of the widescreen view.
+pub fn render_vic_between_wide(fb: &mut Framebuffer, strips: Option<&mut Strips>, a: &VicView, b: &VicView, t: f64) {
     let t = t.clamp(0.0, 1.0);
     let bands = [
         Band { view: if t < 0.5 { a } else { b }, xscroll: 0, hires: false },
@@ -340,12 +365,67 @@ pub fn render_vic_between(fb: &mut Framebuffer, a: &VicView, b: &VicView, t: f64
             }
         }
     }
-    draw(fb, &bands, &sprites, ORACLE);
+    draw(fb, strips, &bands, &sprites, ORACLE);
+}
+
+/// Colour index and "foreground" flag (a character pixel: the sprites that are behind characters go behind it) of pixel `p`
+/// (0..8) of a character cell line `bits` with colour `cc`.
+#[inline]
+fn cell_pixel(band: &Band, cc: u8, bits: u8, p: usize) -> (u8, bool) {
+    let v = band.view;
+    if !band.hires && cc & 8 != 0 {
+        let pair = (bits >> (6 - 2 * (p / 2))) & 3;
+        let colr = match pair {
+            0 => v.bg[0],
+            1 => v.bg[1],
+            2 => v.bg[2],
+            _ => cc & 7,
+        };
+        (colr, pair >= 2)
+    } else {
+        let on = bits >> (7 - p) & 1 != 0;
+        (if on { if band.hires { cc } else { cc & 7 } } else { v.bg[0] }, on)
+    }
+}
+
+/// Calls `put(x, y, colour)` for every opaque pixel of the sprite, in picture pixels (screen pixel 0, 0 is the first
+/// text pixel), without any clipping.
+fn sprite_pixels(sp: &SpriteDraw, mut put: impl FnMut(isize, isize, u8)) {
+    let base = sp.ptr as usize * 64;
+    for r in 0..21usize {
+        for b in 0..3usize {
+            let byte = sp.mem.get(base + r * 3 + b).copied().unwrap_or(0);
+            let dy = sp.y - 50 + r as isize; // the first sprite line is raster line Y + 1, text starts at line 51
+            let mut px_put = |px: isize, w: isize, colr: Option<u8>| {
+                let Some(c) = colr else { return };
+                for k in 0..w {
+                    put(sp.x - 24 + px + k, dy, c);
+                }
+            };
+            if sp.multi {
+                for p in 0..4isize {
+                    let pair = (byte >> (6 - 2 * p)) & 3;
+                    let colr = match pair {
+                        0 => None,
+                        1 => Some(sp.mc[0]),
+                        2 => Some(sp.color),
+                        _ => Some(sp.mc[1]),
+                    };
+                    px_put(b as isize * 8 + p * 2, 2, colr);
+                }
+            } else {
+                for p in 0..8isize {
+                    let on = byte >> (7 - p) & 1 != 0;
+                    px_put(b as isize * 8 + p, 1, on.then_some(sp.color));
+                }
+            }
+        }
+    }
 }
 
 /// `bands`: status bar, cloud band, playfield. Sprites in the order of their numbers; number 7 is drawn first so that number 0
-/// ends up on top.
-fn draw(fb: &mut Framebuffer, bands: &[Band; 3], sprites: &[SpriteDraw], geo: Geometry) {
+/// ends up on top. `strips`: the extra columns of the widescreen view (`draw_strips`).
+fn draw(fb: &mut Framebuffer, strips: Option<&mut Strips>, bands: &[Band; 3], sprites: &[SpriteDraw], geo: Geometry) {
     let oy = geo.oy;
     fb.clear(c64_color(0));
     let mut fg = vec![false; 320 * 200];
@@ -365,31 +445,12 @@ fn draw(fb: &mut Framebuffer, bands: &[Band; 3], sprites: &[SpriteDraw], geo: Ge
             let ch = if (80..200).contains(&i) { v.clouds.get(i - 80) } else { v.screen.get(i) }.copied().unwrap_or(0) as usize;
             let cc = v.color.get(i).copied().unwrap_or(0) & 0x0F;
             let bits = v.chars.get(ch * 8 + line).copied().unwrap_or(0);
-            if !band.hires && cc & 8 != 0 {
-                for p in 0..4 {
-                    let pair = (bits >> (6 - 2 * p)) & 3;
-                    let colr = match pair {
-                        0 => v.bg[0],
-                        1 => v.bg[1],
-                        2 => v.bg[2],
-                        _ => cc & 7,
-                    };
-                    for k in 0..2 {
-                        let x = (col * 8 + p * 2 + k) as isize + xs;
-                        if (0..320).contains(&x) {
-                            fb.pixels[(oy + y) * WIDTH + ORIGIN_X + x as usize] = c64_color(colr);
-                            fg[y * 320 + x as usize] = pair >= 2;
-                        }
-                    }
-                }
-            } else {
-                for p in 0..8 {
-                    let on = bits >> (7 - p) & 1 != 0;
-                    let x = (col * 8 + p) as isize + xs;
-                    if (0..320).contains(&x) {
-                        fb.pixels[(oy + y) * WIDTH + ORIGIN_X + x as usize] = c64_color(if on { if band.hires { cc } else { cc & 7 } } else { v.bg[0] });
-                        fg[y * 320 + x as usize] = on;
-                    }
+            for p in 0..8 {
+                let (colr, front) = cell_pixel(&band, cc, bits, p);
+                let x = (col * 8 + p) as isize + xs;
+                if (0..320).contains(&x) {
+                    fb.pixels[(oy + y) * WIDTH + ORIGIN_X + x as usize] = c64_color(colr);
+                    fg[y * 320 + x as usize] = front;
                 }
             }
         }
@@ -400,43 +461,102 @@ fn draw(fb: &mut Framebuffer, bands: &[Band; 3], sprites: &[SpriteDraw], geo: Ge
         }
     }
     for sp in sprites.iter().rev() {
-        let base = sp.ptr as usize * 64;
-        for r in 0..21usize {
-            for b in 0..3usize {
-                let byte = sp.mem.get(base + r * 3 + b).copied().unwrap_or(0);
-                let mut put = |px: isize, w: isize, colr: Option<u8>| {
-                    let Some(c) = colr else { return };
-                    for k in 0..w {
-                        let dx = sp.x - 24 + px + k;
-                        let dy = sp.y - 50 + r as isize; // the first sprite line is raster line Y + 1, text starts at line 51
-                        if !visible(dx, dy, &geo) {
-                            continue;
-                        }
-                        if sp.behind && fg[dy as usize * 320 + dx as usize] {
-                            continue;
-                        }
-                        fb.pixels[(oy + dy as usize) * WIDTH + ORIGIN_X + dx as usize] = c64_color(c);
-                    }
-                };
-                if sp.multi {
-                    for p in 0..4isize {
-                        let pair = (byte >> (6 - 2 * p)) & 3;
-                        let colr = match pair {
-                            0 => None,
-                            1 => Some(sp.mc[0]),
-                            2 => Some(sp.color),
-                            _ => Some(sp.mc[1]),
-                        };
-                        put(b as isize * 8 + p * 2, 2, colr);
-                    }
-                } else {
-                    for p in 0..8isize {
-                        let on = byte >> (7 - p) & 1 != 0;
-                        put(b as isize * 8 + p, 1, on.then_some(sp.color));
-                    }
-                }
+        sprite_pixels(sp, |dx, dy, c| {
+            if !visible(dx, dy, &geo) {
+                return;
+            }
+            if sp.behind && fg[dy as usize * 320 + dx as usize] {
+                return;
+            }
+            fb.pixels[(oy + dy as usize) * WIDTH + ORIGIN_X + dx as usize] = c64_color(c);
+        });
+    }
+    if let Some(strips) = strips {
+        draw_strips(strips, bands, sprites, geo);
+    }
+}
+
+/// What the picture shows at pixel `x` (counted from the left edge of the character matrix, before the fine scroll) of a
+/// text line outside of the window, for the extra columns: colour index and foreground flag.
+///
+/// The status bar lines are plain background (the status bar stays where it is, in the middle). In the cloud band the
+/// cells go on with the ring that the sky is made of (39 cells, it rotates), and in the playfield they come from the level
+/// map (`WideCols`); beyond the ends of the map the picture is the black border.
+fn strip_pixel(band: &Band, row: usize, line: usize, x: isize) -> (u8, bool) {
+    let v = band.view;
+    if row < 2 {
+        return (v.bg[0], false);
+    }
+    let (col, p) = (x.div_euclid(8) as i32, x.rem_euclid(8) as usize);
+    let screen_cell = |i: usize| (if (80..200).contains(&i) { v.clouds.get(i - 80) } else { v.screen.get(i) }.copied().unwrap_or(0), v.color.get(i).copied().unwrap_or(0) & 0x0F);
+    let tile = if (0..40).contains(&col) {
+        Some(screen_cell(row * 40 + col as usize))
+    } else if row < 5 {
+        // the sky ring is 39 cells: the shift at $102C drops cell 0 and copies the new cell 0 to cell 39
+        Some(screen_cell(row * 40 + col.rem_euclid(39) as usize))
+    } else {
+        match v.wide {
+            Some(w) => w.tile(row - 5, col),
+            None => Some((0, 0)),
+        }
+    };
+    let Some((ch, cc)) = tile else { return (0, false) };
+    let bits = v.chars.get(ch as usize * 8 + line).copied().unwrap_or(0);
+    cell_pixel(band, cc, bits, p)
+}
+
+/// The extra columns of the widescreen view: `EXTRA` pixels left of the window and right of it, drawn like the picture
+/// (same bands, fine scrolls, characters and sprites) from the cells that the screen does not have. Shaded towards the outer
+/// edge, and the sprites fade out the further they are beyond the old edge (see the module `wide`).
+fn draw_strips(strips: &mut Strips, bands: &[Band; 3], sprites: &[SpriteDraw], geo: Geometry) {
+    let (menu, mask) = (strips.menu_dim, strips.mask);
+    strips.hud = wide::hud_groups(bands[0].view.screen);
+    strips.hud_bg = c64_color(bands[0].view.bg[0]);
+    let mut fg = vec![false; 2 * EXTRA * 200];
+    // picture x of the first pixel of both strips
+    let first = [geo.left - EXTRA as isize, geo.right];
+    for y in 0..200usize {
+        let band = if y < geo.sky {
+            bands[0]
+        } else if y < geo.play {
+            bands[1]
+        } else {
+            bands[2]
+        };
+        for side in 0..2usize {
+            for sx in 0..EXTRA {
+                let x = first[side] + sx as isize;
+                let (colr, front) = strip_pixel(&band, y / 8, y % 8, x - band.xscroll as isize);
+                let dist = if side == 0 { EXTRA - sx } else { sx + 1 };
+                // the status bar lines are not shaded
+                let shade_dist = if y < 16 { 0 } else { dist };
+                strips.side_mut(side)[y * EXTRA + sx] = wide::shade(colr, shade_dist, menu, mask);
+                fg[(side * 200 + y) * EXTRA + sx] = front;
             }
         }
+    }
+    for sp in sprites.iter().rev() {
+        sprite_pixels(sp, |dx, dy, c| {
+            if !(0..200).contains(&dy) {
+                return;
+            }
+            let (side, sx, dist) = if (first[0]..geo.left).contains(&dx) {
+                let sx = (dx - first[0]) as usize;
+                (0, sx, EXTRA - sx)
+            } else if (geo.right..geo.right + EXTRA as isize).contains(&dx) {
+                let sx = (dx - geo.right) as usize;
+                (1, sx, sx + 1)
+            } else {
+                return;
+            };
+            let alpha = wide::sprite_alpha(dist, mask);
+            if alpha == 0 || (sp.behind && fg[(side * 200 + dy as usize) * EXTRA + sx]) {
+                return;
+            }
+            let at = dy as usize * EXTRA + sx;
+            let strip = strips.side_mut(side);
+            strip[at] = wide::mix(strip[at], wide::shade(c, dist, menu, mask), alpha);
+        });
     }
 }
 

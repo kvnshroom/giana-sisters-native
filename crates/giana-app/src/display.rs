@@ -7,7 +7,8 @@
 //! or 4 times, evenly, and the logic stays at 50 Hz. The highest such mode wins. Without such a mode the desktop fullscreen
 //! stays, as it was.
 
-use giana_render::framebuffer::{HEIGHT, WIDTH};
+use giana_render::framebuffer::HEIGHT;
+use giana_render::wide::WIDE_WIDTH;
 
 /// The rate of the game logic, in Hz.
 pub const WANTED_HZ: i32 = 50;
@@ -35,7 +36,7 @@ pub fn pick_mode(modes: &[Mode], desktop: (i32, i32)) -> Option<(usize, u32)> {
     modes
         .iter()
         .enumerate()
-        .filter(|&(_, &(w, h, hz))| refresh_factor(hz).is_some() && w >= WIDTH as i32 && h >= HEIGHT as i32 && w <= desktop.0 && h <= desktop.1)
+        .filter(|&(_, &(w, h, hz))| refresh_factor(hz).is_some() && w >= WIDE_WIDTH as i32 && h >= HEIGHT as i32 && w <= desktop.0 && h <= desktop.1)
         .max_by_key(|&(_, &(w, h, hz))| (hz, same_shape(w, h), w as i64 * h as i64))
         .map(|(i, &(_, _, hz))| (i, refresh_factor(hz).unwrap_or(1)))
 }

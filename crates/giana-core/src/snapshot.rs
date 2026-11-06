@@ -12,7 +12,7 @@ use crate::state::GameState;
 
 /// Bump this whenever the saved layout of the state changes (a field added, removed, renamed or retyped): slots of another
 /// format are discarded. The test `the_saved_layout_is_guarded` in `giana-module/tests/suspend.rs` fails until it is bumped.
-pub const SNAPSHOT_FORMAT: u32 = 3;
+pub const SNAPSHOT_FORMAT: u32 = 4;
 
 /// The state of `game` as bytes (JSON; the app compresses it).
 pub fn save(game: &GameState) -> Vec<u8> {
