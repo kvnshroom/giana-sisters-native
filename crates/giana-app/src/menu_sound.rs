@@ -99,8 +99,9 @@ fn soft_voice(cue: Cue, step: u8) -> Option<[u8; 7]> {
 
 fn soft_regs(note: &Note, gate: bool) -> [u8; 7] {
     let f = (note.hz * 16_777_216.0 / SID_PAL_CLOCK).round() as u16;
-    // pulse width 50 %, no sustain, release about 70 ms: a soft pluck instead of a held tone
-    [f as u8, (f >> 8) as u8, 0x00, 0x08, 0x40 | u8::from(gate), note.attack << 4, 0x03]
+    // triangle wave (softer and quieter than a pulse, so it stays well below CLASSIC), no sustain, release about 70 ms:
+    // a soft pluck instead of a held tone
+    [f as u8, (f >> 8) as u8, 0x00, 0x08, 0x10 | u8::from(gate), note.attack << 4, 0x03]
 }
 
 /// While an effect plays its voice is kept quiet: the sustain level is limited to this (0..15)
@@ -444,13 +445,14 @@ mod tests {
         }
     }
 
-    /// RMS of what a cue adds to the level the chip settles at, up to its last audible sample
+    /// RMS of what a cue adds: the same 60 steps rendered with and without the cue, the difference up to its last audible
+    /// sample (the chip's own level and its slow DC drift, which the output high-pass of the SID model does not always remove
+    /// completely, are the same in both and cancel)
     fn rms(mode: MenuSoundMode, cue: Cue) -> f64 {
         let lead = 8;
-        let samples = render_cue(mode, cue, lead, 60);
-        let quiet = &samples[samples.len() - 5 * 882..]; // where the chip has settled again
-        let dc = quiet.iter().map(|&v| v as f64).sum::<f64>() / quiet.len() as f64;
-        let after: Vec<f64> = samples[lead * 882..].iter().map(|&v| v as f64 - dc).collect();
+        let with = render_cue(mode, cue, lead, 60);
+        let without = render_cue(mode, cue, usize::MAX, 60);
+        let after: Vec<f64> = with[lead * 882..].iter().zip(&without[lead * 882..]).map(|(&a, &b)| a as f64 - b as f64).collect();
         let end = after.iter().rposition(|v| v.abs() > 30.0).map_or(0, |i| i + 1);
         if end == 0 {
             return 0.0;

@@ -165,6 +165,41 @@ mod tests {
     }
 
     #[test]
+    fn reads_all_size_variants() {
+        let big: Vec<u8> = (0..700u32).map(|i| (i * 13) as u8).collect();
+        let base = build_d64(&[("1", &big), ("2", &[1, 2, 3])]);
+        // 35 tracks, 35 with error bytes, 40, 40 with error bytes, 42, 42 with error bytes
+        for (extra_tracks, errors) in [(0, false), (0, true), (5, false), (5, true), (7, false), (7, true)] {
+            let mut img = base.clone();
+            img.extend(std::iter::repeat_n(0u8, extra_tracks * 17 * 256));
+            if errors {
+                img.extend(std::iter::repeat_n(1u8, 683 + extra_tracks * 17));
+            }
+            let d = D64::parse(&img).unwrap_or_else(|e| panic!("{extra_tracks} {errors}: {e}"));
+            let dir = d.directory().unwrap();
+            assert_eq!(d.read_entry(&dir[0]).unwrap(), big);
+            assert_eq!(d.read_entry(&dir[1]).unwrap(), vec![1, 2, 3]);
+        }
+    }
+
+    #[test]
+    fn the_directory_skips_deleted_entries_and_follows_the_chain() {
+        let mut img = build_d64(&[("A", &[1]), ("B", &[2])]);
+        let dir1 = 17 * 21 * 256 + 256;
+        img[dir1 + 2] = 0; // A deleted
+        // link to a second directory sector (18/4) holding one more entry
+        let dir4 = 17 * 21 * 256 + 4 * 256;
+        img[dir1] = 18;
+        img[dir1 + 1] = 4;
+        img[dir4] = 0;
+        img[dir4 + 1] = 0xFF;
+        img[dir4 + 2] = 0x82;
+        img[dir4 + 5..dir4 + 21].copy_from_slice(b"ZZZ\xA0\xA0\xA0\xA0\xA0\xA0\xA0\xA0\xA0\xA0\xA0\xA0\xA0");
+        let names: Vec<String> = D64::parse(&img).unwrap().directory().unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["B", "ZZZ"]);
+    }
+
+    #[test]
     fn rejects_bad_size() {
         assert!(D64::parse(&[0; 100]).is_err());
     }

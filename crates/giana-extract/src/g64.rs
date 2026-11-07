@@ -121,11 +121,11 @@ impl Disk {
                 break;
             }
             let o = u32::from_le_bytes(g64[12 + 4 * entry..16 + 4 * entry].try_into().unwrap()) as usize;
-            if o == 0 || o + 2 > g64.len() {
+            if o == 0 || o.saturating_add(2) > g64.len() {
                 continue;
             }
             let len = u16::from_le_bytes([g64[o], g64[o + 1]]) as usize;
-            if o + 2 + len > g64.len() || len < 16 {
+            if o.saturating_add(2 + len) > g64.len() || len < 16 {
                 return Err(format!("track {track} is truncated"));
             }
             read_track(track, &Track { data: &g64[o + 2..o + 2 + len] }, &mut sectors);
@@ -146,31 +146,12 @@ impl Disk {
 
     /// Directory entries (all file types, deleted entries skipped).
     pub fn directory(&self) -> Result<Vec<DirEntry>, String> {
-        let mut out = Vec::new();
-        let (mut t, mut s) = (DIR_TRACK, 1u8);
-        let mut seen = HashSet::new();
-        while t != 0 {
-            if !seen.insert((t, s)) {
-                return Err("directory chain loops".into());
-            }
-            let b = self.sectors.get(&(t, s)).ok_or_else(|| format!("directory sector {t}/{s} unreadable"))?;
-            for i in 0..8 {
-                let e = &b[i * 32..(i + 1) * 32];
-                if e[2] == 0 {
-                    continue;
-                }
-                let name: String = e[5..21].iter().take_while(|&&c| c != 0xA0).map(|&c| c as char).collect();
-                out.push(DirEntry {
-                    name,
-                    file_type: e[2],
-                    track: e[3],
-                    sector: e[4],
-                    blocks: u16::from_le_bytes([e[30], e[31]]),
-                });
-            }
-            (t, s) = (b[0], b[1]);
-        }
-        Ok(out)
+        crate::d64::read_directory(|t, s| self.sector(t, s))
+    }
+
+    /// Contents of a directory entry's file (PRG: includes the two byte load address).
+    pub fn read_entry(&self, e: &DirEntry) -> Result<Vec<u8>, String> {
+        crate::d64::follow_chain(&e.name, (e.track, e.sector), |t, s| self.sector(t, s))
     }
 
     /// Contents of the first PRG file with this name (including its two byte load address).
@@ -180,27 +161,7 @@ impl Disk {
             .into_iter()
             .find(|e| e.name == name && e.file_type & 0x07 == 2)
             .ok_or_else(|| format!("file \"{name}\" not found in the directory"))?;
-        let mut out = Vec::new();
-        let (mut t, mut s) = (e.track, e.sector);
-        let mut seen = HashSet::new();
-        while t != 0 {
-            if !seen.insert((t, s)) {
-                return Err(format!("file \"{name}\": sector chain loops"));
-            }
-            let b = self.sectors.get(&(t, s)).ok_or_else(|| format!("file \"{name}\": sector {t}/{s} unreadable"))?;
-            if b[0] != 0 {
-                out.extend_from_slice(&b[2..]);
-                (t, s) = (b[0], b[1]);
-            } else {
-                let last = b[1] as usize;
-                if !(1..=255).contains(&last) {
-                    return Err(format!("file \"{name}\": bad length byte in last sector"));
-                }
-                out.extend_from_slice(&b[2..=last]);
-                t = 0;
-            }
-        }
-        Ok(out)
+        self.read_entry(&e)
     }
 }
 

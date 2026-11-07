@@ -26,11 +26,12 @@ See [Contributing](#contributing) for a few starting points.
 
 ## What you need
 
-**Your own copy of the original game as a `.g64` disk image.** The downloads contain no game data at all. On the first
-start the game asks for your disk image and takes what it needs from it.
+**Your own copy of the original game as a `.g64` or `.d64` disk image.** The downloads contain no game data at all. On
+the first start the game asks for your disk image and takes what it needs from it.
 
-Only one version of the disk is supported (SHA-256 of the `.g64`):
-`5ce29ce04786eca6518fb08dfe659abb3eee079b4135a3f7606f9d17a501ec77`. Any other version is refused with a clear message.
+Any dump of the original disk works, as long as the game files on it are unmodified: the game compares the program and
+title files on the disk (not the whole image file) with the original, so different dumps and both formats are fine.
+Cracked or modified versions are refused with a clear message.
 
 ## Install
 
@@ -48,11 +49,11 @@ Linux needs nothing else installed. Details, uninstall and updates: [docs/guide.
 
 The game shows a page that asks for your disk image. Do one of these:
 
-- click **CHOOSE FILE...** (or press Enter) and pick the `.g64`,
-- drag the `.g64` onto the window, or onto the app icon,
+- click **CHOOSE FILE...** (or press Enter) and pick the `.g64` or `.d64`,
+- drag the disk image onto the window, or onto the app icon,
 - type or paste its path, or let the game search Downloads, Documents and your home folder (only if you choose that).
 
-After that the game starts straight into the menu. From a terminal: `giana-app --import /path/to/disk.g64`.
+After that the game starts straight into the menu. From a terminal: `giana-app --import /path/to/disk.g64` (or `.d64`).
 On Linux the file dialog needs the desktop portal or zenity; without one, use drag and drop.
 
 ## Controls

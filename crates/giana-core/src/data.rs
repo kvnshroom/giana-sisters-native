@@ -193,7 +193,7 @@ pub fn get() -> &'static GameData {
     }
     drop(slot);
     panic!(
-        "the original game data is not loaded: no usable data folder in {dirs:?}. Run the game once and give it your .g64, \
+        "the original game data is not loaded: no usable data folder in {dirs:?}. Run the game once and give it your .g64 or .d64, \
          or: ./tools/data/setup.sh <your .g64>"
     );
 }

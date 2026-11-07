@@ -1,4 +1,17 @@
-use resid::{ChipModel, Sid};
+use resid::{ChipModel, SamplingMethod, Sid};
+
+/// C64 PAL clock in Hz.
+const CLOCK_HZ: u32 = 985_248;
+/// Cycles of one PAL frame (63 cycles on 312 lines, 50.125 Hz), the rate the game runs at (`LOGIC_STEP` in the app).
+const FRAME_CYCLES: u32 = 63 * 312;
+
+/// A 6581 that samples like VICE's reSID setting "resampling": band-limited to 20 kHz instead of picking every 22nd
+/// cycle, which folds the chip's high overtones back into the audible range (a harsh, "digital" top end).
+fn new_sid() -> Sid {
+    let mut sid = Sid::new(ChipModel::Mos6581);
+    sid.set_sampling_parameters(SamplingMethod::Resample, CLOCK_HZ, 44_100);
+    sid
+}
 use std::collections::VecDeque;
 
 use giana_core::sound_driver::Driver;
@@ -64,7 +77,7 @@ pub struct AudioEngine {
 
 impl AudioEngine {
     pub fn new() -> Self {
-        let sid = Sid::new(ChipModel::Mos6581);
+        let sid = new_sid();
 
         let mut engine = Self {
             sid,
@@ -88,7 +101,7 @@ impl AudioEngine {
     /// An engine that plays registers it is given (`live_regs`) and no tune of its own.
     pub fn new_live() -> Self {
         Self {
-            sid: Sid::new(ChipModel::Mos6581),
+            sid: new_sid(),
             current_track: MusicTrack::Title,
             events: Vec::new(),
             max_frames: 0,
@@ -177,8 +190,9 @@ impl AudioEngine {
 
     /// Fills an output buffer with 44100 Hz mono 16-bit PCM samples
     pub fn fill_audio_buffer(&mut self, buffer: &mut [i16]) {
-        // C64 PAL clock is 985248 Hz. Each 50 Hz PAL frame is 985248 / 50 = 19705 cycles.
-        let cycles_per_frame = 19705u32;
+        // one frame of the game (50.125 Hz, the same rate the app runs the game at, so queued frames neither pile up nor
+        // run dry)
+        let cycles_per_frame = FRAME_CYCLES;
         let mut sample_idx = 0;
 
         while sample_idx < buffer.len() {

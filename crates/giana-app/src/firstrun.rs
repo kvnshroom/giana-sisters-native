@@ -1,16 +1,16 @@
-//! First start: the game contains none of the original data, so it asks for the player's own disk image (.g64),
+//! First start: the game contains none of the original data, so it asks for the player's own disk image (.g64 or .d64),
 //! checks it and extracts the data into the data folder (see `giana_core::data`). This module is the logic and the
 //! page; the window loop that drives it is in `main.rs`.
 
 use crate::menu::{clip, safe_text};
 use crate::ui::{self, Hint, ItemState, Panel};
 use giana_core::data;
-use giana_extract::{sha256::sha256_hex, KNOWN_VERSIONS};
+use giana_extract::{CheckError, Identity};
 use giana_render::framebuffer::Framebuffer;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 
-/// Largest file taken for a disk image (a G64 of this game is about 300 KB).
+/// Largest file taken for a disk image (a G64 of this game is about 300 KB, a D64 at most 197376 bytes).
 const MAX_IMAGE: u64 = 4 << 20;
 /// Characters per line on the page.
 const LINE: usize = 34;
@@ -154,17 +154,17 @@ pub fn import_bytes(bytes: &[u8], dest: &Path, ext: &str) -> Result<(), Vec<Stri
 /// [`import_file`] with the error in plain words (for the terminal as well).
 pub fn try_import_file(path: &Path, dest: &Path) -> Result<(), ImportError> {
     let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => ImportError::new("Could not find that file.", "Check the path, or drop the .g64 file on this window.")
+        std::io::ErrorKind::NotFound => ImportError::new("Could not find that file.", "Check the path, or drop the disk image on this window.")
             .detail(format!("({})", path.display())),
         std::io::ErrorKind::PermissionDenied => ImportError::new("The game may not open that file.", "Copy it to your Downloads folder and choose it there.")
             .detail(format!("({})", path.display())),
         _ => ImportError::new("Could not open that file.", "Choose it again, or copy it to your Downloads folder.").detail(format!("({e})")),
     })?;
     if meta.is_dir() {
-        return Err(ImportError::new("That is a folder, not a file.", "Choose the .g64 file inside it."));
+        return Err(ImportError::new("That is a folder, not a file.", "Choose the .g64 or .d64 file inside it."));
     }
     if meta.len() > MAX_IMAGE {
-        return Err(ImportError::new("That file is too big.", "Choose the .g64 file."));
+        return Err(ImportError::new("That file is too big.", "Choose the .g64 or .d64 file."));
     }
     let bytes = std::fs::read(path).map_err(|e| ImportError::new("Could not read that file.", "Copy it to your Downloads folder and choose it there.").detail(format!("({e})")))?;
     try_import_bytes(&bytes, dest, path.extension().and_then(|e| e.to_str()).unwrap_or(""))
@@ -172,24 +172,26 @@ pub fn try_import_file(path: &Path, dest: &Path) -> Result<(), ImportError> {
 
 /// [`import_bytes`] with the error in plain words.
 pub fn try_import_bytes(bytes: &[u8], dest: &Path, ext: &str) -> Result<(), ImportError> {
-    if bytes.len() < 12 || &bytes[..8] != b"GCR-1541" {
-        return Err(if ext.eq_ignore_ascii_case("d64") {
-            ImportError::new("That is a .d64, not a .g64 file.", "Use the .g64 of the same disk.")
-        } else if ext.eq_ignore_ascii_case("zip") {
-            ImportError::new("That is a ZIP archive.", "Unpack it first, then choose the .g64 file inside.")
-        } else {
-            ImportError::new("That is not a .g64 disk image.", "Choose a file that ends in .g64.")
+    // the content check (SHA-256 of the game's files on the disk) comes first: an unknown disk is never unpacked
+    if let Err(e) = giana_extract::check_content(bytes) {
+        eprintln!("Disk image not accepted: {e}");
+        return Err(match &e {
+            CheckError::NotADisk(_) if ext.eq_ignore_ascii_case("zip") || bytes.starts_with(b"PK\x03\x04") => {
+                ImportError::new("That is a ZIP archive.", "Unpack it first, then choose the .g64 or .d64 file inside.")
+            }
+            CheckError::NotADisk(_) => ImportError::new("That is not a disk image.", "Choose a file that ends in .g64 or .d64.").detail(format!("({e})")),
+            CheckError::NoGameFiles(_) => ImportError::new(
+                "This disk image does not hold The Great Giana Sisters.",
+                "Choose the .g64 or .d64 of the game disk.",
+            )
+            .detail(format!("({e})")),
+            CheckError::Modified { .. } => ImportError::new(
+                "This is a modified or cracked version.",
+                "Please use a dump of the original disk.",
+            )
+            .detail(format!("({e})")),
+            CheckError::Unreadable(_) => ImportError::new("The disk image could not be read.", "The file may be damaged. Try another copy.").detail(format!("({e})")),
         });
-    }
-    let hash = sha256_hex(bytes);
-    if !KNOWN_VERSIONS.iter().any(|v| v.g64_sha256 == hash) {
-        eprintln!("Unknown disk image version, SHA-256 {hash}");
-        let known: Vec<&str> = KNOWN_VERSIONS.iter().map(|v| v.g64_sha256).collect();
-        return Err(ImportError::new(
-            "This disk version is unsupported.",
-            &format!("Try another copy. File ID: {}", &hash[..12]),
-        )
-        .detail(format!("SHA-256 of your file: {hash}. Supported: {}.", known.join(", "))));
     }
     let files = giana_extract::extract_all(bytes).map_err(|e| {
         eprintln!("Extraction failed: {e}");
@@ -207,9 +209,19 @@ pub fn try_import_bytes(bytes: &[u8], dest: &Path, ext: &str) -> Result<(), Impo
     Ok(())
 }
 
-/// Looks for a `.g64` of a known version in the usual places: Downloads, Documents, Desktop, the home folder, the
-/// folder of the program and the current folder (two levels deep, except in the home folder itself).
-pub fn search() -> Option<PathBuf> {
+/// What a search for the player's disk image found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Found {
+    /// a disk image with the unmodified game files
+    Original(PathBuf),
+    /// no original, but a disk with the game's files in a modified (cracked, trained) version
+    Modified(PathBuf),
+    Nothing,
+}
+
+/// Looks for a `.g64` or `.d64` of the original disk in the usual places: Downloads, Documents, Desktop, the home
+/// folder, the folder of the program and the current folder (two levels deep, except in the home folder itself).
+pub fn search() -> Found {
     let mut dirs: Vec<(PathBuf, usize)> = Vec::new();
     if let Some(home) = home_dir() {
         for d in ["Downloads", "Documents", "Desktop"] {
@@ -223,21 +235,35 @@ pub fn search() -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push((cwd, 1));
     }
-    find_g64(&dirs)
+    find_disk(&dirs)
 }
 
-/// The first `.g64` of a known version in the folders (folder, how many levels below it to look as well).
-pub fn find_g64(dirs: &[(PathBuf, usize)]) -> Option<PathBuf> {
+/// The first disk image of the original in the folders (folder, how many levels below it to look as well). Files
+/// are identified by the content of the game's files, never by running anything. When there is no original, the
+/// first modified version that was seen is reported.
+pub fn find_disk(dirs: &[(PathBuf, usize)]) -> Found {
     let mut visited = 0usize;
+    let mut modified = None;
     for (dir, depth) in dirs {
-        if let Some(p) = scan(dir, *depth, &mut visited) {
-            return Some(p);
+        if let Some(p) = scan(dir, *depth, &mut visited, &mut modified) {
+            return Found::Original(p);
         }
     }
-    None
+    modified.map_or(Found::Nothing, Found::Modified)
 }
 
-fn scan(dir: &Path, depth: usize, visited: &mut usize) -> Option<PathBuf> {
+/// Whether a file of this extension and size can be a disk image (so that nothing else is read at all).
+fn plausible_image(ext: &str, len: u64) -> bool {
+    if ext.eq_ignore_ascii_case("g64") {
+        (12..=MAX_IMAGE).contains(&len)
+    } else if ext.eq_ignore_ascii_case("d64") {
+        usize::try_from(len).is_ok_and(|n| giana_extract::disk::D64_SIZE_RANGE.contains(&n))
+    } else {
+        false
+    }
+}
+
+fn scan(dir: &Path, depth: usize, visited: &mut usize, modified: &mut Option<PathBuf>) -> Option<PathBuf> {
     let mut subdirs = Vec::new();
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         *visited += 1;
@@ -250,19 +276,20 @@ fn scan(dir: &Path, depth: usize, visited: &mut usize) -> Option<PathBuf> {
             if depth > 0 && !entry.file_name().to_string_lossy().starts_with('.') {
                 subdirs.push(path);
             }
-        } else if meta.len() <= MAX_IMAGE
-            && path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("g64"))
-        {
+        } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| plausible_image(e, meta.len())) {
             if let Ok(bytes) = std::fs::read(&path) {
-                let h = sha256_hex(&bytes);
-                if KNOWN_VERSIONS.iter().any(|v| v.g64_sha256 == h) {
-                    return Some(path);
+                match giana_extract::identify(&bytes) {
+                    Identity::Original => return Some(path),
+                    Identity::Modified => {
+                        modified.get_or_insert(path);
+                    }
+                    Identity::Other => {}
                 }
             }
         }
     }
     subdirs.sort();
-    subdirs.into_iter().find_map(|d| scan(&d, depth - 1, visited))
+    subdirs.into_iter().find_map(|d| scan(&d, depth - 1, visited, modified))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -289,11 +316,12 @@ const SEARCH: usize = 2;
 
 /// Shown when the file dialog returned without a file (cancelled, or it could not be shown at all).
 const NO_FILE: &str = "NO FILE CHOSEN.";
-const NO_FILE_FIX: &str = "IF NO WINDOW OPENED, DROP THE .G64 ON THIS WINDOW OR TYPE ITS PATH.";
+const NO_FILE_FIX: &str = "IF NO WINDOW OPENED, DROP THE FILE ON THIS WINDOW OR TYPE ITS PATH.";
 const NO_PATH: &str = "NO PATH TYPED YET.";
-const NO_PATH_FIX: &str = "TYPE OR PASTE IT, OR DROP THE .G64 ON THIS WINDOW.";
-const NOT_FOUND: &str = "NO .G64 FOUND IN COMMON FOLDERS.";
-const NOT_FOUND_FIX: &str = "USE CHOOSE FILE, OR DROP THE .G64 ON THIS WINDOW.";
+const NO_PATH_FIX: &str = "TYPE OR PASTE IT, OR DROP THE FILE ON THIS WINDOW.";
+const NOT_FOUND: &str = "NO DISK IMAGE FOUND.";
+const NOT_FOUND_FIX: &str = "USE CHOOSE FILE, OR DROP THE FILE ON THIS WINDOW.";
+const MODIFIED_FIX: &str = "PLEASE USE AN ORIGINAL DUMP.";
 
 /// A failure message for the page: the problem, an empty line, what to do.
 fn failure(problem: &str, fix: &str) -> Status {
@@ -301,6 +329,12 @@ fn failure(problem: &str, fix: &str) -> Status {
     lines.push(String::new());
     lines.extend(wrap(fix, LINE));
     Status::Failed(lines)
+}
+
+/// The search found only a modified version: says so with the file name (cut to one line).
+fn modified_found(file_name: &str) -> Status {
+    let name = clip(&safe_text(&file_name.to_uppercase()), LINE);
+    failure(&format!("FOUND A MODIFIED VERSION: {name}"), MODIFIED_FIX)
 }
 
 /// What the file dialog asks for.
@@ -315,7 +349,7 @@ pub enum FileKind {
 /// Title and file filter of the dialog: the files of the kind first, then all files.
 fn dialog_texts(kind: FileKind) -> (&'static str, &'static str, &'static [&'static str]) {
     match kind {
-        FileKind::DiskImage => ("Choose your The Great Giana Sisters disk image", "C64 disk image (.g64)", &["g64", "G64"]),
+        FileKind::DiskImage => ("Choose your The Great Giana Sisters disk image", "C64 disk image (.g64, .d64)", &["g64", "G64", "d64", "D64"]),
         FileKind::RomModule => ("Choose a ROM module", "ROM module (.grom)", &["grom", "GROM"]),
     }
 }
@@ -422,11 +456,17 @@ impl Setup {
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let r = match search() {
-                Some(p) => {
+                Found::Original(p) => {
                     println!("Found a disk image: {}", p.display());
                     import_file(&p, &dest)
                 }
-                None => {
+                Found::Modified(p) => {
+                    println!("Found a modified version of the game, not usable: {}", p.display());
+                    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let Status::Failed(lines) = modified_found(&name) else { unreachable!() };
+                    Err(lines)
+                }
+                Found::Nothing => {
                     let Status::Failed(lines) = failure(NOT_FOUND, NOT_FOUND_FIX) else { unreachable!() };
                     Err(lines)
                 }
@@ -474,9 +514,9 @@ pub fn footer_hints(setup: &Setup) -> Vec<Hint> {
 /// Instruction lines of the page (each at most `LINE` characters).
 const PAGE_TEXT: [&str; 6] = [
     "THE GREAT GIANA SISTERS NEEDS",
-    "YOUR ORIGINAL DISK IMAGE (.G64)",
+    "YOUR ORIGINAL DISK (.G64 OR .D64)",
     "OR DROP IT HERE OR TYPE ITS PATH:",
-    "ONLY .G64 WORKS, NOT .D64 / .ZIP.",
+    "ANY DUMP WORKS IF UNMODIFIED.",
     "IT IS NOT PART OF THIS DOWNLOAD.",
     "THIS IS DONE ONLY ONCE.",
 ];
@@ -566,7 +606,7 @@ mod tests {
         let (_, filter, ext) = dialog_texts(FileKind::RomModule);
         assert!(filter.contains(".grom") && ext.contains(&"grom"));
         let (_, filter, ext) = dialog_texts(FileKind::DiskImage);
-        assert!(filter.contains(".g64") && ext.contains(&"g64"));
+        assert!(filter.contains(".g64") && filter.contains(".d64") && ext.contains(&"g64") && ext.contains(&"d64"));
     }
 
     #[test]
@@ -612,13 +652,13 @@ mod tests {
 
     #[test]
     fn page_texts_fit_and_use_known_glyphs() {
-        for t in PAGE_TEXT.iter().chain([&NO_FILE, &NO_FILE_FIX, &NO_PATH, &NO_PATH_FIX, &NOT_FOUND, &NOT_FOUND_FIX]) {
+        for t in PAGE_TEXT.iter().chain([&NO_FILE, &NO_FILE_FIX, &NO_PATH, &NO_PATH_FIX, &NOT_FOUND, &NOT_FOUND_FIX, &MODIFIED_FIX]) {
             assert_eq!(safe_text(t), *t, "unsupported characters in {t}");
         }
         for t in PAGE_TEXT {
             assert!(t.chars().count() <= LINE, "{t}");
         }
-        for t in [NO_FILE_FIX, NOT_FOUND, NOT_FOUND_FIX] {
+        for t in [NO_FILE_FIX, NOT_FOUND, NOT_FOUND_FIX, MODIFIED_FIX] {
             for l in wrap(t, LINE) {
                 assert!(l.chars().count() <= LINE, "{l}");
             }
@@ -644,16 +684,63 @@ mod tests {
     #[test]
     fn rejects_files_in_plain_words() {
         let dest = temp("reject");
-        let not_g64 = import_bytes(b"hello", &dest, "txt").unwrap_err().join(" ");
-        assert!(not_g64.contains("NOT A .G64"), "{not_g64}");
-        let d64 = import_bytes(b"hello", &dest, "d64").unwrap_err().join(" ");
-        assert!(d64.contains("D64"), "{d64}");
+        let text = |r: Result<(), ImportError>| r.unwrap_err();
+        let not_a_disk = text(try_import_bytes(b"hello", &dest, "txt"));
+        assert_eq!(not_a_disk.problem, "That is not a disk image.");
+        assert!(not_a_disk.fix.contains(".g64 or .d64"));
+        let zip = text(try_import_bytes(b"PK\x03\x04 zipped", &dest, "g64"));
+        assert!(zip.problem.contains("ZIP"), "{zip:?}");
+        // a .d64 name on garbage is not mistaken for anything special
+        assert_eq!(text(try_import_bytes(b"hello", &dest, "d64")).problem, not_a_disk.problem);
         let mut fake = b"GCR-1541".to_vec();
         fake.extend_from_slice(&[0; 100]);
-        let unknown = import_bytes(&fake, &dest, "g64").unwrap_err().join(" ");
-        assert!(unknown.contains("UNSUPPORTED") && unknown.contains("FILE ID"), "{unknown}");
+        assert_eq!(text(try_import_bytes(&fake, &dest, "g64")).problem, not_a_disk.problem);
+
+        // a disk image without the game
+        let other = giana_extract::d64::build_d64(&[("HELLO", &[1, 8, 0])]);
+        let e = text(try_import_bytes(&other, &dest, "d64"));
+        assert!(e.problem.contains("does not hold The Great Giana Sisters"), "{e:?}");
+        // the game's files, modified
+        let cracked = giana_extract::d64::build_d64(&[("1", &[0x20, 0x08, 1, 2, 3]), ("2", &[0, 4, 5, 6])]);
+        let e = text(try_import_bytes(&cracked, &dest, "d64"));
+        assert_eq!(e.problem, "This is a modified or cracked version.");
+        assert_eq!(e.fix, "Please use a dump of the original disk.");
+        assert!(e.detail.contains(giana_extract::GAME_FILE1_SHA256), "{e:?}");
+        assert!(e.screen().join(" ").contains("MODIFIED OR CRACKED"));
+
         assert!(!dest.exists());
         assert!(import_file(Path::new("/nonexistent/x.g64"), &dest).is_err());
+    }
+
+    /// The original disk as a D64 made from the G64 (sectors of tracks 1-35).
+    fn original_as_d64() -> Option<Vec<u8>> {
+        let g64 = std::fs::read(repo(G64)).ok()?;
+        let disk = giana_extract::g64::Disk::parse(&g64).unwrap();
+        let mut out = Vec::new();
+        for t in 1..=35u8 {
+            for s in 0..giana_extract::g64::sectors_per_track(t) {
+                out.extend_from_slice(disk.sector(t, s).unwrap_or(&[0; 256]));
+            }
+        }
+        Some(out)
+    }
+
+    #[test]
+    fn imports_a_d64_of_the_original() {
+        let Some(d64) = original_as_d64() else { return };
+        let dest = temp("d64");
+        try_import_bytes(&d64, &dest, "d64").unwrap();
+        assert!(giana_extract::verify_dir(&dest).is_empty());
+        std::fs::remove_dir_all(&dest).unwrap();
+    }
+
+    #[test]
+    fn imports_another_dump_of_the_original() {
+        let Some(path) = std::env::var_os("GIANA_ALT_G64") else { return };
+        let dest = temp("alt");
+        try_import_file(Path::new(&path), &dest).unwrap();
+        assert!(giana_extract::verify_dir(&dest).is_empty());
+        std::fs::remove_dir_all(&dest).unwrap();
     }
 
     #[test]
@@ -697,11 +784,56 @@ mod tests {
         let root = temp("search");
         std::fs::create_dir_all(root.join("Games/sub")).unwrap();
         std::fs::write(root.join("Games/other.g64"), b"GCR-1541 not the right one").unwrap();
-        assert_eq!(find_g64(&[(root.clone(), 2)]), None);
+        assert_eq!(find_disk(&[(root.clone(), 2)]), Found::Nothing);
         std::fs::copy(repo(G64), root.join("Games/sub/Giana.G64")).unwrap();
-        assert_eq!(find_g64(&[(root.clone(), 2)]), Some(root.join("Games/sub/Giana.G64")));
-        assert_eq!(find_g64(&[(root.clone(), 1)]), None);
+        assert_eq!(find_disk(&[(root.clone(), 2)]), Found::Original(root.join("Games/sub/Giana.G64")));
+        assert_eq!(find_disk(&[(root.clone(), 1)]), Found::Nothing);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn search_finds_a_d64_by_its_content() {
+        let Some(d64) = original_as_d64() else { return };
+        let root = temp("search-d64");
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("a/Giana (other dump).d64"), &d64).unwrap();
+        // the same bytes under another extension, or a D64 of the wrong size, are not considered
+        std::fs::write(root.join("a/notes.bin"), &d64).unwrap();
+        std::fs::write(root.join("a/short.d64"), &d64[..1000]).unwrap();
+        assert_eq!(find_disk(&[(root.clone(), 1)]), Found::Original(root.join("a/Giana (other dump).d64")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn search_reports_a_modified_version_only_when_there_is_no_original() {
+        let root = temp("search-mod");
+        std::fs::create_dir_all(&root).unwrap();
+        let cracked = giana_extract::d64::build_d64(&[("1", &[0x20, 0x08, 1, 2, 3]), ("2", &[0, 4, 5, 6])]);
+        let unrelated = giana_extract::d64::build_d64(&[("HELLO", &[1, 8, 0])]);
+        std::fs::write(root.join("a_unrelated.d64"), &unrelated).unwrap();
+        std::fs::write(root.join("b_cracked.d64"), &cracked).unwrap();
+        assert_eq!(find_disk(&[(root.clone(), 0)]), Found::Modified(root.join("b_cracked.d64")));
+        if let Some(d64) = original_as_d64() {
+            std::fs::write(root.join("c_original.d64"), &d64).unwrap();
+            assert_eq!(find_disk(&[(root.clone(), 0)]), Found::Original(root.join("c_original.d64")));
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_modified_message_names_the_file_and_fits_the_page() {
+        let Status::Failed(lines) = modified_found("A_VERY_LONG_FILE_NAME_OF_A_CRACKED_DISK_(1987).d64") else { panic!() };
+        assert!(lines.join(" ").contains("FOUND A MODIFIED VERSION"));
+        assert!(lines.join(" ").contains("PLEASE USE AN ORIGINAL DUMP"));
+        assert!(lines.iter().filter(|l| !l.is_empty()).count() <= 3, "{lines:?}");
+        assert!(lines.iter().all(|l| l.chars().count() <= LINE));
+    }
+
+    #[test]
+    fn only_plausible_files_are_read() {
+        assert!(plausible_image("G64", 300_000) && !plausible_image("g64", MAX_IMAGE + 1));
+        assert!(plausible_image("d64", 174_848) && plausible_image("D64", 175_531) && plausible_image("d64", 197_376));
+        assert!(!plausible_image("d64", 174_847) && !plausible_image("d64", 197_377) && !plausible_image("zip", 174_848));
     }
 
     #[test]

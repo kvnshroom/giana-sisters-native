@@ -5,10 +5,10 @@ pub const HELP: &str = "The Great Giana Sisters (Rust port)
 USAGE:
     giana-app [OPTIONS] [FILE]
 
-FILE can be your disk image (.g64) or a ROM module (.grom). You can also open one with the program or drop it on it.
+FILE can be your disk image (.g64 or .d64) or a ROM module (.grom). You can also open one with the program or drop it on it.
 
 FIRST START:
-    --import FILE.g64  take the game data from your disk image, then exit
+    --import FILE      take the game data from your disk image (.g64 or .d64), then exit
     --data DIR         keep the game data in DIR instead of the default folder
 
 PLAY:
@@ -48,7 +48,7 @@ pub struct Options {
     pub stage: Option<u32>,
     /// no automatic check for a new version
     pub no_update_check: bool,
-    /// a lone `FILE.g64` argument (Open with, drag onto the program): imported at once if the game data is still missing
+    /// a lone `FILE.g64` / `FILE.d64` argument (Open with, drag onto the program): imported at once if the game data is still missing
     pub open: Option<std::path::PathBuf>,
     /// `--module FILE|ID`: the ROM module for this run only
     pub module: Option<String>,
@@ -98,8 +98,8 @@ fn stage_number(value: Option<&str>) -> Result<u32, String> {
         .ok_or_else(|| format!("--stage needs a number from 1 to 33, not '{}'", value.unwrap_or("")))
 }
 
-fn is_g64(arg: &str) -> bool {
-    std::path::Path::new(arg).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("g64"))
+fn is_disk_image(arg: &str) -> bool {
+    std::path::Path::new(arg).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("g64") || e.eq_ignore_ascii_case("d64"))
 }
 
 fn is_grom(arg: &str) -> bool {
@@ -130,7 +130,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
             "--no-update-check" => opts.no_update_check = true,
             "--debug" => opts.debug = true,
             "--data" => opts.data = Some(args.next().filter(|v| !v.is_empty()).ok_or("--data needs a folder")?.into()),
-            "--import" => import = Some(args.next().filter(|v| !v.is_empty()).ok_or("--import needs the path of a .g64 file")?.into()),
+            "--import" => import = Some(args.next().filter(|v| !v.is_empty()).ok_or("--import needs the path of a .g64 or .d64 file")?.into()),
             "--module" => opts.module = Some(value(&mut args, &arg)?),
             "--list-modules" => list = true,
             "--add-module" => add = Some(value(&mut args, &arg)?.into()),
@@ -144,7 +144,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
             "--stage" => opts.stage = Some(stage_number(args.next().as_deref())?),
             // old macOS versions pass a process serial number when launched from Finder
             other if other.starts_with("-psn_") => {}
-            other if !other.starts_with('-') && open.is_none() && is_g64(other) => open = Some(other.into()),
+            other if !other.starts_with('-') && open.is_none() && is_disk_image(other) => open = Some(other.into()),
             other if !other.starts_with('-') && opts.open_module.is_none() && is_grom(other) => opts.open_module = Some(other.into()),
             other => match other.strip_prefix("--stage=") {
                 Some(v) => opts.stage = Some(stage_number(Some(v))?),
@@ -217,6 +217,8 @@ mod tests {
         assert_eq!(o.open, Some("/x/My Games/Giana.G64".into()));
         let Ok(Command::Run(o)) = p(&["-psn_0_12345", "--debug", "a.g64"]) else { panic!() };
         assert!(o.debug && o.open == Some("a.g64".into()));
+        let Ok(Command::Run(o)) = p(&["Giana.d64"]) else { panic!() };
+        assert_eq!(o.open, Some("Giana.d64".into()));
         assert!(p(&["notes.txt"]).is_err());
         assert!(p(&["a.g64", "b.g64"]).is_err());
     }

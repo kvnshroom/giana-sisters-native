@@ -2,7 +2,7 @@ use giana_extract::image::{diff_ranges, PATCHES};
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: giana-extract <file.g64> <out_dir> [--compare <reference ingame.bin>]
+const USAGE: &str = "usage: giana-extract <file.g64|file.d64> <out_dir> [--compare <reference ingame.bin>]
        giana-extract --check <data_dir>
 
 Writes every data file of tools/data/manifest.txt into <out_dir> (program image with the documented patches, the
@@ -34,8 +34,8 @@ fn run() -> Result<(), String> {
     let [input, out_dir] = positional.as_slice() else {
         return Err(USAGE.into());
     };
-    let g64 = std::fs::read(input).map_err(|e| format!("cannot read {input}: {e}"))?;
-    let ex = giana_extract::extract(&g64)?;
+    let image = std::fs::read(input).map_err(|e| format!("cannot read {input}: {e}"))?;
+    let ex = giana_extract::extract(&image)?;
     println!("input: {input}\nversion: {}", ex.version.name);
     let files = giana_extract::derive::derive_all_with(ex.patched.clone(), ex.title_prg.clone(), ex.atg.clone())?;
     giana_extract::write_data_dir(&files, Path::new(out_dir))?;

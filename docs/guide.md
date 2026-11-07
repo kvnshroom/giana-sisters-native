@@ -67,7 +67,7 @@ smooth motion does not apply.
   `settings.conf` when you press `F1` on that question, as the original saved it to disk; it is kept apart from the modern
   high score table.
 - AUTHENTIC needs one more file from your disk image (`atg.prg`). If your game data was made by an earlier version, the item
-  is greyed out; select it and the game asks for the `.g64` again once.
+  is greyed out; select it and the game asks for your disk image (`.g64` or `.d64`) again once.
 - Not like the C64: the loading of the game (about 40 seconds on the real drive) is replaced by a second of black screen.
  
 
@@ -132,7 +132,7 @@ giana-app [OPTIONS] [FILE.g64 | FILE.grom]
     --list-modules     list the installed ROM modules and exit
     --make-module INPUT -o OUT.grom --name NAME [--author A] [--version V] [--description D] [--title F_2.PRG]
                        make a ROM module from a modified game and exit
-    --import FILE.g64  extract the game data from your original disk image and exit
+    --import FILE.g64  extract the game data from your original disk image (.g64 or .d64) and exit
     --data DIR         use the original game data in DIR (extract into it on first start)
     --stage N          skip the menu and start in stage N (1 to 33)
     --debug            debug keys: F1 lives, F2 invulnerable, F3/F4 previous/next stage

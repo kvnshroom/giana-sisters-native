@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.1]
+
+- The first-start import takes a `.g64` or a `.d64` of the original disk, and any dump of it: the game now compares the
+  program and title files on the disk with the original instead of the hash of one particular image file. Other dumps
+  (for example the C64 Preservation Project one) and `.d64` files work; the copy protection tracks do not matter.
+- Cracked or modified versions are refused with "This is a modified or cracked version. Please use a dump of the
+  original disk."; a file that is not a disk image, or a disk without the game, gets its own message.
+- SEARCH THIS COMPUTER looks at `.g64` and `.d64` files, tells you when it only found a modified version, and never runs
+  anything from a disk it has not recognised.
+- Sound closer to VICE: the SID model now band-limits its output (reSID "resampling", like VICE) instead of picking
+  single samples, which folded the chip's high overtones back into the audible range and made the top end harsh.
+- The sound chip now runs on the C64's own frame (19656 cycles, 50.125 Hz), the rate the game already ran at. Before,
+  in the AUTHENTIC style the queued sound frames piled up: after a few minutes the sound lagged up to half a second
+  behind and a frame of sound was dropped every 8 seconds.
+- MENU SOUNDS *SOFT*: the ticks use a triangle wave (softer; they stay well below *CLASSIC*).
+
 ## [0.4.0]
 
 - WIDESCREEN (OPTIONS > VIDEO, off by default): about 16:9, with 48 more pixels of the level on each side (24 with

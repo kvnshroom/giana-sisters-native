@@ -374,7 +374,7 @@ fn add_module_command(file: &std::path::Path, data: Option<&std::path::Path>) {
         std::process::exit(1);
     };
     let Some(data_dir) = firstrun::locate(data) else {
-        eprintln!("giana-app: the game data is not there yet: import your .g64 first (giana-app --import FILE.g64).");
+        eprintln!("giana-app: the game data is not there yet: import your .g64 or .d64 first (giana-app --import FILE).");
         std::process::exit(1);
     };
     match store.add(file, &data_dir) {
