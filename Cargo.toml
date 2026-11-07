@@ -25,3 +25,11 @@ field_reassign_with_default = "allow"
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# resid-rs (like reSID in C) relies on wrapping 32-bit arithmetic in its resampler (the interpolation of two FIR phases,
+# `fir_offset_rmd * (v2 - v1)`, overflows on large volume-register steps). Release builds wrap like C does; without this
+# a debug build or `cargo test` panics there instead. Optimised as well: unoptimised, the resampler makes the audio
+# tests take a minute.
+[profile.dev.package.resid-rs]
+overflow-checks = false
+opt-level = 3
