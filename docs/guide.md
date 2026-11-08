@@ -23,8 +23,8 @@ OPTIONS is a hub with three pages: VIDEO, SOUND and GENERAL. Every line shows a 
 
 **VIDEO**
 
-- **Fullscreen**, and **picture size**: *with border* (sharp, with the C64 border), *no border* (sharp and as large as
-  possible – 5× on a 1920×1080 screen) or *fill screen*.
+- **Fullscreen**, and **picture size**: *no border* (the default: sharp and as large as possible – the game 5× and the
+  menus 4× on a 1920×1080 screen), *with border* (sharp, the whole C64 frame, menus 3× on 1920×1080) or *fill screen*.
 - **Widescreen: ON / VIEW ONLY / OFF** (off by default; never in the AUTHENTIC style). The picture shows 48 more pixels of
   the level on each side (24 with *no border* / *fill screen*): 480×272 with the border, 352×200 without, both about 16:9.
   *On* moves the edges of the game to the new picture: enemies, shots and items are created beyond the new right edge and
@@ -47,8 +47,8 @@ OPTIONS is a hub with three pages: VIDEO, SOUND and GENERAL. Every line shows a 
 **SOUND**: master volume, separate music and effects volume, and menu sounds (soft, classic or off). With both
 sliders at full, the sound is exactly the original mix.
 
-**GENERAL**: the *winner rule* (score or furthest), the *style* (modern or authentic, see below) and the *update check*
-(daily or off).
+**GENERAL**: the *winner rule* (score or furthest), the *style* (modern or authentic, see below) the *update check*
+(on start or off) and *check for updates* (ask now, and install what it finds).
 
 ## Authentic mode
 
@@ -82,6 +82,11 @@ by playing alone in between; the original and every ROM module have their own. T
 - A kept game is a suspend point, not a save game: it is gone once you continue it, and when you start a new game with
   the same number of players (1 PLAYER and 2 PLAYERS say *replaces the saved game* only if that one exists; the other
   kept game stays). The points of a game that you stop this way count when you finish it.
+- **RESTART STAGE** costs a life: Giana is hit as by an enemy and the stage starts again, exactly as after any lost life
+  (on the last life the game is over). In a network game it is there too and reaches the other computer like a button
+  press; taking turns, only the player whose turn it is can use it.
+- **RESTART GAME** starts a new game of the same kind (stage 1, all lives); the game that ran is not kept and its points do
+  not count. Not in network games.
 - **QUIT TO TITLE** gives the game up as before, nothing is kept. Network games and the AUTHENTIC style (it stays like the
   C64) are not kept either.
 - A kept game belongs to the game data (module) it was made with and survives program updates. It is discarded, with a
@@ -166,7 +171,10 @@ You can also skip the installer and just start `./giana-app`.
 
 ## Updates
 
-The game checks GitHub once a day for a new version and shows a notice in the main menu; press `U` (or `X` on a
-controller) to update. Downloads are verified against the release's `SHA256SUMS.txt` before anything is replaced.
-You can switch the check off under OPTIONS → UPDATE CHECK, or start with `--no-update-check`.
+The game asks GitHub for a new version at every start (in the background, the game does not wait) and shows a notice in
+the main menu; press `U` (or `X` on a controller) to update. OPTIONS → GENERAL → CHECK FOR UPDATES asks right away, also
+when the automatic check is off, and says what came out; when it found a new version, select it again to install it.
+Downloads are verified against the release's `SHA256SUMS.txt` before anything is replaced. The new version is used from
+the next start. You can switch the automatic check off under OPTIONS → GENERAL → UPDATE CHECK, or start with
+`--no-update-check`.
 

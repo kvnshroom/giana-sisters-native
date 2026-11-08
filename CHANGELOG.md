@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0]
+
+- Network play needs 0.5.0 on both computers (0.4.x refuses to play with it).
+- The update check runs at every start instead of once a day (UPDATE CHECK: *ON START* / *OFF*), and OPTIONS → GENERAL
+  → *CHECK FOR UPDATES* asks right away (also with the automatic check off), says what came out, and installs a new
+  version when selected again.
+- `update_check = false` (or `no`, `0`) in the settings file now means off, like `off`.
+- PICTURE SIZE *NO BORDER* is the default for new installs (existing settings are kept). It only cuts empty border, the
+  game itself is unchanged.
+- *NO BORDER* and *FILL SCREEN* also make the menus and the title bigger: they cut the empty rows at the top and bottom of
+  the border, so on a 1920×1080 screen the menus are 4× instead of 3× (8× instead of 7× on 4K), still sharp.
+- Network games no longer show a line about the other player (score, lives, stage, whose turn) over the game: with
+  *NO BORDER* it covered the last rows of the picture. Only *OTHER PLAYER PAUSED* is still shown while it holds the game.
+- Network games start only when both players are ready: after connecting, each presses jump or fire (*PRESS JUMP OR
+  FIRE WHEN READY*), and the game runs once both did. A button still held from the menu does not count.
+- Pause menu: *RESTART STAGE* (costs a life: Giana is hit as by an enemy, so the stage starts again like after any lost
+  life; also in network games, where it travels with the input) and *RESTART GAME* (a new game of the same kind, not in
+  network games).
+- A Linux package for 64-bit ARM (`linux-aarch64`, e.g. Raspberry Pi 4/5 with Raspberry Pi OS or Batocera); the update
+  check offers it on those systems too.
+
 ## [0.4.1]
 
 - The first-start import takes a `.g64` or a `.d64` of the original disk, and any dump of it: the game now compares the

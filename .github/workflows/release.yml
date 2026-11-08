@@ -71,6 +71,36 @@ jobs:
           cat SHA256SUMS.txt
           gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber
 
+  build-linux-aarch64:
+    needs: release
+    uses: ./.github/workflows/build-package.yml
+    with: { kind: linux-aarch64, os: ubuntu-22.04-arm }
+
+  upload-linux-aarch64:
+    # only this small job can write to the release: it uploads the package built read-only above
+    needs: build-linux-aarch64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-aarch64
+          path: dist
+      - name: Upload the package and refresh SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" dist/giana-sisters-native-* --clobber
+          # the checksum file lists every package uploaded so far; two uploads at once may each miss the other's
+          # line, the `checksums` job at the end writes the complete file
+          mkdir sums && cd sums
+          gh release download "$GITHUB_REF_NAME" -p 'giana-sisters-native-*'
+          sha256sum giana-sisters-native-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber
+
   build-windows:
     needs: release
     uses: ./.github/workflows/build-package.yml
@@ -133,7 +163,7 @@ jobs:
 
   checksums:
     # after all uploads, also when one failed: the final checksum file from the packages that are really there
-    needs: [upload-linux, upload-windows, upload-macos]
+    needs: [upload-linux, upload-linux-aarch64, upload-windows, upload-macos]
     if: always()
     runs-on: ubuntu-latest
     permissions:

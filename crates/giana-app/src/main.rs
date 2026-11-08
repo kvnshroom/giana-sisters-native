@@ -195,6 +195,12 @@ struct Pending {
     stop_network: bool,
     new_score: Option<giana_app::scores::Entry>,
     to_title: bool,
+    /// CHECK FOR UPDATES
+    check_update: bool,
+    /// RESTART STAGE: the next logic step carries the request (`ControllerInput::restart_stage`)
+    restart_stage: bool,
+    /// RESTART GAME: a new game of the kind that runs
+    restart_game: bool,
     quit: bool,
     /// `ADD ROM MODULE...`: ask for a file
     add_module: bool,
@@ -219,6 +225,14 @@ fn apply_outcome(outcome: Outcome, open: &mut Option<Menu>, pending: &mut Pendin
         }
         Outcome::Continue(players) => pending.resume_suspended = Some(players),
         Outcome::Resume => *open = None,
+        Outcome::RestartStage => {
+            pending.restart_stage = true;
+            *open = None;
+        }
+        Outcome::RestartGame => {
+            pending.restart_game = true;
+            *open = None;
+        }
         Outcome::QuitToTitle => {
             pending.to_title = true;
             *open = Some(Menu::main());
@@ -231,6 +245,7 @@ fn apply_outcome(outcome: Outcome, open: &mut Option<Menu>, pending: &mut Pendin
         Outcome::CancelJoin => pending.cancel_join = true,
         Outcome::Option(change) => pending.options.push(change),
         Outcome::Update => pending.update = true,
+        Outcome::CheckUpdate => pending.check_update = true,
         Outcome::ModuleAdd => pending.add_module = true,
         Outcome::ModulePlay(id) => pending.play_module = Some(id),
         Outcome::ModuleRemove(id) => pending.remove_module = Some(id),
@@ -961,9 +976,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let mouse = sdl_context.mouse();
 
     let mut settings = settings_path().map_or_else(Settings::default, |p| Settings::load(&p));
-    // the leftover of a Windows update goes; a check for a new version runs in the background (at most once a day)
+    // the leftover of a Windows update goes; a check for a new version runs in the background (at every start)
     giana_app::update::cleanup_old();
-    let mut updater = giana_app::update::Updater::start(settings.update_check && !options.no_update_check, settings.last_update_check, &settings.update_seen);
+    let mut updater = giana_app::update::Updater::start(settings.update_check && !options.no_update_check, &settings.update_seen);
 
     // Check for connected gamepads
     let mut input_state = InputState::default();
@@ -1128,6 +1143,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     // The other player's game when each has their own
     let mut other_game: Option<GameState> = None;
     let mut network_start = false;
+    // Before a network game: jump or fire says "ready", but only a press that starts after the game was set up (the
+    // button that chose HOST or JOIN may still be held)
+    let mut ready_armed = false;
     let mut last_mode = Some(GameMode::OnePlayer);
 
     // Start on Title screen
@@ -1204,6 +1222,12 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             m.settings = settings.clone();
             m.audio_ok = audio_ok;
             m.in_network = session.is_some();
+            // RESTART STAGE: the stage runs, and in a network game it is this player's own game or turn
+            m.can_restart_stage = m.paused
+                && game.can_restart_stage()
+                && !game.legacy_model
+                && session.as_ref().is_none_or(|s| s.started() && (other_game.is_some() || s.my_turn(&game)));
+            m.can_restart_game = m.paused && session.is_none() && last_mode.is_some() && game.screen == GameScreen::InGame && !game.legacy_model;
             m.update = updater.view.clone();
             m.set_modules(&module_list, &module_id);
             m.authentic = authentic_avail;
@@ -1217,6 +1241,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         if std::mem::take(&mut pending.update) {
             updater.install();
+        }
+        if std::mem::take(&mut pending.check_update) {
+            updater.check_now();
         }
 
         for event in event_pump.poll_iter() {
@@ -1692,11 +1719,22 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(m) = open_menu.as_mut() {
                 m.tick();
             }
+            // RESTART STAGE goes with the input of one step, so a network game sends it to the other computer as well
+            input.restart_stage = std::mem::take(&mut pending.restart_stage) && open_menu.is_none();
+            if std::mem::take(&mut pending.restart_game) && session.is_none() {
+                pending.start = last_mode;
+            }
             if let Some(s) = session.as_mut().filter(|_| network_start) {
                 // Both computers start the same game
                 network_start = false;
                 last_mode = None;
+                ready_armed = false;
                 (game, other_game) = s.new_games();
+            } else if let Some(s) = session.as_mut().filter(|s| !s.started()) {
+                // Both players say they are ready before the game runs
+                let pressed = (input.jump || input.fire) && open_menu.is_none();
+                s.wait_ready(ready_armed && pressed);
+                ready_armed |= !pressed;
             } else if let (Some(s), Some(other)) = (session.as_mut(), other_game.as_mut()) {
                 s.tick_same_time(&mut game, other, &input, open_menu.is_some());
             } else if let Some(s) = session.as_mut() {
@@ -2034,21 +2072,22 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         // Two lanes for the small messages: in the bottom border, or over the last rows of the picture when it is cut
         let (info_y, hint_y) = if cropped { (224, 208) } else { (240, 256) };
         let toast_on = toast.is_some_and(|(_, since)| since.elapsed() < Duration::from_millis(1500));
-        if let (Some(s), None) = (&session, &open_menu) {
-            // who plays on this computer, and how the other one is doing; a toast takes the place for a moment
-            let name = player_name(s.me);
-            let text = match &other_game {
-                _ if s.peer_paused() => "OTHER PLAYER PAUSED".to_string(),
-                Some(o) if game.game_over => format!("YOU ARE OUT - WATCHING {}", player_name(o.player)),
-                Some(o) => {
-                    let lives = if o.lives_c64 & 0x80 != 0 { 0 } else { o.lives_c64 }; // $FF: the last life is gone
-                    format!("{} {:06} LIVES {} STAGE {}", player_name(o.player), score_value(o.score_bcd), lives, o.stage)
+        // A network game shows no permanent line about the other player: it would cover the last rows of the game when the
+        // border is cut. Only a pause of the other player is said, because it holds this game too, and before the start
+        // who is ready.
+        if let (Some(s), None, false) = (&session, &open_menu, toast_on) {
+            if !s.started() {
+                let (mine, theirs) = if s.i_am_ready() {
+                    ("WAITING FOR THE OTHER PLAYER", None)
+                } else {
+                    ("PRESS JUMP OR FIRE WHEN READY", s.peer_ready().then_some("THE OTHER PLAYER IS READY"))
+                };
+                ui::pill_in(&mut fb, view, info_y, mine, PillTone::Notice);
+                if let Some(t) = theirs {
+                    ui::pill_in(&mut fb, view, hint_y, t, PillTone::Info);
                 }
-                None if s.my_turn(&game) => format!("YOU ARE {name} - YOUR TURN"),
-                None => format!("YOU ARE {name} - WATCHING"),
-            };
-            if !toast_on {
-                ui::pill_in(&mut fb, view, info_y, &text, if s.peer_paused() { PillTone::Notice } else { PillTone::Info });
+            } else if s.peer_paused() {
+                ui::pill_in(&mut fb, view, info_y, "OTHER PLAYER PAUSED", PillTone::Notice);
             }
         }
         if let (Some((text, _)), None, true) = (toast, &open_menu, toast_on) {

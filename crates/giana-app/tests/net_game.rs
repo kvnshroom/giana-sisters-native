@@ -97,6 +97,8 @@ fn made_up(rng: &mut u32, steps: &mut usize) -> ControllerInput {
     i.right = *rng >> 20 & 7 != 0;
     i.jump = *rng >> 16 & 7 == 0;
     i.fire = *rng >> 24 & 15 == 0;
+    // now and then RESTART STAGE of the pause menu: it travels with the input, so the copy must follow it too
+    i.restart_stage = *rng >> 4 & 255 == 0;
     i
 }
 

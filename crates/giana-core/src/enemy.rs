@@ -1392,6 +1392,11 @@ impl GameState {
         if self.god_mode {
             return;
         }
+        self.hit_l1db7();
+    }
+
+    /// The flags of a hit (`$1DBC..$1DD0`), also for RESTART STAGE of the pause menu.
+    pub(crate) fn hit_l1db7(&mut self) {
         self.hazard_hit = 0xFF;
         self.flag_0431 = 0xFF;
         let mut x = 2u8;

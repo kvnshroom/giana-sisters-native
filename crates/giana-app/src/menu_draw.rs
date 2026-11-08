@@ -10,6 +10,7 @@ use crate::result::Winner;
 use crate::scores::{Scores, MAX_ENTRIES, NAME_LEN};
 use crate::settings::{MenuSoundMode, Presentation, Scaling, Widescreen, MAX_VOLUME};
 use crate::ui::{self, Hint, ItemState, Panel, PillTone, Pitch, View};
+use crate::update::View as UpdateView;
 use giana_render::framebuffer::{Framebuffer, WIDTH};
 use giana_render::palette::c64_color;
 use giana_render::text::{draw_text_px, fill_rect_px};
@@ -100,7 +101,7 @@ pub(crate) fn draw_foreground(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) 
     ui::footer_in(fb, view, &hints, note.as_deref());
     // a notice takes the place of the controls strip
     let key = if ctx.input.device == InputDevice::Pad { "X" } else { "U" };
-    let update_line = (menu.page == Page::Root && !menu.paused).then(|| menu.update.line(key)).flatten();
+    let update_line = (menu.page == Page::Root && !menu.paused && menu.update.on_main_menu()).then(|| menu.update.line(key)).flatten();
     if let Some(n) = &notice {
         ui::pill_in(fb, view, view.notice_y(), n, PillTone::Notice);
     } else if let Some(line) = update_line {
@@ -149,6 +150,11 @@ fn root_note(menu: &Menu) -> Option<[String; 2]> {
     let item = menu.root_items().get(menu.cursor).copied();
     let one = |a: &str| [a.to_string(), "".to_string()];
     if menu.paused {
+        match item {
+            Some(RootItem::RestartStage) => return Some(["COSTS A LIFE, THE STAGE".to_string(), "STARTS AGAIN".to_string()]),
+            Some(RootItem::RestartGame) => return Some(["A NEW GAME, THIS ONE".to_string(), "IS NOT KEPT".to_string()]),
+            _ => {}
+        }
         return menu.can_suspend.then(|| match item {
             Some(RootItem::Resume) => ["CLOSING THE PROGRAM".to_string(), "SAVES THE GAME".to_string()],
             Some(RootItem::QuitToTitle) => ["ENDS THE GAME,".to_string(), "NOTHING IS SAVED".to_string()],
@@ -559,7 +565,7 @@ fn draw_video(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         VideoItem::Fullscreen => ["ALSO F11 OR ALT+ENTER", ""],
         VideoItem::Scaling => match s.scaling {
             Scaling::Whole => ["THE WHOLE C64 PICTURE, SHARP", "PIXELS, BLACK BARS AROUND"],
-            Scaling::NoBorder => ["CUTS THE BORDER WHILE PLAYING", "SO THE GAME FILLS MORE"],
+            Scaling::NoBorder => ["CUTS THE EMPTY BORDER, SO THE", "GAME AND MENUS ARE BIGGER"],
             Scaling::Fill => ["FULL HEIGHT, NO BORDER", "EDGES ARE SMOOTHED"],
         },
         VideoItem::Widescreen => match s.widescreen {
@@ -596,7 +602,8 @@ fn draw_general(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         let label = item.label();
         match item {
             GeneralItem::Winner => p.value_row(fb, y, label, s.winner.label(), VALUE_W, st, ctx.nudge),
-            GeneralItem::UpdateCheck => p.value_row(fb, y, label, if s.update_check { "DAILY" } else { "OFF" }, VALUE_W, st, ctx.nudge),
+            GeneralItem::UpdateCheck => p.value_row(fb, y, label, if s.update_check { "ON START" } else { "OFF" }, VALUE_W, st, ctx.nudge),
+            GeneralItem::CheckNow => p.item(fb, y, label, st, ctx.nudge),
             GeneralItem::Presentation => {
                 // greyed out while AUTHENTIC cannot be started (it can always be left)
                 let st = if menu.authentic != AuthenticAvail::Ready && s.presentation == Presentation::Modern && st != ItemState::Selected { ItemState::Disabled } else { st };
@@ -605,6 +612,16 @@ fn draw_general(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
             GeneralItem::Back => p.item(fb, y, label, st, ctx.nudge),
         }
     }
+    let update_note: [String; 2] = match &menu.update {
+        UpdateView::Available(v) => [format!("NEW VERSION {v} IS OUT:"), "PRESS SELECT TO INSTALL IT".into()],
+        UpdateView::Installing => ["INSTALLING...".into(), String::new()],
+        UpdateView::Done => ["INSTALLED - START THE GAME".into(), "AGAIN TO USE IT".into()],
+        UpdateView::Manual => ["OPENED THE PAGE OF THE".into(), "NEW VERSION".into()],
+        UpdateView::Failed(why) => ["UPDATE FAILED:".into(), clip(why, 30)],
+        UpdateView::Checking => ["LOOKING FOR A NEW VERSION...".into(), String::new()],
+        UpdateView::UpToDate => ["YOU HAVE THE NEWEST VERSION".into(), format!("({})", env!("CARGO_PKG_VERSION"))],
+        UpdateView::None => ["ASKS GITHUB NOW IF A NEW".into(), "VERSION IS OUT".into()],
+    };
     let lines: [&str; 2] = match GENERAL_ITEMS[menu.cursor.min(GENERAL_ITEMS.len() - 1)] {
         GeneralItem::Winner => match s.winner {
             Winner::Score => ["TWO PLAYERS: HIGHER SCORE WINS", "(A TIE GOES TO THE STAGE)"],
@@ -618,11 +635,12 @@ fn draw_general(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         },
         GeneralItem::UpdateCheck => {
             if s.update_check {
-                ["ASKS GITHUB ONCE A DAY IF A", "NEW VERSION IS OUT"]
+                ["ASKS GITHUB AT EVERY START IF", "A NEW VERSION IS OUT"]
             } else {
                 ["NEVER ASKS THE INTERNET", ""]
             }
         }
+        GeneralItem::CheckNow => [update_note[0].as_str(), update_note[1].as_str()],
         GeneralItem::Back => ["BACK TO OPTIONS", ""],
     };
     note_lines(&p, fb, GENERAL_ITEMS.len(), Pitch::Roomy, &lines);

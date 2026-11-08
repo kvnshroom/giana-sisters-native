@@ -45,6 +45,7 @@ Download the package for your system from the [Releases](../../releases) page, u
 | System | File | Notes |
 |---|---|---|
 | Linux (x86_64) | `giana-sisters-native-<version>-linux-x86_64.tar.gz` | run `./install.sh` for a menu entry, or just `./giana-app` |
+| Linux (64-bit ARM, e.g. Raspberry Pi 4/5) | `giana-sisters-native-<version>-linux-aarch64.tar.gz` | same as Linux x86_64 |
 | Windows (x86_64) | `giana-sisters-native-<version>-windows-x86_64.zip` | unsigned: in SmartScreen click "More info" → "Run anyway" |
 | macOS (Apple Silicon and Intel) | `giana-sisters-native-<version>-macos-universal.tar.gz` | not notarized: open it once, then System Settings → Privacy & Security → "Open Anyway" (older macOS: right-click → Open) |
 

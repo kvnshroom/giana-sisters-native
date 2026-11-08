@@ -3,7 +3,8 @@
 //! The C64 frame has a border around the 320 x 200 screen. What the game draws never leaves the screen: the status bar is
 //! the first two character rows of the screen, and of the screen the 38-column window shows 304 x 200 pixels. So while a
 //! game is shown, the frame can be cut down to that `PLAY` rectangle without losing anything. Menus and the title picture
-//! use the border too (the version, the controls, the messages of a network game), so they always show the whole frame.
+//! use the border too (the version, the controls, the messages of a network game), but only rows 14 to 263 of it: the
+//! modes that cut the border show them as the `MENU` rectangle, which is 4 x instead of 3 x on a 1920 x 1080 screen.
 
 use crate::settings::Scaling;
 use giana_render::framebuffer::{Framebuffer, HEIGHT, WIDTH};
@@ -29,6 +30,9 @@ impl Rect {
 
 /// The whole frame, border included.
 pub const FRAME: Rect = Rect { x: 0, y: 0, w: WIDTH as u32, h: HEIGHT as u32 };
+/// What menus and the title use of the frame: the full width, and the rows from the module line at the top (y 14) to the
+/// hint line at the bottom (ends at y 264). 256 rows, so it fits 4 x into 1080 and 8 x into 2160 rows.
+pub const MENU: Rect = Rect { x: 0, y: 8, w: WIDTH as u32, h: 256 };
 /// What a game fills: the 38 columns x 25 rows of the screen, everything else of the frame is empty border.
 pub const PLAY: Rect = Rect { x: ORIGIN_X as u32 + 8, y: ORIGIN_Y as u32, w: 304, h: 200 };
 
@@ -66,8 +70,9 @@ impl Layout {
 /// Where the picture goes in a window of `win` pixels. `playing`: a game is shown, so the border may be cut off.
 ///
 /// * `Whole`: the whole frame, a whole number of times.
-/// * `NoBorder`: while playing the `PLAY` part, a whole number of times (5 x on a 1920 x 1080 screen); otherwise as `Whole`.
-/// * `Fill`: while playing the `PLAY` part, otherwise the whole frame, as big as the window allows with its proportions.
+/// * `NoBorder`: while playing the `PLAY` part (5 x on a 1920 x 1080 screen), otherwise the `MENU` part (4 x), a whole
+///   number of times.
+/// * `Fill`: while playing the `PLAY` part, otherwise the `MENU` part, as big as the window allows with its proportions.
 pub fn layout(scaling: Scaling, playing: bool, win: (u32, u32)) -> Layout {
     layout_wide(scaling, playing, win, false)
 }
@@ -80,7 +85,8 @@ pub fn layout_wide(scaling: Scaling, playing: bool, win: (u32, u32), wide: bool)
         (true, true) => WIDE_PLAY,
         (true, false) => PLAY,
         (false, true) => WIDE_FRAME,
-        (false, false) => FRAME,
+        (false, false) if scaling == Scaling::Whole => FRAME,
+        (false, false) => MENU,
     };
     let whole = (win.0 / src.w).min(win.1 / src.h);
     let (w, h) = if scaling != Scaling::Fill && whole >= 1 {
@@ -306,9 +312,16 @@ mod tests {
         assert_eq!((l.dst.w, l.dst.h), (1520, 1000));
         assert_eq!((l.dst.x, l.dst.y), (200, 40));
         assert!(!l.is_fractional());
-        // menus and the title keep their border
+        // menus and the title keep the border they use, 4 x instead of the 3 x of the whole frame
         let m = layout(Scaling::NoBorder, false, (1920, 1080));
-        assert_eq!((m.src, m.dst.w, m.dst.h), (FRAME, 1152, 816));
+        assert_eq!((m.src, m.dst.w, m.dst.h), (MENU, 1536, 1024));
+        assert_eq!((m.dst.x, m.dst.y), (192, 28));
+        assert!(!m.is_fractional());
+        // 4K: 8 x instead of 7 x; 720p stays 2 x
+        assert_eq!(layout(Scaling::NoBorder, false, (3840, 2160)).dst.h, 256 * 8);
+        assert_eq!(layout(Scaling::NoBorder, false, (1280, 720)).dst.h, 256 * 2);
+        // WITH BORDER keeps the whole frame for menus
+        assert_eq!(layout(Scaling::Whole, false, (1920, 1080)).src, FRAME);
     }
 
     #[test]
@@ -323,8 +336,8 @@ mod tests {
         let n = layout(Scaling::Fill, true, (600, 1080));
         assert_eq!((n.dst.w, n.dst.x), (600, 0));
         assert!(n.dst.h < 1080 && n.dst.y > 0);
-        // not playing: the whole frame
-        assert_eq!(layout(Scaling::Fill, false, (1920, 1080)).src, FRAME);
+        // not playing: the part of the frame that menus use
+        assert_eq!(layout(Scaling::Fill, false, (1920, 1080)).src, MENU);
     }
 
     #[test]
@@ -373,6 +386,15 @@ mod tests {
         // FILL at 1920 x 1080: full height, bars only left and right
         let l = layout(Scaling::Fill, true, (1920, 1080));
         assert_eq!((bars(&l, (1920, 1080)).2, bars(&l, (1920, 1080)).3), (0, 0));
+    }
+
+    #[test]
+    fn the_menu_part_keeps_every_row_that_menus_draw_on() {
+        // the module line of the main menu (y 14) and the hint line below the footer (y 256, 8 rows) are inside
+        const { assert!(MENU.y <= 14 && MENU.y + MENU.h >= 256 + 8) };
+        const { assert!(MENU.y + MENU.h <= HEIGHT as u32 && MENU.w == WIDTH as u32) };
+        // centred in the frame, so the picture does not move up or down between menus
+        const { assert!(MENU.y == HEIGHT as u32 - (MENU.y + MENU.h)) };
     }
 
     #[test]

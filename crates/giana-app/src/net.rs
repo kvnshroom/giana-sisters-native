@@ -148,6 +148,8 @@ const MSG_CHECK: u8 = 2;
 const MSG_BYE: u8 = 3;
 /// followed by 1 when the sender's pause menu holds up the game, 0 when it goes on
 const MSG_PAUSE: u8 = 4;
+/// the sender is ready: the game starts once both are
+const MSG_READY: u8 = 5;
 
 /// Why a connection could not be made. `text` is what the player reads.
 #[derive(Debug)]
@@ -205,7 +207,7 @@ impl From<std::io::Error> for NetError {
 }
 
 pub fn input_bits(i: &ControllerInput) -> u8 {
-    i.left as u8 | (i.right as u8) << 1 | (i.down as u8) << 2 | (i.jump as u8) << 3 | (i.fire as u8) << 4 | (i.item as u8) << 5
+    i.left as u8 | (i.right as u8) << 1 | (i.down as u8) << 2 | (i.jump as u8) << 3 | (i.fire as u8) << 4 | (i.item as u8) << 5 | (i.restart_stage as u8) << 6
 }
 
 pub fn input_from_bits(bits: u8) -> ControllerInput {
@@ -216,6 +218,7 @@ pub fn input_from_bits(bits: u8) -> ControllerInput {
     i.jump = bits & 8 != 0;
     i.fire = bits & 16 != 0;
     i.item = bits & 32 != 0;
+    i.restart_stage = bits & 64 != 0;
     i
 }
 
@@ -707,6 +710,9 @@ pub struct Session {
     peer_paused: bool,
     /// `leave` was called (it already closed the connection)
     left_on_purpose: bool,
+    /// this player said they are ready, and the other one did
+    ready_sent: bool,
+    peer_ready: bool,
 }
 
 impl Drop for Session {
@@ -756,6 +762,8 @@ impl Session {
             sent_paused: false,
             peer_paused: false,
             left_on_purpose: false,
+            ready_sent: false,
+            peer_ready: false,
         })
     }
 
@@ -806,6 +814,7 @@ impl Session {
                 MSG_CHECK => 13,
                 MSG_BYE => 1,
                 MSG_PAUSE => 2,
+                MSG_READY => 1,
                 _ => {
                     self.ended = Some("CONNECTION LOST");
                     return;
@@ -834,6 +843,7 @@ impl Session {
                     }
                 }
                 MSG_PAUSE => self.peer_paused = m[1] != 0,
+                MSG_READY => self.peer_ready = true,
                 _ => self.left = true,
             }
         }
@@ -850,6 +860,29 @@ impl Session {
             self.sent_paused = blocking;
             self.send(&[MSG_PAUSE, blocking as u8]);
         }
+    }
+
+    /// Before the game starts: hears from the other computer, and says that this player is ready once `ready` is true.
+    /// The game runs only when both are (`started`); until then nothing is played and no input goes out.
+    pub fn wait_ready(&mut self, ready: bool) {
+        self.receive();
+        if ready && !self.ready_sent && self.ended.is_none() {
+            self.ready_sent = true;
+            self.send(&[MSG_READY]);
+        }
+    }
+
+    /// Both players are ready, the game runs.
+    pub fn started(&self) -> bool {
+        self.ready_sent && self.peer_ready
+    }
+
+    pub fn i_am_ready(&self) -> bool {
+        self.ready_sent
+    }
+
+    pub fn peer_ready(&self) -> bool {
+        self.peer_ready
     }
 
     /// The other player's pause menu holds up the game.
@@ -1073,6 +1106,45 @@ mod tests {
     }
 
     #[test]
+    fn the_game_starts_only_when_both_players_are_ready() {
+        let (mut a, other) = pair();
+        let mut b = Session::start(other, 1, NetMode::TakeTurns).unwrap();
+        // nobody pressed anything: nothing goes out
+        a.wait_ready(false);
+        b.wait_ready(false);
+        assert!(!a.started() && !b.started() && !a.i_am_ready());
+        // A is ready: B hears of it, but neither runs yet
+        a.wait_ready(true);
+        a.wait_ready(true); // said once
+        let t = Instant::now();
+        while !b.peer_ready() && t.elapsed() < Duration::from_secs(2) {
+            b.wait_ready(false);
+        }
+        assert!(b.peer_ready() && !b.started() && !a.started());
+        // B is ready too: both run
+        b.wait_ready(true);
+        assert!(b.started());
+        while !a.peer_ready() && t.elapsed() < Duration::from_secs(2) {
+            a.wait_ready(true);
+        }
+        assert!(a.started());
+        assert!(a.ended.is_none() && b.ended.is_none() && a.inputs.is_empty() && b.inputs.is_empty());
+    }
+
+    #[test]
+    fn leaving_before_the_start_ends_the_wait() {
+        let (mut a, other) = pair();
+        let mut b = Session::start(other, 1, NetMode::TakeTurns).unwrap();
+        b.leave();
+        let t = Instant::now();
+        while a.ended.is_none() && t.elapsed() < Duration::from_secs(2) {
+            a.wait_ready(false);
+        }
+        assert_eq!(a.ended, Some("THE OTHER PLAYER LEFT"));
+        assert!(!a.started());
+    }
+
+    #[test]
     fn the_pause_message_reaches_the_other_side_and_changes_nothing_else() {
         let (mut s, other) = pair();
         s.sync_pause(true);
@@ -1156,7 +1228,7 @@ mod tests {
 
     #[test]
     fn input_survives_the_byte() {
-        for bits in 0..32u8 {
+        for bits in 0..128u8 {
             assert_eq!(input_bits(&input_from_bits(bits)), bits);
         }
     }

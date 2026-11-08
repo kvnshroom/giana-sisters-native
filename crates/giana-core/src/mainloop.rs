@@ -376,6 +376,19 @@ impl GameState {
         }
     }
 
+    /// RESTART STAGE can be used: a stage is played, and Giana could be hit right now (not dying, not starting again, not
+    /// leaving the stage or warping, no hit waiting).
+    pub fn can_restart_stage(&self) -> bool {
+        self.screen == crate::state::GameScreen::InGame
+            && !self.game_over
+            && self.main == MainLine::Loop
+            && self.hazard_hit == 0
+            && self.st_0457 == 0
+            && self.st_0464 == 0
+            && self.st_046d == 0
+            && self.st_2169 == 0
+    }
+
     /// $0C11..$0C1A and the start of sub_2041 ($2041..$2054)
     fn start_death_sub_2041(&mut self) {
         // $0C11: LDA $0465; STA $157F

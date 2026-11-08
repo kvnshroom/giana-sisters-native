@@ -376,7 +376,7 @@ pub struct Settings {
     pub winner: Winner,
     /// fullscreen at 50 Hz (or 100, 150, 200) when the display offers it (`DISPLAY 50 HZ: AUTO`), otherwise the desktop mode stays
     pub display_50: bool,
-    /// look for a new version once a day (`CHECK FOR UPDATES: AUTO / OFF`)
+    /// look for a new version at every start (`UPDATE CHECK: ON START / OFF`)
     pub update_check: bool,
     /// seconds since 1970 of the last check, 0 for never
     pub last_update_check: u64,
@@ -400,7 +400,7 @@ impl Default for Settings {
             fullscreen: false,
             volume: MAX_VOLUME,
             muted: false,
-            scaling: Scaling::Whole,
+            scaling: Scaling::NoBorder,
             widescreen: Widescreen::Off,
             crt: false,
             music_volume: MAX_VOLUME,
@@ -557,7 +557,7 @@ impl Settings {
                 "smooth_motion" => s.enhancements.smooth_motion = value.parse().unwrap_or(s.enhancements.smooth_motion),
                 "presentation" => s.presentation = Presentation::from_name(value).unwrap_or(s.presentation),
                 "menu_sounds" => s.menu_sounds = MenuSoundMode::from_name(value).unwrap_or(s.menu_sounds),
-                "update_check" => s.update_check = value != "off",
+                "update_check" => s.update_check = !matches!(value, "off" | "false" | "no" | "0"),
                 "last_update_check" => s.last_update_check = value.parse().unwrap_or(0),
                 "update_seen" => s.update_seen = value.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')).take(32).collect(),
                 "module" => s.module = value.chars().filter(|c| c.is_ascii_hexdigit()).take(16).collect(),
@@ -691,6 +691,15 @@ mod tests {
         s.note_played("0123456789abcdef", 99);
         s.note_played("", 100);
         assert_eq!(s.last_played.len(), 1);
+    }
+
+    #[test]
+    fn the_update_check_is_off_for_every_usual_way_to_say_no() {
+        for no in ["off", "false", "no", "0"] {
+            assert!(!Settings::from_text(&format!("update_check = {no}\n")).update_check, "{no}");
+        }
+        assert!(Settings::from_text("update_check = auto\n").update_check);
+        assert!(Settings::default().update_check);
     }
 
     #[test]

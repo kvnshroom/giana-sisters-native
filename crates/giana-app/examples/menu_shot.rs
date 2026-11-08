@@ -364,9 +364,8 @@ fn main() {
     // the messages over the running game: lanes in the border, and in the cut picture
     for (tag, y1, y2) in [("border", 240, 256), ("cropped", 224, 208)] {
         s.fb.pixels.copy_from_slice(&s.game.pixels);
-        ui::pill(&mut s.fb, y1, "YOU ARE GIANA - YOUR TURN", PillTone::Info);
         ui::pill(&mut s.fb, y2, "PRESS JUMP OR FIRE", PillTone::Info);
-        save(&s.fb, format!("{}/toast_status_{tag}.ppm", s.dir));
+        save(&s.fb, format!("{}/toast_confirm_{tag}.ppm", s.dir));
         s.fb.pixels.copy_from_slice(&s.game.pixels);
         ui::pill(&mut s.fb, y1, "SOUND OFF", PillTone::Info);
         save(&s.fb, format!("{}/toast_sound_{tag}.ppm", s.dir));

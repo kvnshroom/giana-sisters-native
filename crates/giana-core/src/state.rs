@@ -42,6 +42,10 @@ pub struct ControllerInput {
     /// The space key of the original: fires the clock or the bomb that was collected.
     pub item: bool,
     pub start: bool,
+    /// RESTART STAGE of the pause menu (not in the original): Giana is hit as by an enemy, so the stage starts again the
+    /// way the original does it after a lost life, and it costs that life. Only counts while she can be hit
+    /// (`GameState::can_restart_stage`).
+    pub restart_stage: bool,
 
     // Debug / Mod keys
     pub next_stage: bool,
@@ -61,6 +65,7 @@ impl ControllerInput {
             fire: false,
             item: false,
             start: false,
+            restart_stage: false,
             next_stage: false,
             prev_stage: false,
             toggle_invulnerable: false,
@@ -1988,6 +1993,9 @@ impl GameState {
         }
 
         self.vic_capture_draw_frame();
+        if input.restart_stage && self.can_restart_stage() {
+            self.hit_l1db7();
+        }
         // The main line runs in the gap between the handlers $1326 and $1393 (it reacts to flags that $12A3 set, e.g.
         // the timer) and after $1393 until the oracle samples at raster line 50 (it reacts to flags that $1393 set and
         // continues waits that the sprite copy released).

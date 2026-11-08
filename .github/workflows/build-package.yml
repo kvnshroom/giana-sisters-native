@@ -34,7 +34,7 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install build libraries (Linux; SDL2 itself is built in, it loads these at run time)
-        if: inputs.kind == 'linux'
+        if: startsWith(inputs.kind, 'linux')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake pkg-config \
@@ -42,7 +42,7 @@ jobs:
             libxxf86vm-dev libxkbcommon-dev libwayland-dev wayland-protocols libpulse-dev libpipewire-0.3-dev \
             libasound2-dev libdrm-dev libgbm-dev libegl1-mesa-dev libgl1-mesa-dev libudev-dev libdbus-1-dev libibus-1.0-dev
       - name: Build (Linux, SDL2 built in)
-        if: inputs.kind == 'linux'
+        if: startsWith(inputs.kind, 'linux')
         run: |
           cargo build --release --locked -p giana-app --features bundled-sdl
           echo "highest GLIBC symbol version: $(objdump -T target/release/giana-app | grep -o 'GLIBC_[0-9.]*' | sort -V -u | tail -1)"
@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           case "${{ inputs.kind }}" in
-            linux) p=target/release/giana-app ;;
+            linux|linux-aarch64) p=target/release/giana-app ;;
             windows) p=target/release/giana-app.exe ;;
             macos) p=target/universal/giana-app ;;
           esac

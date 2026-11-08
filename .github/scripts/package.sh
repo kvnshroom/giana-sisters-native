@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Builds one release archive. Used by .github/workflows/release.yml and runnable locally.
-#   package.sh <linux|windows|macos> <version> <binary> <outdir>
+#   package.sh <linux|linux-aarch64|windows|macos> <version> <binary> <outdir>
 # Output (names are matched by the in-game update checker, do not change them):
 #   giana-sisters-native-<version>-linux-x86_64.tar.gz
+#   giana-sisters-native-<version>-linux-aarch64.tar.gz   (64-bit ARM, e.g. Raspberry Pi 4/5)
 #   giana-sisters-native-<version>-windows-x86_64.zip
 #   giana-sisters-native-<version>-macos-universal.tar.gz
 set -euo pipefail
@@ -18,14 +19,16 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 
 case "$os" in
-  linux)
-    d="$stage/$base-linux-x86_64"
+  linux|linux-aarch64)
+    arch=x86_64
+    [ "$os" = linux-aarch64 ] && arch=aarch64
+    d="$stage/$base-linux-$arch"
     mkdir "$d"
     install -m 755 "$bin" "$d/giana-app"
     cp "$root/assets/icon/icon-128.png" "$d/giana-sisters.png"
     install -m 755 "$root/tools/install/install.sh" "$root/tools/install/uninstall.sh" "$d/"
-    cat >"$d/INSTALL.txt" <<'TXT'
-The Great Giana Sisters - native port (Linux x86_64)
+    cat >"$d/INSTALL.txt" <<TXT
+The Great Giana Sisters - native port (Linux $arch)
 
 Nothing else to install (SDL2 is built in). In this folder run:
 

@@ -246,7 +246,7 @@ pub enum OptionChange {
     SmoothMotion,
     /// `STYLE: MODERN / AUTHENTIC`
     Presentation,
-    /// `UPDATE CHECK: DAILY / OFF`
+    /// `UPDATE CHECK: ON START / OFF`
     UpdateCheck,
 }
 
@@ -306,10 +306,13 @@ pub(crate) enum GeneralItem {
     Winner,
     Presentation,
     UpdateCheck,
+    /// `CHECK FOR UPDATES`: ask now; when a new version was found, install it
+    CheckNow,
     Back,
 }
 
-pub(crate) const GENERAL_ITEMS: [GeneralItem; 4] = [GeneralItem::Winner, GeneralItem::Presentation, GeneralItem::UpdateCheck, GeneralItem::Back];
+pub(crate) const GENERAL_ITEMS: [GeneralItem; 5] =
+    [GeneralItem::Winner, GeneralItem::Presentation, GeneralItem::UpdateCheck, GeneralItem::CheckNow, GeneralItem::Back];
 
 impl GeneralItem {
     pub(crate) fn label(self) -> &'static str {
@@ -317,6 +320,7 @@ impl GeneralItem {
             GeneralItem::Winner => "WINNER RULE",
             GeneralItem::Presentation => "STYLE",
             GeneralItem::UpdateCheck => "UPDATE CHECK",
+            GeneralItem::CheckNow => "CHECK FOR UPDATES",
             GeneralItem::Back => "BACK",
         }
     }
@@ -363,6 +367,10 @@ pub(crate) enum RootItem {
     Continue(u8),
     Start(GameMode),
     Resume,
+    /// pause menu: Giana loses a life and the stage starts again (`ControllerInput::restart_stage`)
+    RestartStage,
+    /// pause menu: a new game of the same kind, the one that runs is not kept (not in a network game)
+    RestartGame,
     Network,
     HighScores,
     Modules,
@@ -380,6 +388,8 @@ impl RootItem {
             RootItem::Start(GameMode::OnePlayer) => "1 PLAYER",
             RootItem::Start(GameMode::TwoPlayers) => "2 PLAYERS",
             RootItem::Resume => "RESUME",
+            RootItem::RestartStage => "RESTART STAGE",
+            RootItem::RestartGame => "RESTART GAME",
             RootItem::Network => "NETWORK",
             RootItem::HighScores => "HIGH SCORES",
             RootItem::Modules => "ROM MODULES",
@@ -415,10 +425,14 @@ pub enum Outcome {
     /// `CONTINUE 1 PLAYER` / `CONTINUE 2 PLAYERS`: take the suspended game of that many players
     Continue(u8),
     Resume,
+    RestartStage,
+    RestartGame,
     QuitToTitle,
     QuitApp,
     /// a binding changed: save it
     Changed,
+    /// CHECK FOR UPDATES
+    CheckUpdate,
     Host(NetMode),
     /// start looking for games
     Search,
@@ -486,6 +500,10 @@ pub struct Menu {
     pub host_findable: bool,
     /// the game that is paused is played with another computer (the question says that the other player is told)
     pub in_network: bool,
+    /// pause menu: RESTART STAGE can be used now (the stage runs, and in a network game it is this player's game)
+    pub can_restart_stage: bool,
+    /// pause menu: RESTART GAME is offered (a local game of the ported game, not a network game)
+    pub can_restart_game: bool,
     /// the result page: who won, and the steps left before a key closes it
     pub result: Option<MatchResult>,
     pub result_hold: u32,
@@ -530,6 +548,8 @@ impl Menu {
             host_port: crate::net::PORT,
             host_findable: true,
             in_network: false,
+            can_restart_stage: false,
+            can_restart_game: false,
             result: None,
             result_hold: 0,
             update: crate::update::View::None,
@@ -550,7 +570,15 @@ impl Menu {
     /// The lines of the root page. The main menu starts with a CONTINUE line for every suspended game.
     pub(crate) fn root_items(&self) -> Vec<RootItem> {
         if self.paused {
-            PAUSE_ITEMS.to_vec()
+            let mut items = vec![RootItem::Resume];
+            if self.can_restart_stage {
+                items.push(RootItem::RestartStage);
+            }
+            if self.can_restart_game && !self.in_network {
+                items.push(RootItem::RestartGame);
+            }
+            items.extend(PAUSE_ITEMS.iter().copied().filter(|&i| i != RootItem::Resume));
+            items
         } else {
             self.suspended.iter().map(|i| RootItem::Continue(i.players)).chain(MAIN_ITEMS).collect()
         }
@@ -1004,6 +1032,8 @@ impl Menu {
                 RootItem::Continue(n) => return Outcome::Continue(n),
                 RootItem::Start(mode) => return Outcome::StartGame(mode),
                 RootItem::Resume => return Outcome::Resume,
+                RootItem::RestartStage => return Outcome::RestartStage,
+                RootItem::RestartGame => return Outcome::RestartGame,
                 RootItem::Network => {
                     self.page = Page::Network;
                     self.cursor = 0;
@@ -1090,6 +1120,11 @@ impl Menu {
             (Nav::Down, _) => self.cursor = (self.cursor + 1) % n,
             (Nav::Back, _) | (Nav::Confirm, GeneralItem::Back) => self.close_options_page(OptionItem::General),
             (Nav::Left | Nav::Right | Nav::Confirm, GeneralItem::UpdateCheck) => return Outcome::Option(OptionChange::UpdateCheck),
+            (Nav::Confirm, GeneralItem::CheckNow) => match self.update {
+                crate::update::View::Available(_) => return Outcome::Update,
+                crate::update::View::Checking | crate::update::View::Installing | crate::update::View::Done => {}
+                _ => return Outcome::CheckUpdate,
+            },
             (Nav::Left | Nav::Right | Nav::Confirm, GeneralItem::Winner) => return Outcome::Option(OptionChange::Winner),
             // the way out of AUTHENTIC is always open; the way in needs the data
             (Nav::Left | Nav::Right | Nav::Confirm, GeneralItem::Presentation) => match self.authentic {
@@ -1270,6 +1305,28 @@ mod tests {
         assert_eq!(Menu::main().step(Nav::Confirm, &mut b), Outcome::StartGame(GameMode::OnePlayer));
         assert_eq!(nav(&mut Menu::main(), &mut b, &[Nav::Down, Nav::Confirm]), Outcome::StartGame(GameMode::TwoPlayers));
         assert_eq!(nav(&mut Menu::main(), &mut b, &[Nav::Up, Nav::Confirm]), Outcome::QuitApp);
+    }
+
+    #[test]
+    fn restart_lines_come_only_when_they_can_be_used() {
+        let mut b = Bindings::default();
+        let mut m = Menu::pause();
+        assert!(!m.root_items().contains(&RootItem::RestartStage) && !m.root_items().contains(&RootItem::RestartGame));
+        m.can_restart_stage = true;
+        m.can_restart_game = true;
+        assert_eq!(&m.root_items()[..3], &[RootItem::Resume, RootItem::RestartStage, RootItem::RestartGame]);
+        m.cursor = 1;
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::RestartStage);
+        m.cursor = 2;
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::RestartGame);
+        // a network game: only the stage
+        m.in_network = true;
+        assert!(m.root_items().contains(&RootItem::RestartStage) && !m.root_items().contains(&RootItem::RestartGame));
+        // the main menu never has them
+        let mut main = Menu::main();
+        main.can_restart_stage = true;
+        main.can_restart_game = true;
+        assert!(!main.root_items().contains(&RootItem::RestartStage) && !main.root_items().contains(&RootItem::RestartGame));
     }
 
     #[test]
@@ -1541,6 +1598,13 @@ mod tests {
         assert_eq!((m.page, m.cursor), (Page::General, 0));
         assert_eq!(m.step(Nav::Right, &mut b), Outcome::Option(OptionChange::Winner));
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Right]), Outcome::Option(OptionChange::UpdateCheck));
+        // CHECK FOR UPDATES asks now; with an offer it installs; while it asks, nothing
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::CheckUpdate);
+        m.update = crate::update::View::Checking;
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::None);
+        m.update = crate::update::View::Available("9.9.9".into());
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::Update);
+        m.update = crate::update::View::None;
         nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]);
         assert_eq!((m.page, OPTION_ITEMS[m.cursor]), (Page::Options, OptionItem::General), "the BACK line returns too");
         nav(&mut m, &mut b, &[Nav::Back]);

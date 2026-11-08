@@ -18,8 +18,6 @@ pub const RELEASES_URL: &str = "https://github.com/kvnshroom/giana-sisters-nativ
 /// Downloads are only accepted from the releases of this repository.
 const DOWNLOAD_PREFIX: &str = "https://github.com/kvnshroom/giana-sisters-native/releases/download/";
 pub const SUMS_NAME: &str = "SHA256SUMS.txt";
-/// at most one automatic check per day
-pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 const MAX_DOWNLOAD: u64 = 256 * 1024 * 1024;
 const MAX_EXE: u64 = 512 * 1024 * 1024;
 
@@ -129,6 +127,7 @@ pub fn parse_release(json: &str) -> Option<Release> {
 pub fn asset_name(version: &str, os: &str, arch: &str) -> Option<String> {
     let suffix = match (os, arch) {
         ("linux", "x86_64") => "linux-x86_64.tar.gz",
+        ("linux", "aarch64") => "linux-aarch64.tar.gz",
         ("windows", "x86_64") => "windows-x86_64.zip",
         ("macos", "aarch64" | "x86_64") => "macos-universal.tar.gz",
         _ => return None,
@@ -398,15 +397,10 @@ pub fn open_page(url: &str) {
     let _ = cmd.arg(url).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
 }
 
-// ---------- the check, once a day ----------
+// ---------- the check: at every start, or asked for ----------
 
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
-/// A check is due when none was made for a day (a clock that went back counts as due).
-pub fn check_due(last: u64, now: u64) -> bool {
-    last == 0 || now < last || now - last >= CHECK_INTERVAL_SECS
 }
 
 /// What the main menu shows.
@@ -414,6 +408,10 @@ pub fn check_due(last: u64, now: u64) -> bool {
 pub enum View {
     #[default]
     None,
+    /// CHECK FOR UPDATES asks GitHub right now
+    Checking,
+    /// CHECK FOR UPDATES found nothing newer
+    UpToDate,
     /// this version can be installed
     Available(String),
     Installing,
@@ -428,12 +426,19 @@ impl View {
     pub fn line(&self, key: &str) -> Option<String> {
         Some(match self {
             View::None => return None,
+            View::Checking => "LOOKING FOR A NEW VERSION...".to_string(),
+            View::UpToDate => "YOU HAVE THE NEWEST VERSION".to_string(),
             View::Available(v) => format!("NEW VERSION {v} - PRESS {key} TO UPDATE"),
             View::Installing => "UPDATING...".to_string(),
             View::Done => "UPDATED - RESTART THE GAME".to_string(),
             View::Manual => "OPENED THE PAGE OF THE NEW VERSION".to_string(),
             View::Failed(why) => format!("UPDATE FAILED - {why}"),
         })
+    }
+
+    /// The main menu shows the offer and what became of it, not the answer of CHECK FOR UPDATES that found nothing.
+    pub fn on_main_menu(&self) -> bool {
+        !matches!(self, View::None | View::Checking | View::UpToDate)
     }
 }
 
@@ -446,6 +451,8 @@ enum Work {
 pub struct Updater {
     pub view: View,
     work: Option<Work>,
+    /// the running check was asked for (CHECK FOR UPDATES): its answer is shown, also when it is "nothing new" or "offline"
+    manual: bool,
 }
 
 /// What a finished check changes in the settings.
@@ -455,13 +462,28 @@ pub struct SettingsChange {
 }
 
 impl Updater {
-    /// Starts a check in the background when `enabled` and one is due; shows a version that an earlier check found.
-    pub fn start(enabled: bool, last_check: u64, seen: &str) -> Updater {
+    /// Starts a check in the background when `enabled` (at every start of the program); shows a version that an earlier
+    /// check found until this one answers.
+    pub fn start(enabled: bool, seen: &str) -> Updater {
         let mut view = View::None;
         if enabled && is_newer(seen, env!("CARGO_PKG_VERSION")) {
             view = View::Available(plain_version(seen));
         }
-        let work = (enabled && check_due(last_check, now_secs())).then(|| {
+        Updater { view, work: enabled.then(Updater::spawn_check), manual: false }
+    }
+
+    /// CHECK FOR UPDATES: ask GitHub now, also when the automatic check is off, and say what came out.
+    pub fn check_now(&mut self) {
+        if self.work.is_some() {
+            return;
+        }
+        self.view = View::Checking;
+        self.manual = true;
+        self.work = Some(Updater::spawn_check());
+    }
+
+    fn spawn_check() -> Work {
+        {
             let (tx, rx) = channel();
             std::thread::spawn(move || {
                 // (the release if it is newer, a check was really made)
@@ -475,8 +497,7 @@ impl Updater {
                 let _ = tx.send(answer);
             });
             Work::Check(rx)
-        });
-        Updater { view, work }
+        }
     }
 
     /// Look at the background work. Returns what to store in the settings, if a check finished.
@@ -485,11 +506,14 @@ impl Updater {
             Work::Check(rx) => match rx.try_recv() {
                 Ok((release, checked)) => {
                     self.work = None;
+                    let manual = std::mem::take(&mut self.manual);
                     let seen = release.as_ref().map(|r| r.version.clone());
                     if let Some(r) = release.filter(|r| is_newer(&r.version, env!("CARGO_PKG_VERSION")) && r.has_package()) {
                         if !matches!(self.view, View::Installing | View::Done | View::Manual) {
                             self.view = View::Available(r.version);
                         }
+                    } else if manual {
+                        self.view = if checked { View::UpToDate } else { View::Failed("NO CONNECTION".into()) };
                     } else if matches!(self.view, View::Available(_)) {
                         self.view = View::None;
                     }
@@ -498,6 +522,9 @@ impl Updater {
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => {
                     self.work = None;
+                    if std::mem::take(&mut self.manual) {
+                        self.view = View::Failed("NO CONNECTION".into());
+                    }
                     None
                 }
             },
@@ -636,7 +663,8 @@ mod tests {
         assert_eq!(asset_name("0.2.0", "windows", "x86_64").unwrap(), "giana-sisters-native-0.2.0-windows-x86_64.zip");
         assert_eq!(asset_name("0.2.0", "macos", "aarch64").unwrap(), "giana-sisters-native-0.2.0-macos-universal.tar.gz");
         assert_eq!(asset_name("0.2.0", "macos", "x86_64"), asset_name("0.2.0", "macos", "aarch64"));
-        assert_eq!(asset_name("0.2.0", "linux", "aarch64"), None);
+        assert_eq!(asset_name("0.2.0", "linux", "aarch64").unwrap(), "giana-sisters-native-0.2.0-linux-aarch64.tar.gz");
+        assert_eq!(asset_name("0.2.0", "linux", "arm"), None);
         assert_eq!(asset_name("0.2.0", "freebsd", "x86_64"), None);
         assert_eq!((exe_name("windows"), exe_name("linux"), exe_name("macos")), ("giana-app.exe", "giana-app", "giana-app"));
     }
@@ -664,7 +692,7 @@ mod tests {
         assert!(r.has_package_for("linux", "x86_64"));
         assert!(!r.has_package_for("windows", "x86_64"));
         assert!(!r.has_package_for("macos", "aarch64"));
-        assert!(!r.has_package_for("linux", "aarch64"), "no package for that system at all");
+        assert!(!r.has_package_for("linux", "aarch64"), "no package for that system in this release");
         // without the checksum file nothing can be installed
         let no_sums = parse_release(&SAMPLE.replace("\"name\": \"SHA256SUMS.txt\"", "\"name\": \"other.txt\"")).unwrap();
         assert!(!no_sums.has_package_for("linux", "x86_64"));
@@ -683,11 +711,31 @@ mod tests {
     }
 
     #[test]
-    fn the_check_runs_once_a_day() {
-        assert!(check_due(0, 1000));
-        assert!(!check_due(1000, 1000 + CHECK_INTERVAL_SECS - 1));
-        assert!(check_due(1000, 1000 + CHECK_INTERVAL_SECS));
-        assert!(check_due(5000, 100), "a clock that went back");
+    fn the_main_menu_shows_offers_but_not_the_answer_of_a_manual_check() {
+        assert!(View::Available("0.6.0".into()).on_main_menu());
+        assert!(View::Done.on_main_menu() && View::Failed("X".into()).on_main_menu());
+        assert!(!View::None.on_main_menu() && !View::Checking.on_main_menu() && !View::UpToDate.on_main_menu());
+    }
+
+    #[test]
+    fn a_manual_check_is_answered_also_when_nothing_is_new_or_offline() {
+        let (tx, rx) = channel();
+        let mut u = Updater { view: View::Checking, work: Some(Work::Check(rx)), manual: true };
+        tx.send((None, true)).unwrap();
+        u.poll();
+        assert_eq!(u.view, View::UpToDate);
+        let (tx, rx) = channel();
+        u.work = Some(Work::Check(rx));
+        u.manual = true;
+        tx.send((None, false)).unwrap();
+        u.poll();
+        assert_eq!(u.view, View::Failed("NO CONNECTION".into()));
+        // the automatic check stays silent
+        let (tx, rx) = channel();
+        let mut quiet = Updater { view: View::None, work: Some(Work::Check(rx)), manual: false };
+        tx.send((None, false)).unwrap();
+        quiet.poll();
+        assert_eq!(quiet.view, View::None);
     }
 
     #[test]
