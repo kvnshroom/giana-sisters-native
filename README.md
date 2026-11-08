@@ -7,6 +7,11 @@ A native PC version of the 1987 C64 classic *The Great Giana Sisters*, written i
 This is **not an emulator**: the game was ported routine by routine and plays like the C64 version – same jumps, same
 enemies, same music – but runs as a normal program with a menu, controller support, fullscreen and network play.
 
+The one part that is emulated is the sound chip. Chris Hülsbeck's music and sound effect driver is ported like the rest
+of the game, so it decides which note plays when and writes the same SID registers as on the C64. Those registers then
+go to [resid-rs](https://crates.io/crates/resid-rs), the reSID chip model that VICE uses as well, because the C64's
+sound comes from an analog chip (oscillators, envelopes, filter) that can be modelled but not ported.
+
 <p align="center">
   <img src="screenshots/menu.png" width="32%" alt="The main menu">
   <img src="screenshots/stage1.png" width="32%" alt="Giana jumping in stage 1 with enemies around">
