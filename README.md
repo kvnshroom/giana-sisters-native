@@ -39,9 +39,11 @@ two players at the same time over the network, and a "who got further wins" rule
 - Menus, pause menu, rebindable keyboard and controller, fullscreen, sharp or CRT picture, optional widescreen.
 - High scores with names, and close the game any time: *CONTINUE* brings it back where you were.
 - Two players: take turns on one computer, or play at the same time over the network.
-- **ROM modules:** fan-made versions of the game (other levels, graphics, music, own engines) as `.grom` files.
-- **30th Anniversary preview** (demo 2.0, from your own `.d64`, local only): the whole demo natively, from the intro
-  to the ending, with its pause menu, stage select, treasure rooms and high scores.
+- **ROM hacks:** fan-made versions of the game (other levels, graphics, music, own engines). Download a hack's disk
+  image (`.d64` or `.g64`, e.g. from CSDb) and add it under *ROM MODULES*, *ADD ROM MODULE...* (or drop it on the game
+  window). That's all: the game turns it into a module itself.
+- **30th Anniversary preview** (demo 2.0): added the same way from its `.d64`, and played natively from the intro to
+  the ending, with its pause menu, stage select, treasure rooms and high scores. It stays on your computer.
 - **Authentic mode:** exactly what the C64 showed, including the original title and high score screens.
 
 ## What you need

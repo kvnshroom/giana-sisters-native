@@ -200,7 +200,7 @@ make_dir "$bin_dir"
 ln -sf "$opt_dir/giana-app" "$bin_dir/$APP"
 printf 'link %s\n' "$bin_dir/$APP" >>"$new_entries"
 
-# file types, so the .g64 / .grom "Open with" works
+# file types, so the .g64 / .d64 / .grom "Open with" works (a .d64 is a hack's disk or the 30th Anniversary preview)
 mime_xml=$(mktemp)
 cat >"$mime_xml" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -209,6 +209,11 @@ cat >"$mime_xml" <<'EOF'
     <comment>C64 disk image (G64)</comment>
     <glob pattern="*.g64"/>
     <glob pattern="*.G64"/>
+  </mime-type>
+  <mime-type type="application/x-d64-disk-image">
+    <comment>C64 disk image (D64)</comment>
+    <glob pattern="*.d64"/>
+    <glob pattern="*.D64"/>
   </mime-type>
   <mime-type type="application/x-giana-module">
     <comment>Giana Sisters ROM module</comment>
@@ -230,7 +235,7 @@ Exec="$bin_dir/$APP" %f
 Icon=$APP
 Terminal=false
 Categories=Game;ArcadeGame;
-MimeType=application/x-g64-disk-image;application/x-giana-module;
+MimeType=application/x-g64-disk-image;application/x-d64-disk-image;application/x-giana-module;
 StartupWMClass=giana-app
 EOF
 put_file "$desktop" "$apps_dir/$APP.desktop" 644
