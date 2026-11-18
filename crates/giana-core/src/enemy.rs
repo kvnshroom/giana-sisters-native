@@ -357,7 +357,12 @@ impl GameState {
     pub fn draw_lives_sub_0e1f(&mut self) {
         let x = self.lives_c64 as usize;
         let v = self.bcd_table(x);
-        self.stage_text_157b = v;
+        // in a header cut by the sample (`store_budget` used up) the store waits with the cells for `header_rest`
+        if self.store_budget == Some(0) {
+            self.lives_deferred = Some(v);
+        } else {
+            self.stage_text_157b = v;
+        }
         self.print_bcd_sub_98d9(&[v], 0, 0x3D);
     }
 
@@ -1239,7 +1244,12 @@ impl GameState {
                 let mut hi = self.v47(0x48B).wrapping_sub(ehi).wrapping_sub(b as u8);
                 // carry clear (borrow) -> negate
                 let borrow = (self.v47(0x48B) as i16 - ehi as i16 - b as i16) < 0;
-                if borrow {
+                // WIDESCREEN ON: the distance of signed X (Giana or her fireball and an enemy on both sides of X = 0)
+                if self.wide_on() {
+                    let p = crate::wide::signed_x9((self.v47(0x48B) as i32 & 1) << 8 | self.v47(0x48A) as i32);
+                    let d = (p - crate::wide::signed_x9((ehi as i32) << 8 | ex as i32)).unsigned_abs();
+                    (lo, hi) = ((d & 0xFF) as u8, (d >> 8) as u8);
+                } else if borrow {
                     lo = !lo;
                     hi = !hi;
                     lo = lo.wrapping_add(1);
@@ -1604,12 +1614,18 @@ impl GameState {
         self.set_d32(0x3258, speed);
         self.set_v47(0x483, dir);
         if self.stage == 0x21 {
-            // L2EBC: face Giana
+            // L2EBC: face Giana. The operands and the low byte of the difference stay in `$324B..$324F` (scratch shared with
+            // the fireball routines, compared by the oracle)
             let bx = self.player_x_low;
             let bm = self.sprite_x_msb & 1;
             let ex = self.en.spr_xy[0x0602 - 0x05FA];
+            // $2ED0: LDA $0604; ROL A; ROL A; AND #$01 = bit 7 (sprite 7)
             let em = (self.sprite_x_msb >> 7) & 1;
-            let (_, borrow1) = bx.overflowing_sub(ex);
+            let (lo, borrow1) = bx.overflowing_sub(ex);
+            self.set_d32(0x324B, bx);
+            self.set_d32(0x324C, bm);
+            self.set_d32(0x324E, lo); // $2EE1: STA $324E (the difference replaces $0602)
+            self.set_d32(0x324F, em);
             let diff_hi = (bm as i16) - (em as i16) - borrow1 as i16;
             dir = if diff_hi < 0 { 1 } else { 0 };
             self.set_v47(0x483, dir);
@@ -1674,7 +1690,11 @@ impl GameState {
                 let (lo, b) = self.player_x_low.overflowing_sub(ex);
                 let ehi = if self.sprite_x_msb & bit != 0 { 1u8 } else { 0 };
                 let phi = self.sprite_x_msb & 1;
-                let borrow = (phi as i16 - ehi as i16 - b as i16) < 0;
+                let mut borrow = (phi as i16 - ehi as i16 - b as i16) < 0;
+                // WIDESCREEN ON: in front or behind by signed X
+                if self.wide_on() {
+                    borrow = ((phi as i32) << 8 | self.player_x_low as i32) < crate::wide::signed_x9((ehi as i32) << 8 | ex as i32);
+                }
                 self.set_v47(0x48A, lo);
                 self.set_v47(0x48B, phi.wrapping_sub(ehi).wrapping_sub(b as u8));
                 self.set_v47(0x48C, ex);
@@ -1796,10 +1816,8 @@ impl GameState {
         let ex = self.spr(t * 2);
         let ehi = if self.sprite_x_msb & self.d32(0x3224 + t) != 0 { 1u8 } else { 0 };
         let ey = self.spr(t * 2 + 1).wrapping_sub(0x0A);
-        // $324B:$324C = fireball X - enemy X
-        let (mut dx, b) = fx.overflowing_sub(ex);
-        let mut dxh = fhi.wrapping_sub(ehi).wrapping_sub(b as u8);
-        let neg = (fhi as i16 - ehi as i16 - b as i16) < 0;
+        // $324B:$324C = fireball X - enemy X (WIDESCREEN ON: signed, an enemy may be left of X = 0)
+        let (mut dx, mut dxh, neg) = self.x9_sub((fx, fhi), (ex, ehi));
         
         let dirx = if neg {
             dx = !dx;
@@ -1896,9 +1914,11 @@ impl GameState {
                 rows.push(None);
             }
         }
+        // WIDESCREEN ON: sprites live left of X = 0 too (the extra area), where the chip's X has wrapped to the far right
+        let signed = self.wide_on();
         let pos = |s: usize| -> (i32, i32) {
             let x = f.xy[2 * s] as i32 | if f.xy[16] & (1 << s) != 0 { 0x100 } else { 0 };
-            (x, f.xy[2 * s + 1] as i32)
+            (if signed { crate::wide::signed_x9(x) } else { x }, f.xy[2 * s + 1] as i32)
         };
         let mut latch = 0u8;
         for a in 0..8 {

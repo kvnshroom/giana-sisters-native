@@ -124,10 +124,15 @@ impl GameState {
                 }
             }
             MainLine::DeathArc(arc)
-                if arc.phase == ArcPhase::Wait(0) && !self.bonus_ran && self.restart_front().is_some_and(|t| t.tail_mid) =>
+                if arc.phase == ArcPhase::Wait(0) && !self.bonus_ran && self.restart_front().is_some_and(|t| t.tail_mid || t.end_after_copy > 0) =>
             {
                 self.bonus_ran = true;
                 self.death_arc_step(arc);
+            }
+            // `StageTiming::end_after_copy`: the restart follows the interrupt `$1393` of the chain in which the death wait ended
+            MainLine::DeathEnd if self.main_gap == 2 && self.restart_front().is_some_and(|t| t.end_after_copy > 0) => {
+                self.main = MainLine::Loop;
+                self.after_death_l0c1a();
             }
             MainLine::StageExit(ExitPhase::Final(0)) if !self.bonus_ran && (self.main_gap == 1) != self.exit_final_late() => {
                 self.bonus_ran = true;
@@ -145,8 +150,9 @@ impl GameState {
                 self.bonus_ran = true;
                 self.restart_step(RestartPhase::Setup(0));
             }
-            // the last chain of the swap goes on into the sprite set-up between the interrupts $12A3 and $1393
-            MainLine::Bonus(p) if !self.bonus_ran && self.bonus_phase_is_last(&p) => {
+            // the last chain of the swap goes on into the sprite set-up between the interrupts $12A3 and $1393, or after $1393
+            // when it ended late (`BonusTiming::swap_late`)
+            MainLine::Bonus(p) if !self.bonus_ran && self.bonus_phase_is_last(&p) && (self.main_gap == 2) == self.bonus_swap_ends_late(&p) => {
                 self.bonus_ran = true;
                 self.bonus_timed(p);
             }
@@ -166,9 +172,14 @@ impl GameState {
     /// chain after it already computes with the reset values).
     pub fn main_pre(&mut self) {
         self.bonus_ran = false;
+        // `StageTiming::death_next`: the death noticed after the sample of the last chain starts in this one
+        self.death_go = std::mem::take(&mut self.death_hold);
+        self.text_rest();
         self.death_late_continue(true);
         if self.main == MainLine::DeathEnd {
             self.main = MainLine::Loop;
+            // the restart makes its first step itself (`restart_stage_l09b6`): no second one in this chain
+            self.bonus_ran = true;
             self.after_death_l0c1a();
         }
         if self.main == MainLine::Restart(RestartPhase::Sync) {
@@ -186,7 +197,8 @@ impl GameState {
                 self.bonus_ran = true;
                 self.swap_step();
             }
-            MainLine::Bonus(crate::bonus::BonusPhase::Sync) => self.bonus_timed(crate::bonus::BonusPhase::Sync),
+            // `$1434`: JSR sub_20A3 returns once the video chip shows Giana's new Y
+            MainLine::Bonus(crate::bonus::BonusPhase::Sync) if self.sprite_y_synced() => self.bonus_timed(crate::bonus::BonusPhase::Sync),
             MainLine::Bonus(crate::bonus::BonusPhase::FinSync) => self.bonus_timed(crate::bonus::BonusPhase::FinSync),
             // the end of the busy wait on the way back landed after the sprite copy of its frame
             MainLine::Bonus(crate::bonus::BonusPhase::DecompBack(0)) if !self.bonus_ran && !self.bonus_phase_is_last(&crate::bonus::BonusPhase::DecompBack(0)) => {
@@ -201,6 +213,11 @@ impl GameState {
             _ => {}
         }
         self.main_timed(false);
+        self.death_go = false;
+        // `StageTiming::sprites_late`: the early sprite set-up of `$0AB7` came after the sprite copy of its chain
+        if std::mem::take(&mut self.sprites_after_copy) {
+            self.start_stage_sprites();
+        }
     }
 
     /// Time-based waits (busy loops): `pre` selects the position, `tail_pre` says where they end.
@@ -209,7 +226,7 @@ impl GameState {
             MainLine::DeathArc(arc) if matches!(arc.phase, ArcPhase::Wait(_)) => {
                 let front = self.restart_front();
                 let tail_pre = front.is_none_or(|t| t.tail_pre);
-                let mid = front.is_some_and(|t| t.tail_mid);
+                let mid = front.is_some_and(|t| t.tail_mid || t.end_after_copy > 0);
                 // with `tail_mid` the last step runs in main_pass; the countdown before it runs here
                 if tail_pre == pre && !self.bonus_ran && !(mid && arc.phase == ArcPhase::Wait(0)) {
                     self.bonus_ran = true;
@@ -265,8 +282,9 @@ impl GameState {
             }
             MainLine::StageExit(p)
                 // The end of the wait depends on when fire is read: its position was measured (`final_pre`)
-                // the hand-over to the next stage (Final(0)) runs between the interrupts, in main_pass
-                if self.timing.tail_pre == pre && p != ExitPhase::Final(0) && !self.bonus_ran => {
+                // the hand-over to the next stage (Final(0)) runs between the interrupts, in main_pass; the texts after a clear
+                // that ran into the next frame come after its interrupt chain (`ExitTiming::clear_late`)
+                if self.exit_runs_now(&p, pre) && p != ExitPhase::Final(0) && !self.bonus_ran => {
                     self.bonus_ran = true;
                     self.exit_step(p);
                 }
@@ -283,6 +301,11 @@ impl GameState {
         }
         // L0B6B: LDA $2169; BEQ L0BDF
         if self.st_2169 != 0 {
+            // a warp set by the interrupt of this chain is seen by the next pass: the pass that runs was past this test,
+            // inside `sub_1CD7`, and draws the status bar first (cv_warp_block frame 122: new score digits and the warp music)
+            if std::mem::take(&mut self.warp_pass_late) && self.hazard_hit == 0 && self.music_paused == 0 {
+                self.status_bar_sub_1cd7();
+            }
             self.start_warp_l0b6b();
             return;
         }
@@ -393,6 +416,11 @@ impl GameState {
     fn start_death_sub_2041(&mut self) {
         // $0C11: LDA $0465; STA $157F
         self.death_kind_157f = self.hazard_hit;
+        if self.restart_front().is_some_and(|t| t.death_next) && !std::mem::take(&mut self.death_go) {
+            // the pass that notices the death ends after the sample: sub_2041 starts in the main loop of the next chain
+            self.death_hold = true;
+            return;
+        }
         // $2041: DEC $043C
         // Debug cheat F1 (infinite lives): the counter stays
         if !self.infinite_lives {
@@ -427,6 +455,7 @@ impl GameState {
     pub fn death_late_continue(&mut self, pre: bool) {
         if self.main == MainLine::DeathLate && self.death_late_pre == pre {
             self.bonus_ran = true;
+
             if std::mem::take(&mut self.death_step_only) {
                 if std::mem::take(&mut self.death_step_sprites) {
                     self.set_sprite_pointers(0x2A);
@@ -456,7 +485,7 @@ impl GameState {
     }
 
     /// `sub_150C` whose driver call is cut after `steps` instructions (the sound driver pauses; `resume` finishes it)
-    fn request_music_cut(&mut self, track: u8, steps: u32) {
+    pub(crate) fn request_music_cut(&mut self, track: u8, steps: u32) {
         if track != self.music_track_1527 {
             self.music_track_1527 = track;
             self.sound.call_limited(0x49E6, track, 0, 0, false, steps);
@@ -549,7 +578,18 @@ impl GameState {
                     self.player_y_c64 = 0;
                     self.hazard_hit = 0;
                     self.anim_counter = 0;
-                    if self.restart_front().is_some_and(|t| t.death_end_split) {
+                    let after_copy = self.restart_front().map_or(0, |t| t.end_after_copy);
+                    if after_copy == 2 && self.main_gap == 1 {
+                        // $20AC..$20B8 of sub_20AC before the interrupt: $0467 = $FF, $044B = 0, $D015 = 0
+                        self.transform_timer = 0xFF;
+                        self.time_warning = 0;
+                        self.en.vic_me = 0;
+                    }
+                    if let Some(c) = self.restart_front().filter(|t| t.death_end_split).and_then(|t| t.clear_cut) {
+                        // the sample cuts sub_20AC in its clear loop: the head and the stores down to Y = c + 1 are done
+                        self.reset_hardware_cut(c.wrapping_add(1));
+                    }
+                    if self.restart_front().is_some_and(|t| t.death_end_split) || (after_copy > 0 && self.main_gap == 1) {
                         self.main = MainLine::DeathEnd;
                         return;
                     }
@@ -735,7 +775,11 @@ impl GameState {
                     }
                     if n == 1 && self.timing.sprites_early && !self.sprites_done {
                         self.sprites_done = true;
-                        self.start_stage_sprites();
+                        if self.timing.sprites_late {
+                            self.sprites_after_copy = true;
+                        } else {
+                            self.start_stage_sprites();
+                        }
                     }
                     if n > 0 {
                         if self.timing.setup_wait >= 2 && n == 1 {
@@ -847,6 +891,7 @@ impl GameState {
                     }
                     // $0B81: $2169 = 0, $0417 = 0, $0431 = $FF, sub_9F45, sub_0D1F, sub_0C99
                     self.st_2169 = 0;
+                    self.surrounding_tiles[1] = 0;
                     self.flag_0431 = 0xFF;
                     self.screen_ram = [0; 1000];
                     self.color_ram = [0; 1000];
@@ -915,6 +960,8 @@ impl GameState {
         self.screen_ram = [0; 1000];
         self.color_ram = [0; 1000];
         self.main = MainLine::StageExit(ExitPhase::Cleared);
+        // the clear takes the rest of this chain
+        self.bonus_ran = true;
     }
 
     /// One chain of the stage exit
@@ -1055,6 +1102,14 @@ impl GameState {
         };
         self.timer_seconds_high = h;
         h & 0x80 == 0
+    }
+
+    fn exit_runs_now(&self, p: &ExitPhase, pre: bool) -> bool {
+        if *p == ExitPhase::Cleared && self.exit_timing_front().clear_late {
+            !pre
+        } else {
+            self.timing.tail_pre == pre
+        }
     }
 
     fn exit_timing_front(&self) -> crate::state::ExitTiming {

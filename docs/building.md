@@ -2,8 +2,10 @@
 
 ## Building from source
 
-You need Rust (stable, via [rustup](https://rustup.rs/)), a C compiler and the SDL2 development files
-(`sudo dnf install SDL2-devel`, `sudo apt install libsdl2-dev` or `brew install sdl2`).
+You need Rust (stable, via [rustup](https://rustup.rs/)), a C and C++ compiler (C++17; the SID model libresidfp in
+`crates/residfp-sys` is C++) and the SDL2 development files (`sudo dnf install SDL2-devel gcc-c++`,
+`sudo apt install libsdl2-dev g++` or `brew install sdl2`). `--no-default-features` builds without C++, with the older
+SID model resid-rs; `GIANA_SID=resid` picks that model at run time in a normal build.
 
 ```bash
 cargo build --release -p giana-app
@@ -13,6 +15,9 @@ cargo test --workspace
 
 `./run.sh` builds on first use and starts the game. `cargo build --release -p giana-app --features bundled-sdl`
 builds SDL2 from source and links it in (that's how the Windows and macOS releases are made).
+
+The screenshots in the README are the port's own output, drawn without a window by the examples `menu_shot`, `shot`
+and `boss_shot` of `giana-app` (they write PPM files; the README uses them scaled 3× as PNG).
 
 ## How it's put together
 

@@ -4,9 +4,19 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
+[features]
+# reSIDfp (libresidfp 1.2.3, C++, built by residfp-sys) as the SID model; without it the sound uses resid-rs only
+default = ["residfp"]
+residfp = ["dep:residfp-sys"]
+
 [dependencies]
 resid-rs = "1.1.1"
+residfp-sys = { path = "../residfp-sys", optional = true }
 giana-core = { path = "../giana-core" }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "sid_ab"
+required-features = ["residfp"]

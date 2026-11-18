@@ -1,17 +1,8 @@
-use resid::{ChipModel, SamplingMethod, Sid};
+use crate::chip::{SidChip, SidEngine};
 
-/// C64 PAL clock in Hz.
-const CLOCK_HZ: u32 = 985_248;
 /// Cycles of one PAL frame (63 cycles on 312 lines, 50.125 Hz), the rate the game runs at (`LOGIC_STEP` in the app).
 const FRAME_CYCLES: u32 = 63 * 312;
 
-/// A 6581 that samples like VICE's reSID setting "resampling": band-limited to 20 kHz instead of picking every 22nd
-/// cycle, which folds the chip's high overtones back into the audible range (a harsh, "digital" top end).
-fn new_sid() -> Sid {
-    let mut sid = Sid::new(ChipModel::Mos6581);
-    sid.set_sampling_parameters(SamplingMethod::Resample, CLOCK_HZ, 44_100);
-    sid
-}
 use std::collections::VecDeque;
 
 use giana_core::sound_driver::Driver;
@@ -57,7 +48,8 @@ pub struct SidEvent {
 }
 
 pub struct AudioEngine {
-    pub sid: Sid,
+    /// the chip model ([`SidEngine::current`] unless made with `*_with`)
+    pub sid: Box<dyn SidChip>,
     pub current_track: MusicTrack,
     pub events: Vec<SidEvent>,
     pub max_frames: u16,
@@ -77,10 +69,13 @@ pub struct AudioEngine {
 
 impl AudioEngine {
     pub fn new() -> Self {
-        let sid = new_sid();
+        Self::new_with(SidEngine::current())
+    }
 
+    /// An engine that plays the title tune on a chip of `engine`.
+    pub fn new_with(kind: SidEngine) -> Self {
         let mut engine = Self {
-            sid,
+            sid: kind.chip(),
             current_track: MusicTrack::Title,
             events: Vec::new(),
             max_frames: 0,
@@ -100,8 +95,13 @@ impl AudioEngine {
 
     /// An engine that plays registers it is given (`live_regs`) and no tune of its own.
     pub fn new_live() -> Self {
+        Self::new_live_with(SidEngine::current())
+    }
+
+    /// [`new_live`](Self::new_live) on a chip of `engine`.
+    pub fn new_live_with(kind: SidEngine) -> Self {
         Self {
-            sid: new_sid(),
+            sid: kind.chip(),
             current_track: MusicTrack::Title,
             events: Vec::new(),
             max_frames: 0,
@@ -203,7 +203,7 @@ impl AudioEngine {
 
             let slice = &mut buffer[sample_idx..];
             if self.timed_idx >= self.timed.len() {
-                let (produced, next_delta) = self.sid.sample(self.pending_cycles, slice, 1);
+                let (produced, next_delta) = self.sid.sample(self.pending_cycles, slice);
                 sample_idx += produced;
                 self.pending_cycles = next_delta;
                 continue;
@@ -217,7 +217,7 @@ impl AudioEngine {
                 continue;
             }
             let chunk = (at - elapsed).min(self.pending_cycles);
-            let (produced, left) = self.sid.sample(chunk, slice, 1);
+            let (produced, left) = self.sid.sample(chunk, slice);
             sample_idx += produced;
             self.pending_cycles -= chunk - left;
         }

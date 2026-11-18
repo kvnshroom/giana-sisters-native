@@ -131,11 +131,13 @@ impl ImportError {
         t
     }
 
-    /// For the first-start page: the problem, an empty line, then the fix, in capitals and wrapped.
+    /// For the first-start page: the problem, an empty line, then the fix, in capitals, wrapped and without the full
+    /// stops (on screen nothing ends in one).
     pub fn screen(&self) -> Vec<String> {
-        let mut out = wrap(&safe_text(&self.problem.to_uppercase()), LINE);
+        let screen = |t: &str| wrap(&safe_text(&t.trim_end_matches('.').to_uppercase()), LINE);
+        let mut out = screen(&self.problem);
         out.push(String::new());
-        out.extend(wrap(&safe_text(&self.fix.to_uppercase()), LINE));
+        out.extend(screen(&self.fix));
         out
     }
 }
@@ -154,11 +156,11 @@ pub fn import_bytes(bytes: &[u8], dest: &Path, ext: &str) -> Result<(), Vec<Stri
 /// [`import_file`] with the error in plain words (for the terminal as well).
 pub fn try_import_file(path: &Path, dest: &Path) -> Result<(), ImportError> {
     let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => ImportError::new("Could not find that file.", "Check the path, or drop the disk image on this window.")
+        std::io::ErrorKind::NotFound => ImportError::new("Could not find that file.", "Check the path or drop it here.")
             .detail(format!("({})", path.display())),
-        std::io::ErrorKind::PermissionDenied => ImportError::new("The game may not open that file.", "Copy it to your Downloads folder and choose it there.")
+        std::io::ErrorKind::PermissionDenied => ImportError::new("No permission to open that file.", "Copy it to Downloads and choose it there.")
             .detail(format!("({})", path.display())),
-        _ => ImportError::new("Could not open that file.", "Choose it again, or copy it to your Downloads folder.").detail(format!("({e})")),
+        _ => ImportError::new("Could not open that file.", "Copy it to Downloads and choose it there.").detail(format!("({e})")),
     })?;
     if meta.is_dir() {
         return Err(ImportError::new("That is a folder, not a file.", "Choose the .g64 or .d64 file inside it."));
@@ -166,7 +168,7 @@ pub fn try_import_file(path: &Path, dest: &Path) -> Result<(), ImportError> {
     if meta.len() > MAX_IMAGE {
         return Err(ImportError::new("That file is too big.", "Choose the .g64 or .d64 file."));
     }
-    let bytes = std::fs::read(path).map_err(|e| ImportError::new("Could not read that file.", "Copy it to your Downloads folder and choose it there.").detail(format!("({e})")))?;
+    let bytes = std::fs::read(path).map_err(|e| ImportError::new("Could not read that file.", "Copy it to Downloads and choose it there.").detail(format!("({e})")))?;
     try_import_bytes(&bytes, dest, path.extension().and_then(|e| e.to_str()).unwrap_or(""))
 }
 
@@ -174,37 +176,31 @@ pub fn try_import_file(path: &Path, dest: &Path) -> Result<(), ImportError> {
 pub fn try_import_bytes(bytes: &[u8], dest: &Path, ext: &str) -> Result<(), ImportError> {
     // the content check (SHA-256 of the game's files on the disk) comes first: an unknown disk is never unpacked
     if let Err(e) = giana_extract::check_content(bytes) {
-        eprintln!("Disk image not accepted: {e}");
+        eprintln!("giana-app: disk image not accepted: {e}");
         return Err(match &e {
             CheckError::NotADisk(_) if ext.eq_ignore_ascii_case("zip") || bytes.starts_with(b"PK\x03\x04") => {
-                ImportError::new("That is a ZIP archive.", "Unpack it first, then choose the .g64 or .d64 file inside.")
+                ImportError::new("That is a ZIP archive.", "Unpack it, then choose the disk image inside.")
             }
-            CheckError::NotADisk(_) => ImportError::new("That is not a disk image.", "Choose a file that ends in .g64 or .d64.").detail(format!("({e})")),
-            CheckError::NoGameFiles(_) => ImportError::new(
-                "This disk image does not hold The Great Giana Sisters.",
-                "Choose the .g64 or .d64 of the game disk.",
-            )
+            CheckError::NotADisk(_) => ImportError::new("That is not a disk image.", "Choose a .g64 or .d64 file.").detail(format!("({e})")),
+            CheckError::NoGameFiles(_) => ImportError::new("This is not the Giana Sisters disk.", "Choose the disk image of the game.")
             .detail(format!("({e})")),
-            CheckError::Modified { .. } => ImportError::new(
-                "This is a modified or cracked version.",
-                "Please use a dump of the original disk.",
-            )
+            CheckError::Modified { .. } => ImportError::new("This is a modified or cracked version.", MODIFIED_FIX_PLAIN)
             .detail(format!("({e})")),
-            CheckError::Unreadable(_) => ImportError::new("The disk image could not be read.", "The file may be damaged. Try another copy.").detail(format!("({e})")),
+            CheckError::Unreadable(_) => ImportError::new("Could not read the disk image.", "Try another copy, this one may be damaged.").detail(format!("({e})")),
         });
     }
     let files = giana_extract::extract_all(bytes).map_err(|e| {
-        eprintln!("Extraction failed: {e}");
-        ImportError::new("The disk image could not be read.", "The file may be damaged. Try another copy.").detail(format!("({e})"))
+        eprintln!("giana-app: could not unpack the disk image: {e}");
+        ImportError::new("Could not read the disk image.", "Try another copy, this one may be damaged.").detail(format!("({e})"))
     })?;
     giana_extract::write_data_dir(&files, dest).map_err(|e| {
-        eprintln!("Could not write the data folder: {e}");
+        eprintln!("giana-app: could not write the data folder: {e}");
         ImportError::new("Could not save the game data.", "Check free space and permissions.")
             .detail(format!("(folder {}: {})", dest.display(), e.rsplit(": ").next().unwrap_or("")))
     })?;
     let problems = giana_extract::verify_dir(dest);
     if !problems.is_empty() {
-        return Err(ImportError::new("The saved game data is not valid.", "Delete the data folder and try again.").detail(format!("({})", problems.join(", "))));
+        return Err(ImportError::new("The game data is not valid.", "Delete the data folder and try again.").detail(format!("({})", problems.join(", "))));
     }
     Ok(())
 }
@@ -315,13 +311,15 @@ const FIELD: usize = 1;
 const SEARCH: usize = 2;
 
 /// Shown when the file dialog returned without a file (cancelled, or it could not be shown at all).
-const NO_FILE: &str = "NO FILE CHOSEN.";
-const NO_FILE_FIX: &str = "IF NO WINDOW OPENED, DROP THE FILE ON THIS WINDOW OR TYPE ITS PATH.";
-const NO_PATH: &str = "NO PATH TYPED YET.";
-const NO_PATH_FIX: &str = "TYPE OR PASTE IT, OR DROP THE FILE ON THIS WINDOW.";
-const NOT_FOUND: &str = "NO DISK IMAGE FOUND.";
-const NOT_FOUND_FIX: &str = "USE CHOOSE FILE, OR DROP THE FILE ON THIS WINDOW.";
-const MODIFIED_FIX: &str = "PLEASE USE AN ORIGINAL DUMP.";
+const NO_FILE: &str = "NO FILE CHOSEN";
+const NO_FILE_FIX: &str = "DROP IT HERE OR TYPE ITS PATH";
+const NO_PATH: &str = "NO PATH TYPED YET";
+const NO_PATH_FIX: &str = "TYPE OR PASTE IT, OR DROP IT HERE";
+const NOT_FOUND: &str = "NO DISK IMAGE FOUND";
+const NOT_FOUND_FIX: &str = "USE CHOOSE FILE OR DROP IT HERE";
+const MODIFIED_FIX: &str = "USE AN UNMODIFIED DISK IMAGE";
+/// [`MODIFIED_FIX`] for the terminal as well.
+const MODIFIED_FIX_PLAIN: &str = "Use an unmodified disk image.";
 
 /// A failure message for the page: the problem, an empty line, what to do.
 fn failure(problem: &str, fix: &str) -> Status {
@@ -344,6 +342,8 @@ pub enum FileKind {
     DiskImage,
     /// a ROM module (`ADD ROM MODULE...`)
     RomModule,
+    /// the 30th Anniversary preview's disk (`ADD 30A PREVIEW...`)
+    C30Disk,
 }
 
 /// Title and file filter of the dialog: the files of the kind first, then all files.
@@ -351,6 +351,7 @@ fn dialog_texts(kind: FileKind) -> (&'static str, &'static str, &'static [&'stat
     match kind {
         FileKind::DiskImage => ("Choose your The Great Giana Sisters disk image", "C64 disk image (.g64, .d64)", &["g64", "G64", "d64", "D64"]),
         FileKind::RomModule => ("Choose a ROM module", "ROM module (.grom)", &["grom", "GROM"]),
+        FileKind::C30Disk => ("Choose the 30th Anniversary preview disk image", "C64 disk image (.d64)", &["d64", "D64"]),
     }
 }
 
@@ -448,7 +449,7 @@ impl Setup {
             let _ = tx.send(import_file(&path, &dest));
         });
         self.job = Some(rx);
-        self.status = Status::Working("CHECKING THE DISK IMAGE - A MOMENT");
+        self.status = Status::Working("CHECKING THE DISK IMAGE");
     }
 
     fn start_search(&mut self) {
@@ -474,7 +475,7 @@ impl Setup {
             let _ = tx.send(r);
         });
         self.job = Some(rx);
-        self.status = Status::Working("LOOKING FOR YOUR DISK IMAGE");
+        self.status = Status::Working("SEARCHING THIS COMPUTER");
     }
 
     /// Call every frame. True once the data is in place.
@@ -492,7 +493,7 @@ impl Setup {
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
                     self.job = None;
-                    self.status = failure("SOMETHING WENT WRONG WHILE UNPACKING.", "START THE GAME AND TRY AGAIN.");
+                    self.status = failure("COULD NOT UNPACK THE DISK IMAGE", "RESTART THE GAME AND TRY AGAIN");
                 }
             }
         }
@@ -512,14 +513,7 @@ pub fn footer_hints(setup: &Setup) -> Vec<Hint> {
 }
 
 /// Instruction lines of the page (each at most `LINE` characters).
-const PAGE_TEXT: [&str; 6] = [
-    "THE GREAT GIANA SISTERS NEEDS",
-    "YOUR ORIGINAL DISK (.G64 OR .D64)",
-    "OR DROP IT HERE OR TYPE ITS PATH:",
-    "ANY DUMP WORKS IF UNMODIFIED.",
-    "IT IS NOT PART OF THIS DOWNLOAD.",
-    "THIS IS DONE ONLY ONCE.",
-];
+const PAGE_TEXT: [&str; 3] = ["THE GAME NEEDS YOUR DISK IMAGE", "(.G64 OR .D64)", "OR DROP IT HERE OR TYPE ITS PATH:"];
 
 /// Draws the page. `tick` counts frames (for the dots of the progress message).
 pub fn draw(fb: &mut Framebuffer, setup: &Setup, tick: u32, nudge: usize) {
@@ -528,7 +522,7 @@ pub fn draw(fb: &mut Framebuffer, setup: &Setup, tick: u32, nudge: usize) {
     let p = Panel::centered(W, 25, true);
     p.draw(fb, Some("FIRST START"));
     p.message_colored(fb, 3, PAGE_TEXT[0], ui::color::TEXT);
-    p.message_colored(fb, 5, PAGE_TEXT[1], ui::color::TEXT);
+    p.message_colored(fb, 5, PAGE_TEXT[1], ui::color::DIM);
     let state = |i: usize| if setup.cursor == i && i != FIELD { ItemState::Selected } else { ItemState::Normal };
     p.item_centered(fb, p.row_y(7), "CHOOSE FILE...", state(CHOOSE), nudge);
     p.message_colored(fb, 10, PAGE_TEXT[2], ui::color::DIM);
@@ -541,11 +535,7 @@ pub fn draw(fb: &mut Framebuffer, setup: &Setup, tick: u32, nudge: usize) {
     p.item_centered(fb, p.row_y(16), "QUIT", state(ITEMS - 1), nudge);
     p.separator(fb, 17);
     match &setup.status {
-        Status::Idle => {
-            p.message_colored(fb, 19, PAGE_TEXT[3], ui::color::TEXT);
-            p.message_colored(fb, 21, PAGE_TEXT[4], ui::color::DIM);
-            p.message_colored(fb, 23, PAGE_TEXT[5], ui::color::DIM);
-        }
+        Status::Idle => {}
         Status::Working(what) => {
             let dots = ".".repeat((tick / 12 % 4) as usize);
             for (i, l) in wrap(what, LINE).iter().enumerate() {
@@ -570,7 +560,7 @@ pub fn draw(fb: &mut Framebuffer, setup: &Setup, tick: u32, nudge: usize) {
                 row += 2;
             }
         }
-        Status::Done => p.message_colored(fb, 19, "ALL SET - STARTING THE GAME", ui::color::CYAN),
+        Status::Done => p.message_colored(fb, 19, "STARTING THE GAME", ui::color::CYAN),
     }
     ui::footer(fb, &footer_hints(setup), None);
 }
@@ -699,12 +689,12 @@ mod tests {
         // a disk image without the game
         let other = giana_extract::d64::build_d64(&[("HELLO", &[1, 8, 0])]);
         let e = text(try_import_bytes(&other, &dest, "d64"));
-        assert!(e.problem.contains("does not hold The Great Giana Sisters"), "{e:?}");
+        assert!(e.problem.contains("not the Giana Sisters disk"), "{e:?}");
         // the game's files, modified
         let cracked = giana_extract::d64::build_d64(&[("1", &[0x20, 0x08, 1, 2, 3]), ("2", &[0, 4, 5, 6])]);
         let e = text(try_import_bytes(&cracked, &dest, "d64"));
         assert_eq!(e.problem, "This is a modified or cracked version.");
-        assert_eq!(e.fix, "Please use a dump of the original disk.");
+        assert_eq!(e.fix, MODIFIED_FIX_PLAIN);
         assert!(e.detail.contains(giana_extract::GAME_FILE1_SHA256), "{e:?}");
         assert!(e.screen().join(" ").contains("MODIFIED OR CRACKED"));
 
@@ -824,7 +814,8 @@ mod tests {
     fn the_modified_message_names_the_file_and_fits_the_page() {
         let Status::Failed(lines) = modified_found("A_VERY_LONG_FILE_NAME_OF_A_CRACKED_DISK_(1987).d64") else { panic!() };
         assert!(lines.join(" ").contains("FOUND A MODIFIED VERSION"));
-        assert!(lines.join(" ").contains("PLEASE USE AN ORIGINAL DUMP"));
+        assert!(lines.join(" ").contains(MODIFIED_FIX));
+        assert!(lines.iter().all(|l| !l.ends_with('.')), "no full stops on screen: {lines:?}");
         assert!(lines.iter().filter(|l| !l.is_empty()).count() <= 3, "{lines:?}");
         assert!(lines.iter().all(|l| l.chars().count() <= LINE));
     }

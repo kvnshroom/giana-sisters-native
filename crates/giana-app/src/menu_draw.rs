@@ -4,7 +4,7 @@
 use crate::bindings::{key_label, Action, Bindings, PadInput, SLOTS};
 use crate::hints::{fit_in, InputDevice, InputState};
 use crate::menu::{clip, safe_text, Device, GameMode, Menu, Nav, Page, Search, BACK_ROW, CONTROLS_ITEMS, GENERAL_ITEMS, NETWORK_ITEMS, OPTION_ITEMS, RESET_ROW, SOUND_ITEMS, VIDEO_ITEMS};
-use crate::menu::{label_room, progress_text, AuthenticAvail, DetailItem, GeneralItem, OptionItem, RootItem, SoundItem, VideoItem, CODE_NOTICE};
+use crate::menu::{label_room, progress_text, AuthenticAvail, DetailItem, GeneralItem, RootItem, SoundItem, VideoItem, CODE_NOTICE};
 use crate::padicons::Icon;
 use crate::result::Winner;
 use crate::scores::{Scores, MAX_ENTRIES, NAME_LEN};
@@ -37,6 +37,8 @@ fn wide(ctx: &DrawCtx) -> usize {
 }
 /// Width of a value column.
 const VALUE_W: usize = 14;
+/// Width of the OPTIONS hub, which has no notes: as wide as the pause menu with its note.
+const OPTIONS_W: usize = 28;
 
 fn state(i: usize, sel: usize) -> ItemState {
     if i == sel {
@@ -144,50 +146,35 @@ pub fn footer_hints(menu: &Menu, ctx: &DrawCtx) -> Vec<Hint> {
 
 // ---------- main and pause menu ----------
 
-/// The note under the root list: what a suspended game is, what a new game replaces, what the pause menu does with the
-/// game. Two short lines for the pause menu, one for the main menu. `None`: this menu has no notes.
-fn root_note(menu: &Menu) -> Option<[String; 2]> {
+/// The note under the root list: the saved game on CONTINUE, and the lines whose choice has a consequence the player
+/// cannot see. `None`: this menu has no note area (the main menu without saved games, the pause menu without them).
+/// Lines without a note get an empty one, so the panel keeps its size while the cursor moves.
+fn root_note(menu: &Menu) -> Option<String> {
     let item = menu.root_items().get(menu.cursor).copied();
-    let one = |a: &str| [a.to_string(), "".to_string()];
     if menu.paused {
-        match item {
-            Some(RootItem::RestartStage) => return Some(["COSTS A LIFE, THE STAGE".to_string(), "STARTS AGAIN".to_string()]),
-            Some(RootItem::RestartGame) => return Some(["A NEW GAME, THIS ONE".to_string(), "IS NOT KEPT".to_string()]),
-            _ => {}
+        let restart = menu.root_items().iter().any(|i| matches!(i, RootItem::RestartStage | RootItem::RestartGame));
+        if !menu.can_suspend && !restart {
+            return None;
         }
-        return menu.can_suspend.then(|| match item {
-            Some(RootItem::Resume) => ["CLOSING THE PROGRAM".to_string(), "SAVES THE GAME".to_string()],
-            Some(RootItem::QuitToTitle) => ["ENDS THE GAME,".to_string(), "NOTHING IS SAVED".to_string()],
-            Some(RootItem::Controls) => one("KEYS AND BUTTONS"),
-            _ => one("VIDEO, SOUND, GENERAL"),
-        });
+        return Some(
+            match item {
+                Some(RootItem::RestartStage) => "COSTS A LIFE",
+                Some(RootItem::RestartGame) => "THIS GAME IS LOST",
+                Some(RootItem::Resume) if menu.can_suspend => "CLOSING SAVES THE GAME",
+                _ => "",
+            }
+            .to_string(),
+        );
     }
     if menu.suspended.is_empty() {
         return None;
     }
     Some(match item {
-        Some(RootItem::Continue(n)) => [menu.suspended_game(n).map(|i| i.note()).unwrap_or_default(), "".to_string()],
+        Some(RootItem::Continue(n)) => menu.suspended_game(n).map(|i| i.note()).unwrap_or_default(),
         // a new game replaces only the saved game with the same number of players
-        Some(RootItem::Start(mode)) if menu.suspended_game(if mode == GameMode::TwoPlayers { 2 } else { 1 }).is_some() => ["REPLACES THE SAVED GAME".to_string(), "".to_string()],
-        Some(RootItem::Start(GameMode::OnePlayer)) => one("START A NEW GAME"),
-        Some(RootItem::Start(_)) => one("TWO PLAYERS TAKE TURNS"),
-        Some(RootItem::Network) => one("PLAY WITH ANOTHER COMPUTER"),
-        Some(RootItem::Modules) => one("OTHER GAMES AND HACKS"),
-        Some(RootItem::HighScores) => one("THE BEST RUNS"),
-        Some(RootItem::Controls) => one("KEYS AND BUTTONS"),
-        Some(RootItem::Options) => one("VIDEO, SOUND, GENERAL"),
-        Some(RootItem::Quit) => one("LEAVES THE PROGRAM"),
-        _ => one(""),
+        Some(RootItem::Start(mode)) if menu.suspended_game(if mode == GameMode::TwoPlayers { 2 } else { 1 }).is_some() => "REPLACES THE SAVED GAME".to_string(),
+        _ => String::new(),
     })
-}
-
-/// The note of the BACK line on OPTIONS and CONTROLS: where it leads.
-fn root_back(menu: &Menu) -> [&'static str; 2] {
-    if menu.paused {
-        ["BACK TO THE PAUSE MENU", ""]
-    } else {
-        ["BACK TO THE MAIN MENU", ""]
-    }
 }
 
 fn draw_root(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
@@ -200,7 +187,7 @@ fn draw_root(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     let (w, extra) = match (&note, menu.paused) {
         (None, _) => (20, 0),
         (Some(_), true) => (28, NOTE_ROWS),
-        (Some(_), false) => (30, if items.len() >= 10 { MAIN_NOTE_ROWS - 1 } else { MAIN_NOTE_ROWS }),
+        (Some(_), false) => (30, if items.len() >= 10 { NOTE_ROWS - 1 } else { NOTE_ROWS }),
     };
     let p = Panel::for_list(items.len(), w, pitch, true, extra);
     // the main menu sits high so that the strip of controls fits below it
@@ -214,17 +201,8 @@ fn draw_root(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     for (n, item) in items.iter().enumerate() {
         p.item(fb, p.item_y(n), item.label(), state(n, menu.cursor), ctx.nudge);
     }
-    if let Some(lines) = &note {
-        if main_note {
-            let after = Panel::head_rows(true) + Panel::list_rows(items.len(), pitch);
-            p.separator(fb, after + 1);
-            if !lines[0].is_empty() {
-                p.note(fb, after + 2, &lines[0]);
-            }
-        } else {
-            let lines: [&str; 2] = [&lines[0], &lines[1]];
-            note_lines(&p, fb, items.len(), pitch, &lines);
-        }
+    if let Some(line) = &note {
+        note_line(&p, fb, items.len(), pitch, line);
     }
     // the main menu says which ROM module is played: a dim line in the empty border above the picture
     if !menu.paused {
@@ -257,7 +235,7 @@ const MODULE_ROWS: usize = 8;
 fn draw_modules(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     let total = menu.module_rows();
     let rows = total.min(MODULE_ROWS);
-    let p = Panel::for_list(rows, WIDE, Pitch::Tight, true, 7);
+    let p = Panel::for_list(rows, WIDE, Pitch::Tight, true, 5);
     p.draw(fb, Some("ROM MODULES"));
     let first = (menu.cursor + 1).saturating_sub(MODULE_ROWS).min(total - rows);
     let last_module = menu.modules.len();
@@ -270,7 +248,8 @@ fn draw_modules(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         let (label, active) = match i {
             0 => ("ORIGINAL".to_string(), menu.active_module.is_empty()),
             i if i <= last_module => (menu.modules[i - 1].list_label(label_room(stage)), menu.modules[i - 1].id == menu.active_module),
-            i if i == last_module + 1 => ("ADD ROM MODULE...".to_string(), false),
+            i if Some(i) == menu.c30_row() => (crate::menu::C30_ADD.to_string(), false),
+            i if i == menu.add_row() => ("ADD ROM MODULE...".to_string(), false),
             _ => ("BACK".to_string(), false),
         };
         let fg = p.row_colors(fb, y, st, ctx.nudge);
@@ -294,14 +273,11 @@ fn draw_modules(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     p.note(fb, after + 2, &format!("SORT: {}", menu.settings.module_sort.label()));
     match &menu.module_error {
         Some(e) => {
-            for (n, line) in crate::firstrun::wrap(&safe_text(&e.to_ascii_uppercase()), WIDE - 4).iter().take(3).enumerate() {
+            for (n, line) in crate::firstrun::wrap(&safe_text(&e.to_ascii_uppercase()), WIDE - 4).iter().take(2).enumerate() {
                 p.note_colored(fb, after + 4 + n, line, ui::color::YELLOW);
             }
         }
-        None => {
-            p.note(fb, after + 4, "* PLAYED NOW   \u{2605} FAVORITE");
-            p.note(fb, after + 6, "DROP A .GROM FILE TO ADD IT");
-        }
+        None => p.note(fb, after + 4, "* PLAYED NOW   \u{2605} FAVORITE"),
     }
 }
 
@@ -315,14 +291,15 @@ fn draw_module_detail(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
             if !m.version.is_empty() {
                 by = format!("{by}{}V{}", if by.is_empty() { "" } else { "  " }, m.version);
             }
-            (m.name.clone(), by, if m.description.is_empty() { "NO DESCRIPTION".to_string() } else { m.description.clone() }, m.changes_code)
+            (m.name.clone(), by, m.description.clone(), m.changes_code || m.c30)
         }
-        None => ("ORIGINAL".to_string(), String::new(), "THE GAME AS IT WAS ON THE C64".to_string(), false),
+        None => ("ORIGINAL".to_string(), String::new(), "THE ORIGINAL C64 GAME".to_string(), false),
     };
+    let notice = if menu.selected_module().is_some_and(|m| m.c30) { crate::menu::C30_NOTICE } else { CODE_NOTICE };
     let lines: Vec<String> = crate::firstrun::wrap(&text, WIDE - 4).into_iter().take(6).collect();
     let items = menu.detail_items();
     // rows: head (3), name, blank, by line, blank, description, blank + notice, blank, separator, items
-    let notice_rows = if changes { 1 + CODE_NOTICE.len() } else { 0 };
+    let notice_rows = if changes { 2 } else { 0 };
     let items_row = 3 + 1 + 1 + 1 + 1 + lines.len() + notice_rows + 1 + 1;
     let item_rows = ((items.len() - 1) * 16 + 8).div_ceil(8);
     let p = Panel::centered(WIDE, items_row + item_rows + 2, true);
@@ -335,9 +312,7 @@ fn draw_module_detail(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         p.text_at(fb, 2, 7 + n, line, ui::color::TEXT);
     }
     if changes {
-        for (n, line) in CODE_NOTICE.iter().enumerate() {
-            p.message_colored(fb, 7 + lines.len() + 1 + n, line, ui::color::YELLOW);
-        }
+        p.message_colored(fb, 7 + lines.len() + 1, notice, ui::color::YELLOW);
     }
     p.separator(fb, items_row - 1);
     for (n, item) in items.iter().enumerate() {
@@ -366,38 +341,33 @@ fn draw_confirm_remove(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
 // ---------- network ----------
 
 fn draw_network(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
-    let p = Panel::for_list(NETWORK_ITEMS.len(), WIDE, Pitch::Roomy, true, 5);
+    let p = Panel::for_list(NETWORK_ITEMS.len(), WIDE, Pitch::Roomy, true, NOTE_ROWS);
     p.draw(fb, Some("NETWORK GAME"));
     for (n, label) in NETWORK_ITEMS.iter().enumerate() {
         p.item(fb, p.item_y(n), label, state(n, menu.cursor), ctx.nudge);
     }
-    let after = Panel::head_rows(true) + Panel::list_rows(NETWORK_ITEMS.len(), Pitch::Roomy);
-    p.separator(fb, after + 1);
-    let hint = match menu.cursor {
-        0 => "BOTH PLAY - WHO IS OUT WATCHES",
-        1 => "THE TURN CHANGES EVERY LOST LIFE",
-        2 => "THE OTHER COMPUTER HOSTS",
-        _ => "BACK TO THE MAIN MENU",
+    let note = match menu.cursor {
+        0 => "BOTH PLAY AT ONCE",
+        1 => "TURNS CHANGE AT A LOST LIFE",
+        _ => "",
     };
-    p.note(fb, after + 2, hint);
-    p.note(fb, after + 4, "HOST IS GIANA, THE OTHER IS MARIA");
+    note_line(&p, fb, NETWORK_ITEMS.len(), Pitch::Roomy, note);
 }
 
 fn draw_hosting(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
-    let p = Panel::centered(WIDE, 19, true);
+    let p = Panel::centered(WIDE, 15, true);
     p.draw(fb, Some("HOSTING"));
     p.message_colored(fb, 3, "WAITING FOR THE OTHER PLAYER", ui::color::TEXT);
     p.message_colored(fb, 5, "YOUR ADDRESS", ui::color::DIM);
     let ip = clip(&safe_text(&menu.my_ip), 21);
     let fw = ip.chars().count().max(15);
     p.field(fb, p.row_y(7), (WIDE - fw) / 2, fw, &ip, false);
-    p.message_colored(fb, 9, &format!("TCP+UDP {} MUST BE OPEN", menu.host_port), ui::color::TEXT);
-    p.message_colored(fb, 11, "OTHER COMPUTER: NETWORK, JOIN GAME", ui::color::DIM);
+    // the other computer cannot find this game by itself: the address has to be typed there
     if !menu.host_findable {
-        p.message_colored(fb, 13, "NO UDP SEARCH - TYPE THE ADDRESS", ui::color::YELLOW);
+        p.message_colored(fb, 9, "THE OTHER PLAYER MUST TYPE IT", ui::color::YELLOW);
     }
-    p.separator(fb, 14);
-    let y = p.row_y(16);
+    p.separator(fb, 10);
+    let y = p.row_y(12);
     p.value_row(fb, y, "WINNER", menu.settings.winner.label(), 8, ItemState::Selected, ctx.nudge);
 }
 
@@ -414,9 +384,9 @@ fn draw_join(fb: &mut Framebuffer, menu: &Menu, _ctx: &DrawCtx) {
     let entries = menu.join_entries();
     if menu.hosts.is_empty() {
         let (text, color) = match menu.search {
-            Search::Looking => ("SEARCHING THE NETWORK", ui::color::DIM),
-            Search::NothingFound => ("NOTHING FOUND - TYPE THE ADDRESS", ui::color::YELLOW),
-            Search::Unavailable => ("SEARCH FAILED - TYPE THE ADDRESS", ui::color::YELLOW),
+            Search::Looking => ("SEARCHING...", ui::color::DIM),
+            Search::NothingFound => ("NO GAME FOUND", ui::color::YELLOW),
+            Search::Unavailable => ("SEARCH NOT POSSIBLE", ui::color::YELLOW),
         };
         p.message_colored(fb, 3, text, color);
     } else {
@@ -473,7 +443,7 @@ fn draw_name(fb: &mut Framebuffer, menu: &Menu, _ctx: &DrawCtx) {
     p.draw(fb, Some("NEW HIGH SCORE"));
     p.message_colored(fb, 3, &who, ui::color::YELLOW);
     p.message_colored(fb, 5, &format!("{score:06} POINTS"), ui::color::TEXT);
-    p.message_colored(fb, 7, "YOUR NAME", ui::color::DIM);
+    p.message_colored(fb, 7, "NAME", ui::color::DIM);
     let fw = NAME_LEN + 1;
     p.field(fb, p.row_y(9), (30 - fw) / 2, fw, &menu.name, true);
 }
@@ -511,37 +481,25 @@ fn on_off(on: bool) -> &'static str {
     }
 }
 
-/// Rows below the list of a page with notes: the separator and two lines of notes.
-const NOTE_ROWS: usize = 5;
-/// The main menu's note is one line: the separator, the line and the empty row after it.
-const MAIN_NOTE_ROWS: usize = 3;
-const SOUND_EXTRA_ROWS: usize = NOTE_ROWS;
+/// Rows below the list of a page with a note: the separator, the one line of the note and the empty row after it.
+const NOTE_ROWS: usize = 3;
 
-/// The separator and up to two note lines of the selected item, below a list of `items` rows.
-fn note_lines(p: &Panel, fb: &mut Framebuffer, items: usize, pitch: Pitch, lines: &[&str; 2]) {
+/// The separator and the note of the selected line (empty: none), below a list of `items` rows.
+fn note_line(p: &Panel, fb: &mut Framebuffer, items: usize, pitch: Pitch, line: &str) {
     let after = Panel::head_rows(true) + Panel::list_rows(items, pitch);
     p.separator(fb, after + 1);
-    for (n, line) in lines.iter().enumerate() {
-        if !line.is_empty() {
-            p.note(fb, after + 2 + 2 * n, line);
-        }
+    if !line.is_empty() {
+        p.note(fb, after + 2, line);
     }
 }
 
-/// `OPTIONS`: the hub. The note under the list says what is on the page of the selected line.
+/// `OPTIONS`: the hub, a plain list of the pages.
 fn draw_options(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
-    let p = Panel::for_list(OPTION_ITEMS.len(), wide(ctx), Pitch::Roomy, true, NOTE_ROWS).in_view(ctx.view);
+    let p = Panel::for_list(OPTION_ITEMS.len(), OPTIONS_W, Pitch::Roomy, true, 0).in_view(ctx.view);
     p.draw(fb, Some("OPTIONS"));
     for (n, item) in OPTION_ITEMS.iter().enumerate() {
         p.item(fb, p.item_y(n), item.label(), state(n, menu.cursor), ctx.nudge);
     }
-    let lines: [&str; 2] = match OPTION_ITEMS[menu.cursor.min(OPTION_ITEMS.len() - 1)] {
-        OptionItem::Video => ["FULLSCREEN, SIZE, WIDESCREEN,", "FILTER, 50 HZ, SMOOTH MOTION"],
-        OptionItem::Sound => ["VOLUME, MUSIC, EFFECTS,", "MENU SOUNDS"],
-        OptionItem::General => ["WINNER RULE, STYLE,", "UPDATE CHECK"],
-        OptionItem::Back => root_back(menu),
-    };
-    note_lines(&p, fb, OPTION_ITEMS.len(), Pitch::Roomy, &lines);
 }
 
 fn draw_video(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
@@ -561,36 +519,22 @@ fn draw_video(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
             VideoItem::Back => p.item(fb, y, label, st, ctx.nudge),
         }
     }
-    let lines: [&str; 2] = match VIDEO_ITEMS[menu.cursor.min(VIDEO_ITEMS.len() - 1)] {
-        VideoItem::Fullscreen => ["ALSO F11 OR ALT+ENTER", ""],
+    let note = match VIDEO_ITEMS[menu.cursor.min(VIDEO_ITEMS.len() - 1)] {
+        VideoItem::Fullscreen => "SHORTCUT: F11",
         VideoItem::Scaling => match s.scaling {
-            Scaling::Whole => ["THE WHOLE C64 PICTURE, SHARP", "PIXELS, BLACK BARS AROUND"],
-            Scaling::NoBorder => ["CUTS THE EMPTY BORDER, SO THE", "GAME AND MENUS ARE BIGGER"],
-            Scaling::Fill => ["FULL HEIGHT, NO BORDER", "EDGES ARE SMOOTHED"],
+            Scaling::Whole => "",
+            Scaling::NoBorder => "BIGGER, SHARP PIXELS",
+            Scaling::Fill => "SOFTER PIXELS",
         },
         VideoItem::Widescreen => match s.widescreen {
-            Widescreen::On => ["MORE TO SEE, ENEMIES COME", "FROM THE NEW EDGE"],
-            Widescreen::ViewOnly => ["MORE TO SEE, PLAYS EXACTLY", "LIKE THE C64"],
-            Widescreen::Off => ["THE ORIGINAL 4:3 PICTURE", ""],
+            Widescreen::On => "CHANGES HOW THE GAME PLAYS",
+            Widescreen::Off => "",
         },
-        VideoItem::Crt => {
-            if s.crt {
-                ["SCANLINES AND GLOW LIKE", "AN OLD TV"]
-            } else {
-                ["SHARP PIXELS", ""]
-            }
-        }
-        VideoItem::Display50 => {
-            if s.display_50 {
-                ["FULLSCREEN USES A 50 HZ MODE", "IF THE SCREEN HAS ONE"]
-            } else {
-                ["FULLSCREEN KEEPS THE DESKTOP", "MODE"]
-            }
-        }
-        VideoItem::SmoothMotion => ["ON 60, 120, 144 HZ SCREENS THE", "PICTURE MOVES BETWEEN STEPS"],
-        VideoItem::Back => ["BACK TO OPTIONS", ""],
+        VideoItem::Display50 if s.display_50 => "IN FULLSCREEN, IF THE SCREEN CAN",
+        VideoItem::SmoothMotion => "FOR 60 HZ AND FASTER SCREENS",
+        VideoItem::Crt | VideoItem::Display50 | VideoItem::Back => "",
     };
-    note_lines(&p, fb, VIDEO_ITEMS.len(), Pitch::Tight, &lines);
+    note_line(&p, fb, VIDEO_ITEMS.len(), Pitch::Tight, note);
 }
 
 fn draw_general(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
@@ -612,43 +556,34 @@ fn draw_general(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
             GeneralItem::Back => p.item(fb, y, label, st, ctx.nudge),
         }
     }
-    let update_note: [String; 2] = match &menu.update {
-        UpdateView::Available(v) => [format!("NEW VERSION {v} IS OUT:"), "PRESS SELECT TO INSTALL IT".into()],
-        UpdateView::Installing => ["INSTALLING...".into(), String::new()],
-        UpdateView::Done => ["INSTALLED - START THE GAME".into(), "AGAIN TO USE IT".into()],
-        UpdateView::Manual => ["OPENED THE PAGE OF THE".into(), "NEW VERSION".into()],
-        UpdateView::Failed(why) => ["UPDATE FAILED:".into(), clip(why, 30)],
-        UpdateView::Checking => ["LOOKING FOR A NEW VERSION...".into(), String::new()],
-        UpdateView::UpToDate => ["YOU HAVE THE NEWEST VERSION".into(), format!("({})", env!("CARGO_PKG_VERSION"))],
-        UpdateView::None => ["ASKS GITHUB NOW IF A NEW".into(), "VERSION IS OUT".into()],
+    let update_note = match &menu.update {
+        UpdateView::Available(v) => format!("SELECT TO UPDATE TO {v}"),
+        UpdateView::UpToDate => format!("UP TO DATE (V{})", env!("CARGO_PKG_VERSION")),
+        // the other states read the same as on the main menu
+        other => other.line("").unwrap_or_default(),
     };
-    let lines: [&str; 2] = match GENERAL_ITEMS[menu.cursor.min(GENERAL_ITEMS.len() - 1)] {
+    let update_note = clip(&update_note, wide(ctx) - 4);
+    let note = match GENERAL_ITEMS[menu.cursor.min(GENERAL_ITEMS.len() - 1)] {
         GeneralItem::Winner => match s.winner {
-            Winner::Score => ["TWO PLAYERS: HIGHER SCORE WINS", "(A TIE GOES TO THE STAGE)"],
-            Winner::Furthest => ["TWO PLAYERS: FURTHEST STAGE WINS", "(A TIE GOES TO THE SCORE)"],
+            Winner::Score => "2 PLAYERS: HIGHER SCORE WINS",
+            Winner::Furthest => "2 PLAYERS: FURTHEST STAGE WINS",
         },
         GeneralItem::Presentation => match (s.presentation, menu.authentic) {
-            (Presentation::Authentic, _) => ["AUTHENTIC: LIKE ON THE C64,", "NO MENUS"],
-            (_, AuthenticAvail::Ready) => ["MODERN: MENUS AND EXTRAS", "AUTHENTIC: LIKE ON THE C64"],
-            (_, AuthenticAvail::NeedsData) => ["AUTHENTIC NEEDS THE DISK IMAGE", "AGAIN: PRESS SELECT"],
-            (_, AuthenticAvail::ModuleActive) => ["AUTHENTIC IS NOT AVAILABLE", "FOR ROM MODULES"],
+            (Presentation::Authentic, _) => "LIKE THE C64, NO MENUS",
+            (_, AuthenticAvail::Ready) => "AUTHENTIC: LIKE THE C64",
+            (_, AuthenticAvail::NeedsData) => "AUTHENTIC NEEDS THE DISK: SELECT",
+            (_, AuthenticAvail::ModuleActive) => "NOT WITH A ROM MODULE",
         },
-        GeneralItem::UpdateCheck => {
-            if s.update_check {
-                ["ASKS GITHUB AT EVERY START IF", "A NEW VERSION IS OUT"]
-            } else {
-                ["NEVER ASKS THE INTERNET", ""]
-            }
-        }
-        GeneralItem::CheckNow => [update_note[0].as_str(), update_note[1].as_str()],
-        GeneralItem::Back => ["BACK TO OPTIONS", ""],
+        GeneralItem::UpdateCheck if s.update_check => "CHECKS ONLINE AT EVERY START",
+        GeneralItem::CheckNow => update_note.as_str(),
+        GeneralItem::UpdateCheck | GeneralItem::Back => "",
     };
-    note_lines(&p, fb, GENERAL_ITEMS.len(), Pitch::Roomy, &lines);
+    note_line(&p, fb, GENERAL_ITEMS.len(), Pitch::Roomy, note);
 }
 
 fn draw_sound(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     let s = &menu.settings;
-    let p = Panel::for_list(SOUND_ITEMS.len(), wide(ctx), Pitch::Roomy, true, SOUND_EXTRA_ROWS).in_view(ctx.view);
+    let p = Panel::for_list(SOUND_ITEMS.len(), wide(ctx), Pitch::Roomy, true, NOTE_ROWS).in_view(ctx.view);
     p.draw(fb, Some("SOUND"));
     for (n, item) in SOUND_ITEMS.iter().enumerate() {
         let (y, st) = (p.item_y(n), state(n, menu.cursor));
@@ -662,23 +597,18 @@ fn draw_sound(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
             SoundItem::Back => p.item(fb, y, label, st, ctx.nudge),
         }
     }
-    let lines: [&str; 2] = match SOUND_ITEMS[menu.cursor.min(SOUND_ITEMS.len() - 1)] {
-        SoundItem::Volume => ["M MUTES AND UNMUTES", ""],
-        SoundItem::Music | SoundItem::Effects => {
-            if s.split_sound() {
-                ["MUSIC AND EFFECTS PLAY APART", ""]
-            } else {
-                ["BOTH FULL: THE ORIGINAL SOUND", ""]
-            }
-        }
+    let note = match SOUND_ITEMS[menu.cursor.min(SOUND_ITEMS.len() - 1)] {
+        SoundItem::Volume => "SHORTCUT: M",
+        SoundItem::Music | SoundItem::Effects if s.split_sound() => "MUSIC AND EFFECTS PLAY APART",
+        SoundItem::Music | SoundItem::Effects => "BOTH FULL: THE ORIGINAL SOUND",
         SoundItem::MenuSounds => match s.menu_sounds {
-            MenuSoundMode::Off => ["NO SOUNDS IN THE MENUS", ""],
-            MenuSoundMode::Soft => ["QUIET TICKS", ""],
-            MenuSoundMode::Classic => ["EFFECTS OF THE GAME", ""],
+            MenuSoundMode::Off => "",
+            MenuSoundMode::Soft => "QUIET TICKS",
+            MenuSoundMode::Classic => "SOUNDS FROM THE GAME",
         },
-        SoundItem::Back => ["BACK TO OPTIONS", ""],
+        SoundItem::Back => "",
     };
-    note_lines(&p, fb, SOUND_ITEMS.len(), Pitch::Roomy, &lines);
+    note_line(&p, fb, SOUND_ITEMS.len(), Pitch::Roomy, note);
 }
 
 // ---------- controls ----------
@@ -712,7 +642,7 @@ fn draw_cell(p: &Panel, fb: &mut Framebuffer, slot: usize, y: isize, cell: &Cell
     }
 }
 
-/// `CONTROLS`: which device to set up. The note under the list says what it does.
+/// `CONTROLS`: which device to set up. The note under the list names the connected controller.
 fn draw_controls_pick(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
     let p = Panel::for_list(CONTROLS_ITEMS.len(), wide(ctx), Pitch::Roomy, true, NOTE_ROWS).in_view(ctx.view);
     p.draw(fb, Some("CONTROLS"));
@@ -720,12 +650,7 @@ fn draw_controls_pick(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx) {
         p.item(fb, p.item_y(n), label, state(n, menu.cursor), ctx.nudge);
     }
     let pad = ctx.pad_name.map_or("NO CONTROLLER CONNECTED".to_string(), |n| clip(&safe_text(&n.to_uppercase()), wide(ctx) - 4));
-    let lines: [&str; 2] = match menu.cursor {
-        0 => ["CHOOSE THE KEYS FOR PLAYING", "UP TO THREE KEYS PER ACTION"],
-        1 => [&pad, "CHOOSE THE BUTTONS FOR PLAYING"],
-        _ => root_back(menu),
-    };
-    note_lines(&p, fb, CONTROLS_ITEMS.len(), Pitch::Roomy, &lines);
+    note_line(&p, fb, CONTROLS_ITEMS.len(), Pitch::Roomy, &pad);
 }
 
 fn draw_controls(fb: &mut Framebuffer, menu: &Menu, ctx: &DrawCtx, device: Device) {
@@ -901,6 +826,49 @@ mod tests {
         }
     }
 
+    /// Every note of the option pages, in every state that changes it, fits its panel in both views (the drawing code
+    /// asserts that in debug builds); see docs/superpowers/specs/2026-11-17-ui-text-style.md.
+    #[test]
+    fn every_option_note_fits_the_cut_down_picture() {
+        giana_core::skip_without_data!();
+        let b = Bindings::default();
+        let scores = Scores::default();
+        let mut fb = Framebuffer::new();
+        let updates = || {
+            [
+                UpdateView::None,
+                UpdateView::Checking,
+                UpdateView::UpToDate,
+                UpdateView::Available("10.10.10".into()),
+                UpdateView::Installing,
+                UpdateView::Done,
+                UpdateView::Manual,
+                UpdateView::Failed("DOWNLOAD DAMAGED".into()),
+            ]
+        };
+        for view in [View::FULL, View::CROP] {
+            let ctx = DrawCtx { bindings: &b, pad_name: Some("A controller with a really very long name indeed, yes"), scores: &scores, input: InputState::keyboard(), nudge: 0, view };
+            for page in [Page::Video, Page::Sound, Page::General, Page::Options, Page::ControlsPick, Page::Network] {
+                for cursor in 0..7 {
+                    for variant in 0..8 {
+                        let mut m = Menu::main();
+                        m.page = page;
+                        m.cursor = cursor;
+                        m.settings.display_50 = variant % 2 == 0;
+                        m.settings.scaling = [Scaling::Whole, Scaling::NoBorder, Scaling::Fill][variant % 3];
+                        m.settings.widescreen = [Widescreen::On, Widescreen::Off][variant % 2];
+                        m.settings.winner = [Winner::Score, Winner::Furthest][variant % 2];
+                        m.settings.update_check = variant % 2 == 1;
+                        m.settings.presentation = if variant == 7 { Presentation::Authentic } else { Presentation::Modern };
+                        m.authentic = [AuthenticAvail::Ready, AuthenticAvail::NeedsData, AuthenticAvail::ModuleActive][variant % 3];
+                        m.update = updates()[variant].clone();
+                        draw(&mut fb, &m, &ctx);
+                    }
+                }
+            }
+        }
+    }
+
     /// Pages that can be open over a paused game.
     /// The main menu with nine items stays above the strip of controls, the other new panels inside the grid.
     #[test]
@@ -983,10 +951,10 @@ mod tests {
                 Panel::for_list(5, 20, Pitch::Roomy, true, 0).in_view(view),
                 Panel::for_list(CONTROLS_ITEMS.len(), w, Pitch::Roomy, true, NOTE_ROWS).in_view(view),
                 Panel::for_list(4, 30, Pitch::Roomy, false, 0).in_view(view),
-                Panel::for_list(OPTION_ITEMS.len(), w, Pitch::Roomy, true, NOTE_ROWS).in_view(view),
+                Panel::for_list(OPTION_ITEMS.len(), OPTIONS_W, Pitch::Roomy, true, 0).in_view(view),
                 Panel::for_list(VIDEO_ITEMS.len(), w, Pitch::Tight, true, NOTE_ROWS).in_view(view),
                 Panel::for_list(GENERAL_ITEMS.len(), w, Pitch::Roomy, true, NOTE_ROWS).in_view(view),
-                Panel::for_list(SOUND_ITEMS.len(), w, Pitch::Roomy, true, SOUND_EXTRA_ROWS).in_view(view),
+                Panel::for_list(SOUND_ITEMS.len(), w, Pitch::Roomy, true, NOTE_ROWS).in_view(view),
                 Panel::for_list(MAX_ENTRIES, 30, Pitch::Tight, true, 2).in_view(view),
                 Panel::centered(w, 21, true).in_view(view),
             ];
@@ -1005,20 +973,20 @@ mod tests {
         let end = |p: Panel| p.pixel_rect().1 + p.pixel_rect().3 as isize;
         let pages = [
             Panel::for_list(8, 20, Pitch::Roomy, true, 0).at_row(2),
-            Panel::for_list(NETWORK_ITEMS.len(), WIDE, Pitch::Roomy, true, 5),
-            Panel::for_list(OPTION_ITEMS.len(), WIDE, Pitch::Roomy, true, NOTE_ROWS),
+            Panel::for_list(NETWORK_ITEMS.len(), WIDE, Pitch::Roomy, true, NOTE_ROWS),
+            Panel::for_list(OPTION_ITEMS.len(), OPTIONS_W, Pitch::Roomy, true, 0),
             Panel::for_list(VIDEO_ITEMS.len(), WIDE, Pitch::Tight, true, NOTE_ROWS),
             Panel::for_list(GENERAL_ITEMS.len(), WIDE, Pitch::Roomy, true, NOTE_ROWS),
-            Panel::for_list(SOUND_ITEMS.len(), WIDE, Pitch::Roomy, true, SOUND_EXTRA_ROWS),
+            Panel::for_list(SOUND_ITEMS.len(), WIDE, Pitch::Roomy, true, NOTE_ROWS),
             Panel::for_list(MAX_ENTRIES, 30, Pitch::Tight, true, 2),
             Panel::centered(WIDE, 21, true),
-            Panel::centered(WIDE, 19, true),
+            Panel::centered(WIDE, 15, true),
         ];
         for p in pages {
             assert!(end(p) <= ui::NOTICE_Y, "{p:?} reaches y {}", end(p));
         }
         // the strip under the main menu, also with two CONTINUE lines and a note
-        let tall = Panel::for_list(10, 30, Pitch::Tight, true, MAIN_NOTE_ROWS - 1).at_row(0);
+        let tall = Panel::for_list(10, 30, Pitch::Tight, true, NOTE_ROWS - 1).at_row(0);
         assert!(end(tall) <= ui::STRIP_Y as isize, "{tall:?} reaches y {}", end(tall));
         assert!(end(Panel::for_list(8, 20, Pitch::Roomy, true, 0).at_row(2)) <= ui::STRIP_Y as isize);
     }

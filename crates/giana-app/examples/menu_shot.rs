@@ -125,12 +125,35 @@ fn main() {
         v.push(("main", main(0), false));
         v.push(("main_sel4", main(4), false));
         v.push(("main_notice", { let mut m = main(0); m.notice = Some("OTHER PLAYER LEFT THE GAME".into()); m }, false));
+        // a saved game: CONTINUE says where it stands, a new game of one player replaces it, the other lines have no note
+        let saved = giana_app::suspend::Info { players: 1, stage: 7, score: 41_250, player: 0, other_score: 0 };
+        for (name, cursor) in [("main_saved", 0), ("main_saved_new", 1), ("main_saved_other", 3)] {
+            let mut m = Menu::main();
+            m.set_suspend(vec![saved.clone()]);
+            m.cursor = cursor;
+            v.push((name, m, false));
+        }
+        // the pause menu of a game that can be saved and restarted: one note line, the same size on every line
+        for (name, cursor) in [("pause_saved", 0), ("pause_restart", 1), ("pause_restart_game", 2), ("pause_saved_other", 3)] {
+            let mut m = Menu::pause();
+            m.can_suspend = true;
+            m.can_restart_stage = true;
+            m.can_restart_game = true;
+            m.cursor = cursor;
+            v.push((name, m, false));
+        }
+        for (name, cursor) in [("controls", 0), ("controls_pad", 1)] {
+            let mut m = Menu::main();
+            m.page = Page::ControlsPick;
+            m.cursor = cursor;
+            v.push((name, m, false));
+        }
         for (name, view) in [
             ("main_update", giana_app::update::View::Available("0.2.0".into())),
             ("main_updating", giana_app::update::View::Installing),
             ("main_updated", giana_app::update::View::Done),
             ("main_update_manual", giana_app::update::View::Manual),
-            ("main_update_failed", giana_app::update::View::Failed("CHECKSUM MISMATCH".into())),
+            ("main_update_failed", giana_app::update::View::Failed("DOWNLOAD DAMAGED".into())),
         ] {
             let mut m = main(0);
             m.update = view;

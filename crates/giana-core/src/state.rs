@@ -160,12 +160,27 @@ pub struct GameState {
     pub vars_save_pending: Option<u8>, // `$09E9..$0A4E` still to do (chains to wait), see `StageTiming::vars_split`
     pub death_step_sprites: bool,
     pub death_step_only: bool, // `MainLine::DeathLate` waits for the first step only (`StageTiming::death_step_late`)
+    #[serde(default)]
+    pub death_hold: bool, // `StageTiming::death_next`: the death was noticed after the sample, sub_2041 waits for the next chain
+    #[serde(default)]
+    pub death_go: bool,
     pub store_budget: Option<usize>, // stores a cut routine may still make (`put_cell`)
     pub store_deferred: Vec<(bool, usize, u8)>,
+    /// `$157B` of a header cut by the sample before `$0E25` (`header_rest` stores it)
+    pub lives_deferred: Option<u8>,
+    #[serde(default)]
+    pub sprites_after_copy: bool, // `StageTiming::sprites_late`: the sprite set-up waits for the end of the chain
+    #[serde(default)]
+    pub music_deferred: Option<u8>,
+    #[serde(default)]
+    pub chain_cut: bool,
+    #[serde(default)]
+    pub music_resume: bool, // `StageTiming::text_music_cut`: the cut driver call goes on before the next chain // `StageTiming::banner_chain_cut`: this chain runs only the handler `$1249` // track request of a cut banner text (`$0A91`), made by `header_rest` in the next chain
     pub store_log: Option<Vec<(bool, usize, u8)>>,
     pub banner_steps_done: usize, // steps of `$0AA3..$0AB1` done so far (see `start_stage_after_banner_steps`)
-    pub column_scroll_rest: bool, // rows from `scroll_split_row` on are shifted after the tile lookup of the chain
-    pub scroll_split_row: u8,     // 25 = the whole copy is done before the lookup (default); set per chain from a recording
+    pub scroll_copy_done: u16, // stores of the copy of sub_9600 made (`crate::scroll::SCROLL_STORES` = none running)
+    pub scroll_split: u16,     // stores of the copy made before the handler `$12A3`: all by default; set per chain from a recording
+    pub scroll_split_tiles: u16, // stores of the copy made before the handler `$1249`: all by default; set per chain from a recording
     pub column_scroll_pending: bool, // sub_9600 started in this frame, its copy loops finish in the next one
     pub spawn_variant: u8, // $0456: Spawn position variant (0 = stage start, 1 = checkpoint); selects the $60EA entry
     pub var_042f: u8,  // $042F: Not written by any routine in ingame.asm so far (stays 0)
@@ -246,6 +261,9 @@ pub struct GameState {
     pub zp_12: u16,                 // $0012/$0013
     pub prev_tiles: [u8; 9],        // $043F..$0447: tiles of the previous sub_1A17 pass
     pub st_2169: u8,                // $2169: pipe warp in progress
+    /// `$2169` was set by the interrupt (`sub_1A17`, the hidden warp block) while a pass of the main loop was past `L0B6B`:
+    /// that pass ends first (status bar), the warp starts with the next one
+    pub warp_pass_late: bool,
     pub diamonds_bcd: u8,           // $0434: diamonds collected, BCD
     pub chk: [u8; 9],               // $0458..$0460: checkpoint block (stage, scroll, ..., map column, X, Y, tile pointer)
     pub saved_sprites: [u8; 17],    // $216C..: sprite registers saved by sub_210B
@@ -305,9 +323,18 @@ pub struct GameState {
     /// the columns that scrolled out of the screen on the left (newest first, rows 5..25), for the enemy tile probes
     #[serde(default)]
     pub wide_left: Vec<[u8; 20]>,
-    /// the column that is being collected while the rows of a scroll are shifted
+    /// the colours of `wide_left` (colour RAM of the cells as they left)
+    #[serde(default)]
+    pub wide_left_colour: Vec<[u8; 20]>,
+    /// the column that is being collected while the rows of a scroll are shifted (characters, colours)
     #[serde(default)]
     pub wide_stage: [u8; 20],
+    #[serde(default)]
+    pub wide_stage_colour: [u8; 20],
+    /// cells of the right extra area that the game changed (a block hit, a diamond taken there): `[map column, playfield row,
+    /// character, colour]`; the scroll brings them into column 39 instead of the map's cells
+    #[serde(default)]
+    pub wide_right: Vec<[u8; 4]>,
     /// counters of what WIDESCREEN ON does to the objects (tests and the soak report; not part of the game)
     /// pixels that the object that is being created is placed left of the spawn X (the first screen of ON, see `wide.rs`); 0 else
     #[serde(skip)]
@@ -383,6 +410,43 @@ pub struct StageTiming {
     pub tail_mid: bool,
     /// chains between the clear of the screen and the banner texts (and the track request that goes with them)
     pub text_after: usize,
+    /// the sample cuts the banner texts (`$0A61..$0A93`) after this many stores (screen and colour cells in order): the rest and the
+    /// track request of `$0A91` follow in the next chain (`header_rest`); `None` = texts and request in one chain
+    #[serde(default)]
+    pub text_cut: Option<usize>,
+    /// with `sprites_early`: the set-up comes after the sprite copy (`$13BF`) of the interrupt `$1393` of its chain, so the video chip
+    /// shows the new positions one chain later (measured: the sample before the main loop has the new Y in RAM, not in `$D001`)
+    #[serde(default)]
+    pub sprites_late: bool,
+    /// the death wait ends between the interrupts `$1326` and `$1393` and the interrupt `$1393` still comes before `sub_20AC` reaches
+    /// `$20BB` (`$D01A = 0`): it copies the sprites and plays its sound tick, the rest of the restart follows after it (measured).
+    /// 1: the interrupt comes after `$2095..$20A2` (the enemies move: `$0431 = 0`); 2: after `$20AC..$20B8` too (`$D015 = 0`: they do not)
+    #[serde(default)]
+    pub end_after_copy: u8,
+    /// with `death_end_split`: the sample of the chain that ended the death jump already cuts `sub_20AC` inside its clear loop `L20CD`;
+    /// the stores for Y > `clear_cut` are done there, the rest of `sub_20AC` follows before the next interrupt chain (measured)
+    #[serde(default)]
+    pub clear_cut: Option<u8>,
+    /// with `text_after > 0`: `sub_0E39` (`$0A5E`, `$D01A = 1`) still ran in the chain of the stage variables, the texts follow later
+    #[serde(default)]
+    pub irq_on_early: bool,
+    /// the banner wait ends between the sample and the interrupt `$12A3` of the next chain: `sub_0E39` (`$0AAE`) resets the raster
+    /// chain before `$12A3` comes, so that chain runs only the handler `$1249` (measured: `$0408` does not advance)
+    #[serde(default)]
+    pub banner_chain_cut: bool,
+    /// the sample cuts the track request of the banner (`$0A91`, `sub_150C`) inside the sound driver after this many instructions;
+    /// the call goes on right after the sample (measured from the SID registers, like `death_late`)
+    #[serde(default)]
+    pub text_music_cut: Option<u32>,
+    /// the death of this restart is noticed by the main loop only after the sample of the chain that set `$0465` (the pass was still
+    /// in the status bar, `sub_1CD7`): `sub_2041` starts before the first interrupt of the next chain (measured: `$0431 = $FF`, `$043C`
+    /// not yet decremented)
+    #[serde(default)]
+    pub death_next: bool,
+    /// the handler `$12A3` of the chain of `sub_0D54` comes between `$0D5C` (`STA $0404`) and `$0D5F` (`STA $0469`): `$12DA` computes
+    /// `$0468` from the new `$0404` and the old `$0469` (measured: `$0468 != 0` in the sample that first shows `$0404 = 7`)
+    #[serde(default)]
+    pub fine_cut: bool,
     /// the first chain after a restart does not advance $0408 (alignment of sub_20AC against the $12A3 handler)
     pub skip_inc: bool,
     /// time-based waits end before the interrupt chain of a frame (true) or after it (false)
@@ -391,14 +455,14 @@ pub struct StageTiming {
 
 impl Default for StageTiming {
     fn default() -> Self {
-        Self { post_fire: 9, swap_wait: SPRITE_SWAP_WAIT_FRAMES, banner_steps: Vec::new(), setup_wait: 2, death_wait: 28, death_late: None, death_step_late: 0, death_end_split: false, irq_off_frames: 0, clear_after: 0, vars_after: 1, vars_split: false, banner_gap: 0, banner_cut: 3 + crate::hud::STATUS_FRAME_STORES, header_cut: None, tick_kept: false, restart_swap: 0, tile_progress: Vec::new(), end_pre: true, banner_lost: 1, sprites_early: false, skip_inc: false, tail_pre: true, sound_extra: 0, tail_mid: false, text_after: 0 }
+        Self { post_fire: 9, swap_wait: SPRITE_SWAP_WAIT_FRAMES, banner_steps: Vec::new(), setup_wait: 2, death_wait: 28, death_late: None, death_step_late: 0, death_end_split: false, irq_off_frames: 0, clear_after: 0, vars_after: 1, vars_split: false, banner_gap: 0, banner_cut: 3 + crate::hud::STATUS_FRAME_STORES, header_cut: None, tick_kept: false, restart_swap: 0, tile_progress: Vec::new(), end_pre: true, banner_lost: 1, sprites_early: false, skip_inc: false, tail_pre: true, sound_extra: 0, tail_mid: false, text_after: 0, text_cut: None, sprites_late: false, end_after_copy: 0, clear_cut: None, irq_on_early: false, banner_chain_cut: false, text_music_cut: None, death_next: false, fine_cut: false }
     }
 }
 /// Waits of the stage exit sequence `$0BDF` (measured from the recording like `StageTiming`).
 impl Default for ExitTiming {
     /// Without a recording: no banner wait steps, the bonus count at the measured pace.
     fn default() -> Self {
-        Self { count_wait: 0, banner_steps: vec![23; 6], final_wait: 0, bonus_budget: 1128, bonus_carry: 0, final_pre: true, final_late: false }
+        Self { count_wait: 0, banner_steps: vec![23; 6], final_wait: 0, bonus_budget: 1128, bonus_carry: 0, final_pre: true, final_late: false, clear_late: false }
     }
 }
 
@@ -458,12 +522,16 @@ pub struct BonusTiming {
     pub ret_swap_early: bool,
     /// the busy wait of the way back ended before the first handler of its frame: `sub_0EAB` already sees `$0457` = 1
     pub ret_early: bool,
+    /// the last chain of the swap on the way in ended after the interrupt `$1393` of its frame (second gap of the main line):
+    /// `sub_13F0` (`$1E8A`) sets Giana's sprite up after the copy and `sub_20A3` waits for the copy of the next frame
+    #[serde(default)]
+    pub swap_late: bool,
 }
 
 impl Default for BonusTiming {
     /// Without a recording: the lengths measured in stage_30_run.
     fn default() -> Self {
-        Self { decomp: 5, swap: Vec::new(), ret_swap: Vec::new(), ret_decomp: 14, fin_wait: 24, ret_late: false, fin_early: false, swap_early: false, ret_swap_early: false, ret_early: false }
+        Self { decomp: 5, swap: Vec::new(), ret_swap: Vec::new(), ret_decomp: 14, fin_wait: 24, ret_late: false, fin_early: false, swap_early: false, ret_swap_early: false, ret_early: false, swap_late: false }
     }
 }
 
@@ -514,6 +582,9 @@ pub struct ExitTiming {
     /// ... and when it runs after the interrupt chain, it runs after the sound tick of its frame too (after `$1393`, true)
     /// or before it (between `$12A3` and `$1393`)
     pub final_late: bool,
+    /// the clear of `sub_9F45` started by the main loop (door, `$046D` set by an interrupt) is still running when the first
+    /// handler of the next chain comes: that chain still animates the tiles, `$0431 = $FF` and the texts come after it
+    pub clear_late: bool,
 }
 
 /// IRQ chains that run while the screen setup of sub_0E39 / sub_0E66 / sub_0D54 executes (measured in the oracle).
@@ -693,13 +764,21 @@ impl GameState {
             column_scroll_pending: false,
             vars_save_pending: None,
             death_step_only: false,
+            death_hold: false,
+            death_go: false,
             death_step_sprites: false,
             store_budget: None,
+            music_deferred: None,
+            chain_cut: false,
+            music_resume: false,
+            sprites_after_copy: false,
             store_deferred: Vec::new(),
+            lives_deferred: None,
             store_log: None,
             banner_steps_done: 0,
-            column_scroll_rest: false,
-            scroll_split_row: 25,
+            scroll_copy_done: crate::scroll::SCROLL_STORES as u16,
+            scroll_split: crate::scroll::SCROLL_STORES as u16,
+            scroll_split_tiles: crate::scroll::SCROLL_STORES as u16,
             spawn_variant: 0x00,
             var_042f: 0x00,
             lost_ticks: 0,
@@ -774,6 +853,7 @@ impl GameState {
             zp_12: 0,
             prev_tiles: [0; 9],
             st_2169: 0,
+            warp_pass_late: false,
             diamonds_bcd: 0,
             chk: [0; 9],
             saved_sprites: [0; 17],
@@ -822,7 +902,10 @@ impl GameState {
             tnw: crate::features::tnw::TnwState::from_installed(),
             wide_k: 0,
             wide_left: Vec::new(),
+            wide_left_colour: Vec::new(),
             wide_stage: [0; 20],
+            wide_stage_colour: [0; 20],
+            wide_right: Vec::new(),
             wide_back: 0,
             wide_stats: Default::default(),
         };
@@ -1054,6 +1137,29 @@ impl GameState {
             return;
         }
 
+        // WIDESCREEN ON: the same probe on the cells of the wide game (Giana may stand in an extra area), with wide pointers for
+        // the block routines (`wide.rs`); cells of columns 0..39 read as on the C64 (also below the last row)
+        if let Some(col) = self.wide_giana_col() {
+            let off = (ROW_OFFSETS_HIGH_9BB9[row] as i32) << 8 | ROW_OFFSETS_LOW_9BA0[row] as i32;
+            let (r0, c0) = (off / 40, off % 40 + col);
+            for (k, dr) in [0i32, 2, 3].into_iter().enumerate() {
+                for dc in 0..3i32 {
+                    let (r, c) = (r0 + dr, c0 + dc);
+                    self.surrounding_tiles[3 * k + dc as usize] =
+                        if (0..40).contains(&c) { self.read_screen_ram((0xC800 + 40 * r + c) as u16) } else { self.wide_tile(r as usize, c) };
+                }
+            }
+            let base = crate::wide::wide_ptr(r0, c0);
+            let head = crate::wide::ptr_add(base, -0x28);
+            self.head_tile_ptr_low = head as u8;
+            self.head_tile_ptr_high = (head >> 8) as u8;
+            self.zp_0e = crate::wide::ptr_add(base, 120);
+            for i in 0..9 {
+                self.surrounding_tile_flags[i] = self.tile_flags(self.surrounding_tiles[i]);
+            }
+            return;
+        }
+
         // $9E36: CLC; LDA $0E; ADC $9BA0,X; STA $0E
         let row_off_lo = ROW_OFFSETS_LOW_9BA0[row];
         let (sum_lo, carry_lo) = char_col.overflowing_add(row_off_lo);
@@ -1113,8 +1219,8 @@ impl GameState {
             // $9ECD: CLC; ADC $0428; ADC $0404 (second ADC consumes the carry of the first)
             let t = self.player_x_low as u16 + delta as u16;
             let sum = ((t & 0xFF) + self.scroll_fine as u16 + (t >> 8)) as u8;
-            // $9ED4: CMP #$3F; BCS rts
-            if sum >= 0x3F {
+            // $9ED4: CMP #$3F; BCS rts (WIDESCREEN ON: `GIANA_EXTRA` pixels further right, in the extra area)
+            if sum >= 0x3F + self.wide_giana_e() {
                 return;
             }
         }
@@ -1135,8 +1241,14 @@ impl GameState {
             // $9EF8: SEC; SBC $0428; SBC $0404 (second SBC consumes the borrow of the first)
             let t = self.player_x_low as i16 - delta as i16;
             let diff = ((t & 0xFF) - self.scroll_fine as i16 + if t < 0 { -1 } else { 0 }) as u8;
-            // $9F02: CMP #$19; BCC rts
-            if diff < 0x19 {
+            // WIDESCREEN ON: the wall is `GIANA_EXTRA` pixels further left, in the extra area (compared signed: X stays above 0)
+            let e = self.wide_giana_e();
+            if e != 0 {
+                if t - (self.scroll_fine as i16) < 0x19 - e as i16 {
+                    return;
+                }
+            } else if diff < 0x19 {
+                // $9F02: CMP #$19; BCC rts
                 return;
             }
         }
@@ -1242,6 +1354,63 @@ impl GameState {
         self.anim_step_timer = 0;
     }
 
+    /// `$20AC..$20CA` of sub_20AC and the stores of its clear loop `L20CD` for Y = `$2D` down to `y_end` (inclusive); the whole
+    /// routine is [`Self::reset_hardware`]
+    pub fn reset_hardware_cut(&mut self, y_end: u8) {
+        self.transform_timer = 0xFF;
+        self.time_warning = 0x00;
+        self.en.vic_me = 0;
+        self.vic_irq_enable = 0;
+        self.vic_border = 0;
+        self.en.vic_bg0 = 0;
+        self.hazard_hit = 0x00;
+        self.is_dying = false;
+        self.flag_0431 = 0x00;
+        self.redraw_pending = 0x00;
+        for y in (y_end as usize..=0x2D).rev() {
+            self.clear_store_l20cd(y);
+        }
+    }
+
+    /// `$20CD`: STA $0400,Y; STA $046A,Y with A = 0
+    fn clear_store_l20cd(&mut self, y: usize) {
+        match 0x400 + y {
+            0x400 => self.joystick_directions = 0,
+            0x401 => self.joystick_fire = 0,
+            0x404 => self.scroll_fine = 0,
+            0x405 => self.sky_scroll_fine = 0,
+            0x406 => self.player_move_dir = 0,
+            0x407 => self.jump_subtimer = 0,
+            0x408 => self.scroll_subpixel = 0,
+            0x409 => self.player_vel_fraction = 0,
+            0x40A => self.player_momentum = 0,
+            0x40B => {
+                self.var_040b = 0;
+                self.jump_table_idx = 0;
+            }
+            a @ 0x40C..=0x413 => self.dec[a - 0x40C] = 0,
+            0x414 => self.side_tile_flags = 0,
+            a @ 0x416..=0x41E => self.surrounding_tiles[a - 0x416] = 0,
+            a @ 0x41F..=0x427 => {
+                self.surrounding_tile_flags[a - 0x41F] = 0;
+                if a == 0x421 {
+                    self.ground_hit_flag = 0;
+                }
+            }
+            0x428 => self.move_delta = 0,
+            0x429 => self.momentum_friction = 0,
+            0x42A => self.jump_ascent_idx = 0,
+            0x42B => self.jump_descent_idx = 0,
+            0x42C => self.facing_right = true,
+            0x42D => self.anim_step_timer = 0,
+            _ => {}
+        }
+        self.set_v47(0x46A + y, 0);
+        if y == 1 {
+            self.redraw_pending = 0;
+        }
+    }
+
     /// sub_0D54 ($0D54): Stage tile decoding & background setup
     pub fn load_stage_tiles(&mut self) {
         self.load_stage_tiles_step(0, 1);
@@ -1274,7 +1443,10 @@ impl GameState {
         }
         // $0D5A: LDA #$07; STA $0404; STA $0469
         self.scroll_fine = 0x07;
-        self.prev_scroll = 0x07;
+        // `StageTiming::fine_cut`: `$12A3` of this chain reads `$0469` before `$0D5F` stores it (its own `$12E6` stores the same 7)
+        if !(self.timing.fine_cut && step == 0 && self.main_gap == 0) {
+            self.prev_scroll = 0x07;
+        }
         // $0D86: LDX $0456; LDA $9FD0,X. The table comes from the image: the Construction Kit hacks start the
         // half-way restart at column $85 (original $80); the 7A3 engine keeps the original value.
         let start = if self.engine_b.is_some() {
@@ -1592,6 +1764,10 @@ impl GameState {
 
     /// `$09E4..$0A4D`: after a lost life the player's values are saved to `$1569..` and loaded back (one player)
     pub fn stage_variables_after_restart(&mut self) {
+        if self.timing.irq_on_early {
+            // $0A5E: JSR sub_0E39 follows `L09DA` directly ($D01A = 1); the sample comes before the texts
+            self.vic_irq_enable = 1;
+        }
         if self.timing.vars_split && !(self.exit_1579 || self.exit_1579_seen) {
             // $09DA..$09E1 now; the save of `$09E9` follows in the chain after this one (`vars_save_late`)
             self.stage_variables_timer_l09da();
@@ -1710,6 +1886,8 @@ impl GameState {
         if self.banner_steps_done < 3 && upto >= 3 {
             // $0AAE: JSR sub_0E39 (IRQ vectors); this chain loses its sound tick
             self.lost_ticks = self.timing.banner_lost;
+            // before the handler $12A3 of this chain: the rest of the chain is lost (measured)
+            self.chain_cut = self.timing.banner_chain_cut && self.main_gap == 0;
         }
         if upto >= 3 {
             // $0AB1: JSR sub_0E66
@@ -1869,6 +2047,12 @@ impl GameState {
 
         // Handler $1249: animated tiles
         self.tile_animation_handler_l127c();
+        // the stores of the copy between the handlers `$1249` and `$12A3`
+        self.column_scroll_after_tiles_sub_9600();
+        if self.chain_cut {
+            // sub_0E39 of the main line reset the raster chain after this handler: $12A3, $1326 and $1393 do not come
+            return;
+        }
         self.death_late_continue(false);
         if self.main_between_handlers {
             // a flag poked at the sample line is noticed by the main line before the second handler of the chain
@@ -1910,7 +2094,6 @@ impl GameState {
 
             // sub_9DF4 ($9DF4..$9EC2): Inspect 3x3 surrounding tiles on screen RAM around player
             self.b_tile_surroundings();
-            self.column_scroll_rest_sub_9600();
 
             // sub_1A17 ($1A17): block interaction
             self.block_interaction_sub_1a17();
@@ -1938,7 +2121,9 @@ impl GameState {
             }
         }
 
-        // the copy of sub_9600 goes on when the lookup did not run in this chain
+        // the copy of sub_9600 goes on in the main line after the handler `$12A3` returns: the lookup `sub_9DF4` and the block
+        // interaction `sub_1A17` of the handler both see the rows it has not reached (stage_31_run frame 1310: `$97E2` at lines
+        // 72..88, `$12A3` at 89, `sub_1A17` allocates a `$9B50` slot at line 109, the loop goes on at line 122)
         self.column_scroll_rest_sub_9600();
         // $1326 handler: slot table shift and start of sub_9600
         self.scroll_irq_l1326();
@@ -2013,6 +2198,9 @@ impl GameState {
         self.main_pass();
         if irq_off {
             // no raster interrupt at all in this frame: its sound tick is lost like the one the restart announced
+            self.lost_ticks = self.lost_ticks.saturating_sub(1);
+        } else if self.chain_cut {
+            self.chain_cut = false;
             self.lost_ticks = self.lost_ticks.saturating_sub(1);
         } else if self.skip_h4 {
             // $20BB: STA $D01A = 0 in the gap before $1393: the raster interrupt of that handler never comes (the sprite

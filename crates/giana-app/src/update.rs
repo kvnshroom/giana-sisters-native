@@ -426,12 +426,12 @@ impl View {
     pub fn line(&self, key: &str) -> Option<String> {
         Some(match self {
             View::None => return None,
-            View::Checking => "LOOKING FOR A NEW VERSION...".to_string(),
-            View::UpToDate => "YOU HAVE THE NEWEST VERSION".to_string(),
+            View::Checking => "CHECKING FOR UPDATES...".to_string(),
+            View::UpToDate => "UP TO DATE".to_string(),
             View::Available(v) => format!("NEW VERSION {v} - PRESS {key} TO UPDATE"),
             View::Installing => "UPDATING...".to_string(),
             View::Done => "UPDATED - RESTART THE GAME".to_string(),
-            View::Manual => "OPENED THE PAGE OF THE NEW VERSION".to_string(),
+            View::Manual => "DOWNLOAD PAGE OPENED".to_string(),
             View::Failed(why) => format!("UPDATE FAILED - {why}"),
         })
     }
@@ -536,7 +536,7 @@ impl Updater {
                     }
                     Err(TryRecvError::Empty) => {}
                     Err(TryRecvError::Disconnected) => {
-                        self.view = View::Failed("INTERNAL ERROR".into());
+                        self.view = View::Failed("TRY AGAIN LATER".into());
                         self.work = None;
                     }
                 }
@@ -563,12 +563,12 @@ impl Updater {
                         View::Manual
                     }
                     Err(InstallError::Checksum(m)) => {
-                        eprintln!("The update was not installed, nothing was changed: {m}");
-                        View::Failed("CHECKSUM MISMATCH".into())
+                        eprintln!("giana-app: update not installed, nothing was changed: {m}");
+                        View::Failed("DOWNLOAD DAMAGED".into())
                     }
                     Err(InstallError::Other(m)) => {
-                        eprintln!("The update did not work: {m}");
-                        View::Failed("SEE THE TERMINAL".into())
+                        eprintln!("giana-app: update failed: {m}");
+                        View::Failed("TRY AGAIN LATER".into())
                     }
                 },
                 Err(_) => View::Failed("NO CONNECTION".into()),

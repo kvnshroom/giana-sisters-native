@@ -1,5 +1,6 @@
 //! Hülsbeck Sound & Music Driver Synthesizer for The Great Giana Sisters.
 
+pub mod chip;
 pub mod mixer;
 pub mod player;
 pub mod split;

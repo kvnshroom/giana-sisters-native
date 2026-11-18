@@ -620,7 +620,10 @@ impl GameState {
         // `$0604 & 1` is Giana's X MSB
         let enemy_msb = msb & self.bit(y) != 0;
         let giana_msb = msb & 1 != 0;
-        if !giana_msb {
+        if self.wide_on() {
+            // WIDESCREEN ON: by signed X (an enemy in the left extra area is left of Giana)
+            face_left = self.x9_sub((self.player_x_low, giana_msb as u8), (self.spr(ys), enemy_msb as u8)).2;
+        } else if !giana_msb {
             if !enemy_msb {
                 face_left = self.player_x_low < self.spr(ys);
             } else {
@@ -1127,7 +1130,9 @@ impl GameState {
                 let ex = self.spr(2 * x);
                 let emsb = (self.sprite_x_msb & self.bit(x) != 0) as i32;
                 let ey = self.spr(2 * x + 1);
-                let dx = ((self.v47(0x48B) as i32) << 8 | self.v47(0x48A) as i32) - (emsb << 8 | ex as i32);
+                let (p, e) = (((self.v47(0x48B) as i32) << 8 | self.v47(0x48A) as i32), (emsb << 8 | ex as i32));
+                // WIDESCREEN ON: signed X (sprites left of X = 0 in the extra area)
+                let dx = if self.wide_on() { crate::wide::signed_x9(p & 0x1FF) - crate::wide::signed_x9(e) } else { p - e };
                 let dy = (self.v47(0x490) as i32 - ey as i32).abs();
                 if dx.abs() < 0x10 && dy < 0x10 {
                     return Some(x);

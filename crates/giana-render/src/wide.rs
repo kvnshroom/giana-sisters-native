@@ -6,9 +6,8 @@
 //! without the border (the playing area alone) from 304 x 200 to 352 x 200 with [`EXTRA_CROP`] on each side (1.76:1 as well).
 //!
 //! The extra columns are drawn from the level map, not from screen RAM (which only holds the 40 columns of the picture): see
-//! [`WideCols`]. They are not part of what the C64 shows, so they are shaded (smoothly darker towards the outer edge, so the
-//! old edge reads as the edge of the game, the status bar lines excepted), and the sprites in them fade out with the distance from the old edge: the objects
-//! of the game still come and go at the old edges, the fade hides that (see `vic::draw_strips`).
+//! [`WideCols`]. They are drawn like the rest of the picture: the game plays by the wide rules (`GameState::set_wide`), its
+//! objects come and go beyond the edges of the wide picture (see `vic::draw_strips`).
 //!
 //! The strips are separate from the 384 x 272 frame buffer on purpose: the frame buffer, with everything that is drawn on it
 //! (pause menu, messages), stays the C64 frame, and [`compose`] puts the strips in at the last step.
@@ -30,11 +29,6 @@ pub const PLAY_H: usize = 200;
 
 /// Character columns of tiles kept on each side (6 are visible, one more for the fine scroll).
 pub const WIDE_COLS: usize = 7;
-
-/// Brightness (of 256) of the extra picture at the outer edge; at the old edge it is 256 (no step), and it goes down smoothly.
-const SHADE_OUTER: u32 = 110;
-/// Sprites fade out over this many pixels beyond the old edge.
-pub const FADE: usize = 28;
 
 /// Characters and colours of the level columns next to the picture: `WIDE_COLS` columns left of screen column 0 and right of
 /// screen column 39, for the 20 rows of the playfield.
@@ -73,13 +67,19 @@ impl WideCols {
         if map.len() < MAP_W * MAP_ROWS {
             return me;
         }
+        // the map column on screen column 39 counted from the start of the level: at its end the scroll stops on map column 0
+        // (256, the C64 copies `x & $FF`); a level starts with 39 there, so a smaller one has wrapped
         let mc = game.map_column as i32;
+        let mc = if mc < 39 { mc + MAP_W as i32 } else { mc };
         let expect = if game.column_scroll_pending { mc - 1 } else { mc };
+        // the map column at `m`: beyond the end the wrapped ones (as the objects of `GameState::wide_tile` and the C64's scroll
+        // see them), before the start none
+        let wrap = |m: i32| if m >= MAP_W as i32 { m - MAP_W as i32 } else { m };
         let score = |last: i32| -> (usize, usize) {
             let (mut hit, mut total) = (0, 0);
             for r in 0..MAP_ROWS {
                 for c in 0..40usize {
-                    let m = last - 39 + c as i32;
+                    let m = wrap(last - 39 + c as i32);
                     if !(0..MAP_W as i32).contains(&m) {
                         continue;
                     }
@@ -97,7 +97,11 @@ impl WideCols {
             (hit, total)
         };
         let mut best: Option<(i32, usize, usize)> = None;
-        for last in [expect, expect - 1, expect + 1] {
+        // on the way back from a room the stage is on screen a few frames before the map column of the room ($27) is set back to
+        // the one saved when the room was entered (`$045C`): try that one too
+        let saved = game.chk[4] as i32;
+        let saved = if saved < 39 { saved + MAP_W as i32 } else { saved };
+        for last in [expect, expect - 1, expect + 1, saved, saved - 1, saved + 1] {
             let (hit, total) = score(last);
             if total > 0 && best.is_none_or(|(_, h, t)| hit * t > h * total) {
                 best = Some((last, hit, total));
@@ -109,6 +113,20 @@ impl WideCols {
             return me;
         }
         me.aligned = true;
+        // WIDESCREEN ON: the game keeps the cells of the extra areas itself (Giana hits blocks and takes diamonds there, see
+        // `giana_core::wide`); the picture shows those whenever the screen is where the game says it is
+        if game.wide_on() && last == expect {
+            for side in 0..2usize {
+                for r in 0..MAP_ROWS {
+                    for k in 0..WIDE_COLS {
+                        let col = if side == 0 { k as i32 - WIDE_COLS as i32 } else { 40 + k as i32 };
+                        let (ch, colour) = game.wide_cell(r + 5, col);
+                        me.tiles[(side * MAP_ROWS + r) * WIDE_COLS + k] = 0x8000 | (colour as u16 & 0x0F) << 8 | ch as u16;
+                    }
+                }
+            }
+            return me;
+        }
         for side in 0..2usize {
             for r in 0..MAP_ROWS {
                 for k in 0..WIDE_COLS {
@@ -120,8 +138,9 @@ impl WideCols {
                         me.tiles[(side * MAP_ROWS + r) * WIDE_COLS + k] = 0x8000 | t[r];
                     } else {
                         // before the first column of the level (stage start) the edge column goes on, as the objects
-                        // see it (`GameState::wide_tile`), instead of a black hole in the picture
-                        let m = m.clamp(0, MAP_W as i32 - 1);
+                        // see it (`GameState::wide_tile`), instead of a black hole in the picture; beyond the last one the
+                        // wrapped columns
+                        let m = wrap(m).clamp(0, MAP_W as i32 - 1);
                         let ch = map[r * MAP_W + m as usize];
                         me.tiles[(side * MAP_ROWS + r) * WIDE_COLS + k] = 0x8000 | (game.tile_colour(ch) as u16 & 0x0F) << 8 | ch as u16;
                     }
@@ -155,12 +174,17 @@ impl WideCols {
 }
 
 /// The columns that have scrolled out of the picture, newest first: the extra area shows them as they left (with the blocks
-/// that Giana hit, the diamonds she took), not as the map has them. Fed once per game step with [`WideHistory::observe`]; it
-/// finds the scroll by comparing the screen with the one of the step before, so it needs nothing from the game.
+/// that Giana hit, the diamonds she took), not as the map has them. Fed once per game step with [`WideHistory::observe`].
+///
+/// A scroll is told by the map column on screen column 39 (`map_column`, less one while the copy of the column is still to
+/// come), not by comparing the screen with the one before: on a screen whose rows are mostly plain sky every row looks the
+/// same moved or not, and a scroll taken for no scroll left old columns in the picture.
 #[derive(Clone, Default)]
 pub struct WideHistory {
     /// playfield rows of the screen of the last step: character and colour, row major (20 x 40)
     prev: Vec<u16>,
+    /// stage and map column on screen column 39 of the last step
+    at: Option<(u32, i32)>,
     /// columns left of the picture (nearest first) and right of it
     left: std::collections::VecDeque<[u16; MAP_ROWS]>,
     right: std::collections::VecDeque<[u16; MAP_ROWS]>,
@@ -169,29 +193,29 @@ pub struct WideHistory {
 impl WideHistory {
     pub fn observe(&mut self, game: &giana_core::state::GameState) {
         let now: Vec<u16> = (0..MAP_ROWS * 40).map(|i| game.screen_ram[200 + i] as u16 | (game.color_ram[200 + i] as u16 & 0x0F) << 8).collect();
-        if self.prev.len() == now.len() {
-            let ch = |v: &[u16], r: usize, c: usize| v[r * 40 + c] & 0xFF;
-            let rows = |f: &dyn Fn(usize, usize) -> bool| (0..MAP_ROWS).filter(|&r| (0..39).all(|c| f(r, c))).count();
-            let same = rows(&|r, c| ch(&now, r, c) == ch(&self.prev, r, c));
-            let left = rows(&|r, c| ch(&now, r, c) == ch(&self.prev, r, c + 1));
-            let right = rows(&|r, c| ch(&now, r, c + 1) == ch(&self.prev, r, c));
-            let column = |v: &[u16], c: usize| -> [u16; MAP_ROWS] { std::array::from_fn(|r| v[r * 40 + c]) };
-            if same >= 14 {
+        let at = (game.stage, (game.map_column as i32 - game.column_scroll_pending as i32).rem_euclid(MAP_W as i32));
+        let column = |v: &[u16], c: usize| -> [u16; MAP_ROWS] { std::array::from_fn(|r| v[r * 40 + c]) };
+        match self.at {
+            Some(before) if self.prev.len() == now.len() && before == at => {
                 // no scroll: a few cells may have changed
-            } else if left >= 14 {
+            }
+            Some((stage, col)) if self.prev.len() == now.len() && stage == at.0 && (col + 1).rem_euclid(MAP_W as i32) == at.1 => {
                 self.left.push_front(column(&self.prev, 0));
                 self.right.pop_front();
                 self.left.truncate(WIDE_COLS);
-            } else if right >= 14 {
+            }
+            Some((stage, col)) if self.prev.len() == now.len() && stage == at.0 && (col - 1).rem_euclid(MAP_W as i32) == at.1 => {
                 self.right.push_front(column(&self.prev, 39));
                 self.left.pop_front();
                 self.right.truncate(WIDE_COLS);
-            } else {
-                // another picture (a new stage, a banner): nothing of the old columns fits any more
+            }
+            _ => {
+                // another picture (a new stage, a restart, a room): nothing of the old columns fits any more
                 self.left.clear();
                 self.right.clear();
             }
         }
+        self.at = Some(at);
         self.prev = now;
     }
 
@@ -200,7 +224,7 @@ impl WideHistory {
     }
 }
 
-/// The two strips of extra picture, `EXTRA` x 200 pixels each, as they are drawn (shaded, with the sprites in them).
+/// The two strips of extra picture, `EXTRA` x 200 pixels each, as they are drawn (with the sprites in them).
 /// `left` ends at the old left edge of the picture, `right` begins at the old right edge.
 #[derive(Clone)]
 pub struct Strips {
@@ -208,9 +232,6 @@ pub struct Strips {
     pub right: Vec<u32>,
     /// a menu stands over the game (it is dimmed): the strips take the same step darker
     pub menu_dim: bool,
-    /// hide that the game works from the old edges: shade the extra picture towards the outer edge and fade the sprites out
-    /// (`Widescreen::masks_edge`; one switch for both)
-    pub mask: bool,
     /// the groups of cells of the status bar (first and last column, both included): [`compose`] spreads them over the wide
     /// picture. Empty: no status bar on screen, nothing is moved.
     pub hud: Vec<(usize, usize)>,
@@ -229,7 +250,7 @@ impl Default for Strips {
 
 impl Strips {
     pub fn new() -> Self {
-        Self { left: vec![0xFF000000; EXTRA * PLAY_H], right: vec![0xFF000000; EXTRA * PLAY_H], menu_dim: false, mask: true, hud: Vec::new(), hud_bg: 0xFF000000, crop: false }
+        Self { left: vec![0xFF000000; EXTRA * PLAY_H], right: vec![0xFF000000; EXTRA * PLAY_H], menu_dim: false, hud: Vec::new(), hud_bg: 0xFF000000, crop: false }
     }
 
     /// All black (a page over the game that has no picture behind it).
@@ -247,43 +268,9 @@ impl Strips {
     }
 }
 
-/// How bright the extra picture is at `dist` pixels from the old edge (1 is the pixel next to the edge), of 256: 256 at the
-/// edge, then a smooth fall (smoothstep, so there is no visible step or kink at the edge) to `SHADE_OUTER` at the outer end.
-/// `dist` 0 is not shaded at all (the status bar lines).
-pub fn brightness(dist: usize) -> u32 {
-    if dist == 0 {
-        return 256;
-    }
-    let t = (dist.min(EXTRA) as u32 - 1) * 1000 / EXTRA as u32; // 0..1000
-    let ease = t * t * (3000 - 2 * t) / 1_000_000; // smoothstep, 0..1000
-    256 - (256 - SHADE_OUTER) * ease / 1000
-}
-
-/// The colour `index` as the extra picture shows it at `dist` pixels from the old edge. `mask` is the switch of the edge
-/// masking (`Strips::mask`): without it the extra picture is as bright as the rest.
-pub fn shade(index: u8, dist: usize, menu_dim: bool, mask: bool) -> u32 {
-    let index = if menu_dim { DARKER[(index & 15) as usize] } else { index };
-    let c = c64_color(index);
-    let f = if mask { brightness(dist) } else { 256 };
-    let ch = |shift: u32| ((c >> shift & 0xFF) * f / 256) << shift;
-    0xFF000000 | ch(16) | ch(8) | ch(0)
-}
-
-/// Mixes `top` over `base` with `alpha` of 256.
-pub fn mix(base: u32, top: u32, alpha: u32) -> u32 {
-    let ch = |shift: u32| (((base >> shift & 0xFF) * (256 - alpha) + (top >> shift & 0xFF) * alpha) / 256) << shift;
-    0xFF000000 | ch(16) | ch(8) | ch(0)
-}
-
-/// Alpha (of 256) of a sprite pixel `dist` pixels beyond the old edge (1 is next to it): opaque at the edge, gone after `FADE`.
-pub fn sprite_alpha(dist: usize, mask: bool) -> u32 {
-    if !mask {
-        256
-    } else if dist > FADE {
-        0
-    } else {
-        256 * (FADE + 1 - dist) as u32 / FADE as u32
-    }
+/// The colour `index` as the extra picture shows it: with a menu over the game one step darker, like the picture.
+pub fn shade(index: u8, menu_dim: bool) -> u32 {
+    c64_color(if menu_dim { DARKER[(index & 15) as usize] } else { index })
 }
 
 /// Space between the left edge of the wide playing area and the first group of the status bar, and between the last one and
@@ -410,18 +397,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shading_starts_at_full_brightness_and_falls_smoothly() {
-        assert_eq!(brightness(0), 256, "status bar lines are not shaded");
-        assert_eq!(brightness(1), 256, "no step at the old edge");
-        let b: Vec<u32> = (1..=EXTRA).map(brightness).collect();
-        assert!(b.windows(2).all(|w| w[0] >= w[1]), "never gets brighter outwards");
-        assert!(b.windows(2).all(|w| w[0] - w[1] <= 12), "no step: {b:?}");
-        assert!(b[0] - b[1] <= 1, "starts flat: {b:?}");
-        assert!(*b.last().unwrap() <= SHADE_OUTER + 4);
-        // without the mask the extra picture is as bright as the rest, and sprites do not fade
-        assert_eq!(shade(7, EXTRA, false, false), c64_color(7));
-        assert_eq!(sprite_alpha(EXTRA, false), 256);
-        assert!(shade(7, EXTRA, false, true) != c64_color(7));
-        assert_eq!((sprite_alpha(1, true), sprite_alpha(FADE + 1, true)), (256, 0));
+    fn the_extra_picture_is_as_bright_as_the_rest() {
+        assert_eq!(shade(7, false), c64_color(7));
+        assert_eq!(shade(7, true), c64_color(DARKER[7]));
     }
 }

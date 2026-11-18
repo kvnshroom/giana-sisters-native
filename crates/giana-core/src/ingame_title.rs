@@ -131,6 +131,7 @@ impl GameState {
         self.title_active = false;
         // the column shift that the last chain started runs to its end inside that interrupt before the main line goes on
         self.column_scroll_finish_sub_9600();
+        self.column_scroll_rest_sub_9600();
         // $0965/$096A: `$1576` is 1 for one player (the second counts as finished), 0 for two; `$1575` = 0
         self.player_save[12] = 0;
         self.player_save[13] = if two_players { 0 } else { 1 };

@@ -6,8 +6,9 @@
 use crate::image::{img, img_word};
 use crate::state::GameState;
 
-/// Stores of sub_0E66 (16 + 10 screen cells, 120 colour cells).
-pub const STATUS_FRAME_STORES: usize = 146;
+/// Stores of sub_0E66: 16 + 10 screen cells and 120 colour cells when `$1E == 0`, 120 screen and 120 colour cells (cleared) otherwise.
+/// The larger of the two counts: a cut of `3 + STATUS_FRAME_STORES` steps is the whole routine.
+pub const STATUS_FRAME_STORES: usize = 240;
 
 impl GameState {
     pub(crate) fn text_cell(&mut self, index: usize, ch: u8) {
@@ -39,12 +40,27 @@ impl GameState {
 
     /// The stores of the status bar header that the cut left for the next chain.
     pub fn header_rest(&mut self) {
+        if let Some(v) = self.lives_deferred.take() {
+            self.stage_text_157b = v;
+        }
         for (colour, index, v) in std::mem::take(&mut self.store_deferred) {
             if colour {
                 self.color_ram[index] = v;
             } else {
                 self.screen_ram[index] = v;
             }
+        }
+    }
+
+    /// A banner text cut by the sample (`StageTiming::text_cut`) goes on right after the sample, before the first interrupt of the
+    /// next frame: the stores left over and the track request of `$0A91`.
+    pub fn text_rest(&mut self) {
+        if std::mem::take(&mut self.music_resume) {
+            self.sound.resume();
+        }
+        if let Some(track) = self.music_deferred.take() {
+            self.header_rest();
+            self.request_music_sub_150c(track);
         }
     }
 
@@ -114,6 +130,13 @@ impl GameState {
 
     fn status_bar_frame_stores(&self) -> Vec<(bool, usize, u8)> {
         let mut v = Vec::with_capacity(STATUS_FRAME_STORES);
+        if self.zp_1e != 0 {
+            // L0E9D: Y = $78..1: $C84F,Y = 0 and $D84F,Y = 0
+            for y in (1..=0x78usize).rev() {
+                v.extend([(false, 0x4F + y, 0), (true, 0x4F + y, 0)]);
+            }
+            return v;
+        }
         // L0E6C: Y = 3..0: $C851,Y and $C887,Y from $93C8,Y; $C879,Y and $C8AF,Y from $93CC,Y
         for y in (0..4usize).rev() {
             let (a, b) = (img(0x93C8 + y), img(0x93CC + y));
@@ -135,17 +158,8 @@ impl GameState {
         self.status_bar_frame_steps(0, usize::MAX);
     }
 
-    /// The stores `from..to` of sub_0E66 (all of them in the `$1E != 0` case, which is one loop)
+    /// The stores `from..to` of sub_0E66
     pub fn status_bar_frame_steps(&mut self, from: usize, to: usize) {
-        if self.zp_1e != 0 {
-            if from == 0 {
-                for y in 1..=0x78usize {
-                    self.screen_ram[0x4F + y] = 0;
-                    self.color_ram[0x4F + y] = 0;
-                }
-            }
-            return;
-        }
         let stores = self.status_bar_frame_stores();
         let to = to.min(stores.len());
         if from >= to {
@@ -164,6 +178,11 @@ impl GameState {
     pub fn banner_text_l0a61(&mut self) {
         // $0A5E: JSR sub_0E39 has just set $D01A = 1 (raster interrupt on, vectors and $D012 for the first handler)
         self.vic_irq_enable = 1;
+        // a measured cut (`StageTiming::text_cut`): the stores after it and the track request wait for `header_rest`
+        let cut = self.timing.text_cut;
+        if cut.is_some() {
+            self.store_budget = cut;
+        }
         self.print_string_sub_9881(self.player as usize, 0x0F, 7); // string `$1568`: GIANA or MARIA
         self.print_string_sub_9881(2, 0x0E, 9);
         self.print_string_sub_9881(3, 0x0E, 0x0B);
@@ -171,7 +190,25 @@ impl GameState {
         self.stage_number_l0a56();
         // $0A80: $02/$03 = $0466; Y = $0B; X = 0; A = $15
         self.print_bcd_sub_98d9(&[self.death_arc_idx], 0x0B, 0x15);
-        self.request_music_sub_150c(6);
+        if cut.is_some() {
+            self.store_budget = None;
+            self.music_deferred = Some(6);
+        } else if let Some(steps) = self.timing.text_music_cut.filter(|&k| k > 0) {
+            // the sample cuts the driver call of the request: it goes on right after the sample (`text_rest`)
+            self.request_music_cut(6, steps);
+            self.music_resume = true;
+        } else {
+            self.request_music_sub_150c(6);
+        }
+    }
+
+    /// The stores of the banner texts (`$0A61..$0A8E`) in the order of the 6502 (for the harness: where the sample cut them).
+    pub fn banner_text_stores_for_test(&mut self) -> Vec<(bool, usize, u8)> {
+        self.store_log = Some(Vec::new());
+        self.timing.text_cut = Some(usize::MAX);
+        self.banner_text_l0a61();
+        self.music_deferred = None;
+        self.store_log.take().unwrap_or_default()
     }
 
     /// `$0DE7..$0E1C` of sub_0D54: status bar header (only while `$154D == 0`)

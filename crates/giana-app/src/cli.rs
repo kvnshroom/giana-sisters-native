@@ -1,43 +1,43 @@
 //! The command line of the game.
 
-pub const HELP: &str = "The Great Giana Sisters (Rust port)
+pub const HELP: &str = "The Great Giana Sisters (native port)
 
 USAGE:
     giana-app [OPTIONS] [FILE]
 
-FILE can be your disk image (.g64 or .d64) or a ROM module (.grom). You can also open one with the program or drop it on it.
+FILE is your disk image (.g64, .d64) or a ROM module (.grom). Dropping it on the program works too.
 
 FIRST START:
-    --import FILE      take the game data from your disk image (.g64 or .d64), then exit
-    --data DIR         keep the game data in DIR instead of the default folder
+    --import FILE      import the game data from your disk image and exit
+    --data DIR         keep the game data in DIR
 
 PLAY:
-    --stage N          skip the menu and start in stage N (1 to 33)
+    --stage N          start in stage N (1 to 33), without the menu
     --module FILE|ID   play this ROM module this time only
-    --debug            debug keys: F1 lives, F2 invulnerable, F3/F4 previous/next stage
+    --debug            F1 lives, F2 invulnerable, F3/F4 previous/next stage
 
-ROM MODULES:
-    --list-modules     show the installed modules, then exit
-    --add-module FILE  add a module (or a hack's disk image), then exit
+ROM MODULES (these exit when done):
+    --list-modules     list the installed modules
+    --add-module FILE  add a module or a hack's disk image
     --make-module INPUT -o OUT.grom --name NAME [--author A] [--version V] [--description D] [--title F_2.PRG]
-                       make a module from a modified game, then exit. INPUT can be a hack's disk image (.d64/.g64),
-                       a 64K image or RAM dump, a PRG of disk file 1, a VICE snapshot (.vsf) or a .bps patch.
-                       Needs your game data; the module itself contains none of it
+                       make a module from a modified game: a hack's disk image, a 64K image or RAM dump,
+                       a PRG of disk file 1, a VICE snapshot (.vsf) or a .bps patch. Needs your game data.
 
 UPDATES:
-    --check-update     look for a new version, print the result, then exit
-    --no-update-check  never look for a new version (also OPTIONS > GENERAL > UPDATE CHECK)
+    --check-update     check for updates and exit
+    --no-update-check  never check for updates (also OPTIONS > GENERAL > UPDATE CHECK)
 
 OTHER:
     -h, --help         show this text
     -V, --version      show the version
 
-The game contains no original data. On the first start it asks for your own disk image and keeps what it needs in
-its data folder: ~/.local/share/giana-native/data (Linux), ~/Library/Application Support/giana-native/data (macOS),
-%APPDATA%\\giana-native\\data (Windows). A data folder next to the program works too.
-
-If the game does not start because SDL2 is missing, install it (Fedora: sdl2-compat, Debian/Ubuntu: libsdl2-2.0-0, macOS: brew install sdl2).
-Settings, controls and high scores are in the giana-native folder of your configuration directory.";
+Game data (taken from your disk image on the first start):
+    Linux    ~/.local/share/giana-native/data
+    macOS    ~/Library/Application Support/giana-native/data
+    Windows  %APPDATA%\\giana-native\\data
+    or a data folder next to the program.
+Settings, controls and high scores: the giana-native folder in your configuration directory.
+Needs SDL2 (Fedora: sdl2-compat, Debian/Ubuntu: libsdl2-2.0-0, macOS: brew install sdl2).";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Options {
@@ -180,6 +180,16 @@ mod tests {
 
     fn p(args: &[&str]) -> Result<Command, String> {
         parse(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn the_help_is_short() {
+        // one line per option, nothing wider than a terminal of 120 columns
+        assert!(HELP.lines().count() <= 45, "{} lines", HELP.lines().count());
+        assert!(HELP.lines().all(|l| l.chars().count() <= 120));
+        for flag in ["--import", "--data", "--stage", "--module", "--debug", "--list-modules", "--add-module", "--make-module", "--check-update", "--no-update-check"] {
+            assert!(HELP.contains(flag), "{flag}");
+        }
     }
 
     #[test]

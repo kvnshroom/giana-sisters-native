@@ -7,14 +7,34 @@
 //! engine tag [`ENGINE_C`], and must never offer it for sharing.
 //!
 //! Modules: [`decrunch`] (native port of the cruncher), [`stage`] (stage records and the 256x20 level buffer),
-//! [`music`] (the Huelsbeck driver, recompiled by `tools/recompile6502.py`). Nothing here contains game bytes; every
-//! test that needs the disk is gated on the environment variable `GIANA_C30_DISK`.
+//! [`music`] (the Huelsbeck driver, recompiled by `tools/recompile6502.py`), [`player`] (native ports of the player
+//! routines, verified against the oracle machine), [`blocks`] (blocks, diamonds,
+//! score, time, status bar), [`scroll`] (scrolling and the block animations), [`sprites`] (sprite registers, the raster IRQ
+//! chain with the sprite split, the VIC's sprite unit and `$D01E`), [`layout`] (the one address table). Nothing here contains game
+//! bytes; every test that needs the disk is gated on the environment variable `GIANA_C30_DISK`.
 
+pub mod blocks;
+pub mod bosses;
 pub mod capture;
+pub mod classes;
 pub mod decrunch;
+pub mod flow;
+pub mod frame;
+pub mod game;
+pub mod hiscore;
+pub mod layout;
+pub mod menus;
 pub mod music;
+pub mod objects;
+pub mod pickups;
+pub mod player;
 pub mod render;
+pub mod screens;
+pub mod rooms;
+pub mod scroll;
+pub mod sprites;
 pub mod stage;
+pub mod text;
 
 use giana_module::disk::Disk;
 

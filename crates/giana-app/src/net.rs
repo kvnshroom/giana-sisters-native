@@ -237,6 +237,8 @@ pub fn checksum(g: &GameState) -> u32 {
     if g.wide_k != 0 {
         add(g.wide_k);
         g.wide_left.iter().flatten().for_each(|&b| add(b));
+        g.wide_left_colour.iter().flatten().for_each(|&b| add(b));
+        g.wide_right.iter().flatten().for_each(|&b| add(b));
         g.en.col.iter().for_each(|&b| add(b ^ 0xA5));
     }
     // a ROM module on the 7A3 engine keeps its objects in its own slot arrays

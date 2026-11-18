@@ -2,11 +2,40 @@
 //!
 //! sub_9600 shifts the playfield one character column to the left and fetches the new right column from the
 //! map. It starts in the $1326 IRQ (DEC $14 -> $FE, INC $21, CLI) and its copy loops run longer than the
-//! rest of the frame, so the oracle snapshot (raster line 0) still shows `$14 = $FE`. The loops are therefore
-//! executed at the beginning of the next frame, before the next IRQ chain (`column_scroll_finish_sub_9600`).
+//! rest of the frame, so the oracle snapshot still shows `$14 = $FE`. The stores of the loops are therefore made
+//! in the next chain (`column_scroll_finish_sub_9600`).
 
 use crate::state::{ControllerInput, GameState};
 
+
+/// The copy loops of sub_9600 in their order: (colour RAM, first row, last row). Each loop copies the cell to the right for
+/// columns 0..38, all its rows per column, then the column 39 of its rows (from the map, colour from `$AB00`).
+const SCROLL_LOOPS: [(bool, usize, usize); 8] = [
+    (false, 5, 5),    // L9610, $961B
+    (false, 6, 7),    // L9623, $9636..
+    (false, 8, 11),   // L9644, $9661..
+    (true, 5, 11),    // L967B, $96AA..
+    (false, 12, 19),  // L96F2, $9727..
+    (true, 12, 19),   // L975B, $9790..
+    (false, 20, 24),  // L97E2, $9805..
+    (true, 20, 24),   // L9827, $984A..
+];
+
+/// Stores of the copy of sub_9600: 20 rows of 40 screen cells and 20 rows of 40 colour cells.
+pub const SCROLL_STORES: usize = 1600;
+
+/// Store `k` of the copy: (colour RAM, screen row 5..24, column 0..39).
+pub fn scroll_store(k: usize) -> (bool, usize, usize) {
+    let mut k = k;
+    for (colour, first, last) in SCROLL_LOOPS {
+        let rows = last - first + 1;
+        if k < rows * 40 {
+            return if k < rows * 39 { (colour, first + k % rows, k / rows) } else { (colour, first + k - rows * 39, 39) };
+        }
+        k -= rows * 40;
+    }
+    (true, 24, 39)
+}
 
 const SLOT_BASE: usize = 0x9B02;
 /// (low byte table, high byte table) pairs decremented as 16-bit words by the $1326 handler.
@@ -63,55 +92,69 @@ impl GameState {
 
     /// sub_9600 ($960C..$9880): copy loops, then `$14 = 0`.
     ///
-    /// The copy runs in the main line from the `$1326` handler on and is still going when the next chain starts. It is done at
-    /// the start of the chain, except for the rows from `scroll_split_row` on: those are shifted only after the tile lookup
-    /// `sub_9DF4` of the chain has read the screen (`column_scroll_rest_sub_9600`). `scroll_split_row` is 25 (all rows before the
-    /// lookup) unless a recording shows that the lookup still saw unshifted rows.
+    /// The copy runs in the main line from the `$1326` handler on and is still going when the next chain starts: the port
+    /// makes its stores (`SCROLL_STORES`, in the order of the original loops) at the start of that chain up to
+    /// `scroll_split_tiles`, after the handler `$1249` up to `scroll_split`, and the rest after the handler `$12A3`. Both are
+    /// all stores by default; a recording shows where the copy stood when the animated tiles of `$1249` wrote their cells
+    /// (stage_31_run frame 233: `sub_19CF` stores `$2E` to `$CB59` at line 70, the loop `$97E2` of rows 20..24 starts at line 74)
+    /// and when the tile lookup `sub_9DF4` and the block interaction `sub_1A17` of `$12A3` read the screen (stage_31_run frame
+    /// 1310: the loop `$97E2` is at column 18 when `sub_9DF4` reads row 21).
     pub fn column_scroll_finish_sub_9600(&mut self) {
         if !self.column_scroll_pending {
             return;
         }
         self.column_scroll_pending = false;
-        let split = (self.scroll_split_row as usize).clamp(5, 25);
-        self.shift_rows_sub_9600(5, split);
-        if split < 25 {
-            self.column_scroll_rest = true;
-        } else {
-            // $987C: LDA #$00; STA $14
-            self.scroll_wrap_flag = 0;
-        }
+        self.scroll_copy_done = 0;
+        let to = self.scroll_split_tiles.min(self.scroll_split);
+        self.scroll_copy_to(to);
     }
 
-    /// The rows of the copy that came after the tile lookup of this chain (see `column_scroll_finish_sub_9600`).
+    /// The stores of the copy that came after the handler `$1249` and before `$12A3` (see `column_scroll_finish_sub_9600`).
+    pub fn column_scroll_after_tiles_sub_9600(&mut self) {
+        let to = self.scroll_split;
+        self.scroll_copy_to(to);
+    }
+
+    /// The stores of the copy that came after the handler `$12A3` of the chain (see `column_scroll_finish_sub_9600`).
     pub fn column_scroll_rest_sub_9600(&mut self) {
-        if !self.column_scroll_rest {
-            return;
-        }
-        self.column_scroll_rest = false;
-        self.shift_rows_sub_9600((self.scroll_split_row as usize).clamp(5, 25), 25);
-        self.scroll_wrap_flag = 0;
+        self.scroll_copy_to(SCROLL_STORES as u16);
     }
 
-    /// Rows `from..to` of screen RAM and colour RAM shifted left by one column, new column 39 from the map.
-    fn shift_rows_sub_9600(&mut self, from: usize, to: usize) {
-        let x = self.map_column as usize;
-        self.wide_note_shift(from, to);
-        // Rows 5..24 of screen RAM ($C8C8..$CBE7): shift left by one column, new column 39 from the map
-        for r in from..to {
-            let base = r * 40;
-            for y in 0..39usize {
-                self.screen_ram[base + y] = self.screen_ram[base + y + 1];
+    /// Makes the stores of the running copy up to `to`; the last one ends sub_9600 (`$987C`: `$14 = 0`).
+    fn scroll_copy_to(&mut self, to: u16) {
+        let to = to.min(SCROLL_STORES as u16);
+        while self.scroll_copy_done < to {
+            let (colour, row, col) = scroll_store(self.scroll_copy_done as usize);
+            let i = row * 40 + col;
+            if colour {
+                // colour RAM: the cell to the right, column 39 from the new character (`$AB00`)
+                self.color_ram[i] = if col < 39 {
+                    self.color_ram[i + 1]
+                } else if let Some(c) = self.wide_scroll_in(self.map_column, row - 5, true) {
+                    // WIDESCREEN ON: a cell of the right extra area that the game changed comes in with its colour
+                    c
+                } else {
+                    self.char_colour(self.screen_ram[i])
+                };
+            } else if col < 39 {
+                if col == 0 {
+                    // the cell that leaves the screen (WIDESCREEN ON keeps it)
+                    self.wide_note_shift(row, row + 1);
+                }
+                self.screen_ram[i] = self.screen_ram[i + 1];
+            } else {
+                // LDA $AC00+256*(row-5),X ; STA $C8EF + 40*(row-5)
+                // (WIDESCREEN ON: or the cell of the right extra area as the game changed it)
+                self.screen_ram[i] = match self.wide_scroll_in(self.map_column, row - 5, false) {
+                    Some(ch) => ch,
+                    None => self.current_map.get((row - 5) * 256 + self.map_column as usize).copied().unwrap_or(0),
+                };
             }
-            // LDA $AC00+256*(r-5),X ; STA $C8EF + 40*(r-5)
-            self.screen_ram[base + 39] = self.current_map.get((r - 5) * 256 + x).copied().unwrap_or(0);
-        }
-        // Colour RAM: same shift; new colour = $AB00[new screen character]
-        for r in from..to {
-            let base = r * 40;
-            for y in 0..39usize {
-                self.color_ram[base + y] = self.color_ram[base + y + 1];
+            self.scroll_copy_done += 1;
+            if self.scroll_copy_done == SCROLL_STORES as u16 {
+                // $987C: LDA #$00; STA $14
+                self.scroll_wrap_flag = 0;
             }
-            self.color_ram[base + 39] = self.char_colour(self.screen_ram[base + 39]);
         }
     }
 
@@ -126,6 +169,7 @@ impl GameState {
             self.irq_frame_core(&input);
         }
         self.column_scroll_finish_sub_9600();
+        self.column_scroll_rest_sub_9600();
         // $096F: STA $154D = 0 on fire; L09B6: sub_0D1F; L09DA: stage setup
         self.music_paused = 0;
         self.clear_entity_slots_sub_0d1f();

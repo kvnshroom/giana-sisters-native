@@ -60,8 +60,6 @@ pub enum Widescreen {
     /// a wider view, and the game works from the new edges: enemies, shots and items are created and removed at the edges of
     /// the wide picture (see `Widescreen::rules`)
     On,
-    /// a wider view, the game plays exactly like on the C64: enemies still come and go at the old edges
-    ViewOnly,
     /// the 4:3 picture of the C64
     #[default]
     Off,
@@ -71,16 +69,15 @@ impl Widescreen {
     pub fn label(self) -> &'static str {
         match self {
             Widescreen::On => "ON",
-            Widescreen::ViewOnly => "VIEW ONLY",
             Widescreen::Off => "OFF",
         }
     }
 
     pub fn next(self, forward: bool) -> Self {
-        match (self, forward) {
-            (Widescreen::On, true) | (Widescreen::Off, false) => Widescreen::ViewOnly,
-            (Widescreen::ViewOnly, true) | (Widescreen::On, false) => Widescreen::Off,
-            (Widescreen::Off, true) | (Widescreen::ViewOnly, false) => Widescreen::On,
+        let _ = forward;
+        match self {
+            Widescreen::On => Widescreen::Off,
+            Widescreen::Off => Widescreen::On,
         }
     }
 
@@ -89,34 +86,26 @@ impl Widescreen {
         self != Widescreen::Off
     }
 
-    /// Shade the extra picture and fade the sprites there, to hide that enemies still come and go at the old edges. Only the
-    /// view that plays by the C64's rules needs it: `On` works from the new edges. (A game that was started with other rules
-    /// than the setting says now keeps its own: see `WideRules::of_game`.)
-    pub fn masks_edge(self) -> bool {
-        self == Widescreen::ViewOnly
-    }
-
-    /// Which rules the game logic follows: `On` makes the objects work from the edges of the wide picture, the others play
-    /// like the C64.
+    /// Which rules the game logic follows: `On` makes the game work from the edges of the wide picture, `Off` plays like the
+    /// C64.
     pub fn rules(self) -> WideRules {
         match self {
             Widescreen::On => WideRules::NewEdges(giana_core::wide::WIDE_K),
-            _ => WideRules::C64,
+            Widescreen::Off => WideRules::C64,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
             Widescreen::On => "on",
-            Widescreen::ViewOnly => "view",
             Widescreen::Off => "off",
         }
     }
 
     fn from_name(s: &str) -> Option<Self> {
         Some(match s {
-            "on" => Widescreen::On,
-            "view" => Widescreen::ViewOnly,
+            // "view" was VIEW ONLY (the wide picture with the C64's rules) up to 0.5.0: it is ON now
+            "on" | "view" => Widescreen::On,
             "off" => Widescreen::Off,
             _ => return None,
         })
@@ -605,7 +594,7 @@ mod tests {
             volume: 4,
             muted: true,
             scaling: Scaling::Fill,
-            widescreen: Widescreen::ViewOnly,
+            widescreen: Widescreen::On,
             crt: true,
             music_volume: 3,
             effects_volume: 0,
@@ -640,19 +629,19 @@ mod tests {
             assert_eq!(Settings::from_text(&s.to_text()).scaling, scaling);
         }
         // WIDESCREEN: round trip, and the default for old files and damaged values
-        for widescreen in [Widescreen::On, Widescreen::ViewOnly, Widescreen::Off] {
+        for widescreen in [Widescreen::On, Widescreen::Off] {
             let s = Settings { widescreen, ..Settings::default() };
             assert_eq!(Settings::from_text(&s.to_text()).widescreen, widescreen);
         }
         assert_eq!(Settings::default().widescreen, Widescreen::Off);
         assert_eq!(Settings::from_text("volume = 3\nscaling = fill\n").widescreen, Widescreen::Off);
         assert_eq!(Settings::from_text("widescreen = sideways\n").widescreen, Widescreen::Off);
-        assert_eq!(Settings::from_text("widescreen = view\n").widescreen, Widescreen::ViewOnly);
-        assert_eq!(Widescreen::On.next(true), Widescreen::ViewOnly);
-        assert_eq!(Widescreen::ViewOnly.next(true), Widescreen::Off);
+        // VIEW ONLY of 0.5.0 and before is ON now
+        assert_eq!(Settings::from_text("widescreen = view\n").widescreen, Widescreen::On);
+        assert_eq!(Widescreen::On.next(true), Widescreen::Off);
         assert_eq!(Widescreen::Off.next(true), Widescreen::On);
         assert_eq!(Widescreen::On.next(false), Widescreen::Off);
-        assert!(Widescreen::On.is_wide() && Widescreen::ViewOnly.is_wide() && !Widescreen::Off.is_wide());
+        assert!(Widescreen::On.is_wide() && !Widescreen::Off.is_wide());
     }
 
     #[test]

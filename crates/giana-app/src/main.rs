@@ -3,6 +3,7 @@
 
 use giana_app::authentic::{self, AuthenticRun};
 use giana_app::bindings::{config_path, Bindings, Held, PadInput, Source};
+use giana_app::c30::{self, C30Run};
 use giana_app::cli::{self, Command, Options};
 use giana_app::display;
 use giana_app::firstrun;
@@ -109,7 +110,7 @@ fn apply_fullscreen(canvas: &mut Canvas<Window>, video: &sdl2::VideoSubsystem, m
         }
     }
     if let Err(e) = window.set_fullscreen(mode) {
-        eprintln!("Could not change the fullscreen mode: {e}");
+        eprintln!("giana-app: could not change the fullscreen mode: {e}");
         // an exclusive mode that fails: the desktop mode still works
         if locked {
             locked = false;
@@ -135,7 +136,7 @@ fn pad_kind(index: u32, name: &str) -> PadKind {
 /// A controller that is connected and not `skip` (the one that was just unplugged), with its glyph set.
 fn open_controller(mgr: &sdl2::GameControllerSubsystem, skip: Option<u32>) -> Option<(GameController, PadKind)> {
     (0..mgr.num_joysticks().unwrap_or(0)).filter(|&id| mgr.is_game_controller(id)).find_map(|id| {
-        let c = mgr.open(id).map_err(|e| eprintln!("Failed to open controller {id}: {e}")).ok()?;
+        let c = mgr.open(id).map_err(|e| eprintln!("giana-app: could not open controller {id}: {e}")).ok()?;
         (Some(c.instance_id()) != skip).then(|| {
             let kind = pad_kind(id, &c.name());
             (c, kind)
@@ -147,7 +148,7 @@ fn open_controller(mgr: &sdl2::GameControllerSubsystem, skip: Option<u32>) -> Op
 fn save_scores(scores: &Scores, module: &str, open: &mut Option<Menu>) {
     if let Some(path) = scores_path(module) {
         if let Err(e) = scores.save(&path) {
-            eprintln!("Could not save the scores to {}: {}", path.display(), e);
+            eprintln!("giana-app: could not save the scores to {}: {}", path.display(), e);
             if let Some(m) = open.as_mut() {
                 m.notice = Some("COULD NOT SAVE THE SCORES".to_string());
             }
@@ -158,7 +159,7 @@ fn save_scores(scores: &Scores, module: &str, open: &mut Option<Menu>) {
 fn save_settings(settings: &Settings, open: &mut Option<Menu>) {
     if let Some(path) = settings_path() {
         if let Err(e) = settings.save(&path) {
-            eprintln!("Could not save the settings to {}: {}", path.display(), e);
+            eprintln!("giana-app: could not save the settings to {}: {}", path.display(), e);
             if let Some(m) = open.as_mut() {
                 m.notice = Some("COULD NOT SAVE THE SETTINGS".to_string());
             }
@@ -171,7 +172,7 @@ fn save_settings(settings: &Settings, open: &mut Option<Menu>) {
 fn look_at_suspended(module: &str, open: &mut Option<Menu>) -> Vec<suspend::Info> {
     let (found, rejected) = suspend::look(module, &suspend::Identity::current(module));
     for why in rejected {
-        eprintln!("A suspended game was discarded: {}", why.notice());
+        eprintln!("giana-app: saved game removed: {}", why.notice());
         // a notice that is already there (a module that could not be loaded) is more important
         if let Some(m) = open.as_mut().filter(|m| m.notice.is_none()) {
             m.notice = Some(why.notice().to_string());
@@ -204,6 +205,8 @@ struct Pending {
     quit: bool,
     /// `ADD ROM MODULE...`: ask for a file
     add_module: bool,
+    /// `ADD 30A PREVIEW...`: ask for the preview's disk
+    add_c30: bool,
     /// play this ROM module (its id, empty for the original game): save the choice and start again
     play_module: Option<String>,
     remove_module: Option<String>,
@@ -247,6 +250,7 @@ fn apply_outcome(outcome: Outcome, open: &mut Option<Menu>, pending: &mut Pendin
         Outcome::Update => pending.update = true,
         Outcome::CheckUpdate => pending.check_update = true,
         Outcome::ModuleAdd => pending.add_module = true,
+        Outcome::C30Add => pending.add_c30 = true,
         Outcome::ModulePlay(id) => pending.play_module = Some(id),
         Outcome::ModuleRemove(id) => pending.remove_module = Some(id),
         Outcome::ModuleFavorite(id) => pending.favorite_modules.push(id),
@@ -256,7 +260,7 @@ fn apply_outcome(outcome: Outcome, open: &mut Option<Menu>, pending: &mut Pendin
         Outcome::Changed => {
             if let Some(path) = config_path() {
                 if let Err(e) = bindings.save(&path) {
-                    eprintln!("Could not save the controls to {}: {}", path.display(), e);
+                    eprintln!("giana-app: could not save the controls to {}: {}", path.display(), e);
                     if let Some(m) = open.as_mut() {
                         m.notice = Some("COULD NOT SAVE THE CONTROLS".to_string());
                     }
@@ -350,19 +354,27 @@ fn module_infos(store: Option<&Store>, data_dir: &std::path::Path, settings: &Se
     let mut list = store.list(Some(data_dir));
     modules::order(&mut list, settings.module_sort, &settings.favorites, &settings.last_played);
     list.iter()
-        .map(|i| ModuleInfo::new(&i.id, &i.meta.name, &i.meta.author, &i.meta.version, &i.meta.description, i.code_changes.unwrap_or(0) > 0))
+        .map(|i| {
+            let info = ModuleInfo::new(&i.id, &i.meta.name, &i.meta.author, &i.meta.version, &i.meta.description, i.code_changes.unwrap_or(0) > 0);
+            if i.is_c30() {
+                info.as_c30()
+            } else {
+                info
+            }
+        })
         .collect()
 }
 
 /// Adds a file to the modules. The menu shows the module, or says in plain words why it could not be added.
-fn add_module_file(store: Option<&Store>, data_dir: &std::path::Path, file: &std::path::Path, settings: &Settings, open: &mut Option<Menu>, infos: &mut Vec<ModuleInfo>) {
+fn add_module_file(store: Option<&Store>, data_dir: &std::path::Path, file: &std::path::Path, settings: &Settings, open: &mut Option<Menu>, infos: &mut Vec<ModuleInfo>, c30_only: bool) {
     let Some(store) = store else {
         if let Some(m) = open.as_mut() {
             m.module_added(None, Some("there is no folder for the modules".to_string()));
         }
         return;
     };
-    match store.add(file, data_dir) {
+    let added = if c30_only { store.add_c30(file) } else { store.add(file, data_dir) };
+    match added {
         Ok(added) => {
             println!("ROM module added: {} ({})", added.meta.name, added.id);
             *infos = module_infos(Some(store), data_dir, settings);
@@ -373,7 +385,7 @@ fn add_module_file(store: Option<&Store>, data_dir: &std::path::Path, file: &std
             }
         }
         Err(e) => {
-            eprintln!("Could not add {}: {e}", file.display());
+            eprintln!("giana-app: could not add {}: {e}", file.display());
             if let Some(m) = open.as_mut() {
                 m.module_added(None, Some(e));
             }
@@ -546,6 +558,7 @@ where
         for event in events.poll_iter() {
             match event {
                 Event::Quit { .. } => break 'page false,
+                Event::RenderDeviceReset { .. } => presenter.reset_textures(),
                 Event::DropFile { filename, .. } => setup.drop_file(&filename),
                 Event::DropText { filename, .. } => setup.drop_file(&filename),
                 Event::TextInput { text, .. } => setup.type_text(&text),
@@ -600,9 +613,8 @@ where
         firstrun::draw(&mut fb, &setup, tick, (started.elapsed().as_millis() / 400) as usize & 1);
         tick = tick.wrapping_add(1);
         let size = canvas.output_size().unwrap_or((WIDTH as u32, HEIGHT as u32));
-        presenter.upload(&fb)?;
         presenter.crt = settings.crt;
-        presenter.present(canvas, present::layout(settings.scaling, false, size))?;
+        presenter.show(canvas, present::layout(settings.scaling, false, size), |p| p.upload(&fb))?;
         canvas.present();
         std::thread::sleep(Duration::from_millis(8));
     };
@@ -673,6 +685,7 @@ where
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => return Ok(AuthenticExit::Quit),
+                Event::RenderDeviceReset { .. } => presenter.reset_textures(),
                 Event::Window { win_event: WindowEvent::FocusLost, .. } => {
                     held.clear();
                     if run.overlay.is_none() {
@@ -827,13 +840,276 @@ where
             let ctx = DrawCtx { bindings, pad_name: pad_name.as_deref(), scores: &no_scores, input: *input_state, nudge, view: ui::View::new(false) };
             menu_draw::draw_over(&mut fb, m, &ctx);
         }
-        presenter.upload(&fb)?;
         presenter.crt = settings.crt;
-        presenter.present(canvas, layout)?;
+        presenter.show(canvas, layout, |p| p.upload(&fb))?;
         canvas.present();
         if frame_start.elapsed() < Duration::from_millis(1) && accumulator + slack < step {
             std::thread::sleep(step.saturating_sub(accumulator).min(Duration::from_millis(1)));
         }
+    }
+}
+
+/// How the 30th Anniversary preview ended.
+enum C30Exit {
+    Quit,
+    /// `QUIT TO TITLE` in the overlay: back to the main menu
+    ToMenu,
+    /// the game reached a part that has no native port yet (its address)
+    NotDone(u16),
+    /// the disk could not be read, or the native game stopped on an error
+    Failed(String),
+}
+
+/// The 30th Anniversary preview (engine family C, see `giana_app::c30`) in its own loop: 50 Hz, the picture with the
+/// border, its SID registers to the sound device, the app's overlay (Escape, F1, F10, the controller's Back or Start) as
+/// the pause menu over the paused picture. SMOOTH MOTION as in the original game's loop: on a display that is not a
+/// multiple of 50 Hz, without the 50 Hz lock and with the overlay closed, the picture between the last two frames.
+/// Widescreen and the network are not used by this engine.
+#[allow(clippy::too_many_arguments)]
+fn run_c30<C>(
+    canvas: &mut Canvas<Window>,
+    presenter: &mut Presenter<'_, C>,
+    event_pump: &mut sdl2::EventPump,
+    video: &sdl2::VideoSubsystem,
+    mouse: &MouseUtil,
+    settings: &mut Settings,
+    bindings: &mut Bindings,
+    input_state: &mut InputState,
+    audio: &mut Option<sdl2::audio::AudioDevice<SidAudioCallback>>,
+    lock_factor: &mut u32,
+    disk: &std::path::Path,
+    pad_name: Option<String>,
+    started: Instant,
+) -> Result<C30Exit, Box<dyn std::error::Error>>
+where
+    Window: sdl2::render::RenderTarget<Context = C>,
+    C: 'static,
+{
+    let mut run = match C30Run::from_file(disk, c30::scores_path()) {
+        Ok(r) => r,
+        Err(e) => return Ok(C30Exit::Failed(e)),
+    };
+    let mut held = Held::default();
+    let mut typed: Vec<u8> = Vec::new();
+    let mut fb = Framebuffer::new();
+    let no_scores = Scores::default();
+    let mut menu_sound = MenuSounds::new();
+    menu_sound.set_mode(menu_sound_off());
+    const LOGIC_STEP: Duration = Duration::from_micros(19950);
+    const LOCKED_STEP: Duration = Duration::from_micros(20000);
+    const LOCKED_SLACK: Duration = Duration::from_micros(2000);
+    let mut last = Instant::now();
+    let mut accumulator = Duration::ZERO;
+    let mut pending = Pending::default();
+    let mut display_hz = canvas.window().display_mode().map_or(0, |m| m.refresh_rate);
+    let mut display_hz_checked = Instant::now();
+    println!("30th Anniversary preview: {}", disk.display());
+    let open_overlay = |run: &mut C30Run, held: &mut Held| {
+        run.overlay = Some(Menu::pause());
+        held.clear();
+    };
+    loop {
+        let frame_start = Instant::now();
+        accumulator += frame_start.duration_since(last);
+        last = frame_start;
+        let (step, slack) = if *lock_factor > 0 { (LOCKED_STEP, LOCKED_SLACK.min(LOCKED_STEP / *lock_factor / 4)) } else { (LOGIC_STEP, Duration::ZERO) };
+        accumulator = accumulator.min(Duration::from_millis(100));
+
+        if let Some(m) = run.overlay.as_mut() {
+            m.settings = settings.clone();
+        }
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. } => return Ok(C30Exit::Quit),
+                Event::RenderDeviceReset { .. } => presenter.reset_textures(),
+                Event::Window { win_event: WindowEvent::FocusLost, .. } => {
+                    if run.overlay.is_none() {
+                        open_overlay(&mut run, &mut held);
+                    }
+                }
+                Event::KeyDown { keycode: Some(k), keymod, repeat: false, .. }
+                    if k == Keycode::F11 || (k == Keycode::Return && keymod.intersects(Mod::LALTMOD | Mod::RALTMOD)) =>
+                {
+                    pending.options.push(OptionChange::Fullscreen);
+                }
+                Event::KeyDown { keycode: Some(k), repeat, .. } => {
+                    input_state.key_used();
+                    match run.overlay.as_mut() {
+                        Some(m) if m.capturing => {
+                            if !repeat {
+                                let outcome = if k == Keycode::Escape { m.step(Nav::Back, bindings) } else { m.capture_key(k, bindings) };
+                                apply_c30_outcome(outcome, &mut run, &mut pending, bindings);
+                            }
+                        }
+                        Some(m) => {
+                            if let Some(nav) = nav_for_key(k, repeat) {
+                                let outcome = menu_step(m, nav, bindings, &mut menu_sound);
+                                apply_c30_outcome(outcome, &mut run, &mut pending, bindings);
+                            }
+                        }
+                        None if matches!(k, Keycode::Escape | Keycode::F1 | Keycode::F10) => {
+                            if !repeat {
+                                open_overlay(&mut run, &mut held);
+                            }
+                        }
+                        None => {
+                            // the name entry of the high scores reads typed characters; keys held count as well
+                            if let Some(c) = c30::petscii_for(k) {
+                                typed.push(c);
+                            }
+                            if !repeat {
+                                held.press(Source::Key(k));
+                            }
+                        }
+                    }
+                }
+                Event::KeyUp { keycode: Some(k), .. } => held.release(Source::Key(k)),
+                Event::ControllerButtonDown { button, .. } => {
+                    input_state.pad_used();
+                    match run.overlay.as_mut() {
+                        Some(m) if m.capturing => {
+                            let outcome = if button == Button::Start { m.step(Nav::Back, bindings) } else { m.capture_pad(PadInput::Button(button), bindings) };
+                            apply_c30_outcome(outcome, &mut run, &mut pending, bindings);
+                        }
+                        Some(m) => {
+                            if let Some(nav) = nav_for_button(button) {
+                                let outcome = menu_step(m, nav, bindings, &mut menu_sound);
+                                apply_c30_outcome(outcome, &mut run, &mut pending, bindings);
+                            }
+                        }
+                        None if button == Button::Back || button == Button::Start => open_overlay(&mut run, &mut held),
+                        None => held.press(Source::Pad(PadInput::Button(button))),
+                    }
+                }
+                Event::ControllerButtonUp { button, .. } => held.release(Source::Pad(PadInput::Button(button))),
+                Event::ControllerAxisMotion { axis, value, .. } => {
+                    if value.unsigned_abs() > 16000 {
+                        input_state.pad_used();
+                    }
+                    if let Some(pressed) = held.axis(axis, value) {
+                        if let Some(m) = run.overlay.as_mut() {
+                            let outcome = if m.capturing {
+                                m.capture_pad(pressed, bindings)
+                            } else if let Some(nav) = nav_for_stick(pressed) {
+                                menu_step(m, nav, bindings, &mut menu_sound)
+                            } else {
+                                Outcome::None
+                            };
+                            apply_c30_outcome(outcome, &mut run, &mut pending, bindings);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // what the overlay asked for: the settings this engine uses (widescreen, style and the
+        // two-player rules belong to the original game and are left as they are)
+        for change in std::mem::take(&mut pending.options) {
+            match change {
+                OptionChange::Fullscreen => {
+                    settings.fullscreen = !settings.fullscreen;
+                    *lock_factor = apply_fullscreen(canvas, video, mouse, settings.fullscreen, settings.display_50);
+                }
+                OptionChange::VolumeDown | OptionChange::VolumeUp => settings.change_volume(change == OptionChange::VolumeUp),
+                OptionChange::MusicDown | OptionChange::MusicUp => settings.change_music(change == OptionChange::MusicUp),
+                OptionChange::EffectsDown | OptionChange::EffectsUp => settings.change_effects(change == OptionChange::EffectsUp),
+                OptionChange::MenuSounds(forward) => settings.menu_sounds = settings.menu_sounds.next(forward),
+                OptionChange::Scaling(forward) => settings.scaling = settings.scaling.next(forward),
+                OptionChange::Display50 => {
+                    settings.display_50 = !settings.display_50;
+                    if settings.fullscreen {
+                        *lock_factor = apply_fullscreen(canvas, video, mouse, true, settings.display_50);
+                    }
+                }
+                OptionChange::UpdateCheck => settings.update_check = !settings.update_check,
+                OptionChange::Crt => settings.crt = !settings.crt,
+                OptionChange::SmoothMotion => settings.enhancements.toggle_smooth_motion(),
+                OptionChange::Widescreen(_) | OptionChange::Winner | OptionChange::Presentation => {}
+            }
+            if let Some(d) = audio.as_mut() {
+                apply_gains(&mut d.lock().mixer, settings);
+            }
+            if let Some(path) = settings_path() {
+                let _ = settings.save(&path);
+            }
+        }
+        if std::mem::take(&mut pending.to_title) {
+            if let Some(d) = audio.as_mut() {
+                d.lock().mixer.main.live_regs = Some([0; 25]);
+            }
+            return Ok(C30Exit::ToMenu);
+        }
+
+        // game frames (paused while the overlay is open)
+        let mut steps = 0;
+        while run.overlay.is_none() && accumulator + slack >= step && steps < 5 {
+            accumulator = accumulator.saturating_sub(step);
+            steps += 1;
+            let input = c30::input_for(&held, bindings, std::mem::take(&mut typed));
+            let result = run.frame(&input);
+            if let Some(dev) = audio.as_mut() {
+                let mut d = dev.lock();
+                d.mixer.split = false;
+                d.mixer.main.live_regs = Some(if result.is_ok() { run.sid } else { [0; 25] });
+            }
+            match result {
+                Ok(()) => {}
+                Err(c30::Stop::NotPorted(addr)) => return Ok(C30Exit::NotDone(addr)),
+                Err(c30::Stop::Failed(e)) => return Ok(C30Exit::Failed(e)),
+            }
+        }
+        if run.overlay.is_some() {
+            accumulator = Duration::ZERO;
+            typed.clear();
+            if let Some(dev) = audio.as_mut() {
+                let mut d = dev.lock();
+                d.mixer.split = false;
+                d.mixer.main.live_regs = Some([0; 25]);
+            }
+        }
+
+        if display_hz_checked.elapsed() > Duration::from_secs(1) {
+            display_hz_checked = Instant::now();
+            display_hz = canvas.window().display_mode().map_or(0, |m| m.refresh_rate);
+        }
+        // SMOOTH MOTION on a display that is not a multiple of 50 Hz: the picture between the last two frames
+        let smooth = run.overlay.is_none() && *lock_factor == 0 && display::is_odd_rate(display_hz) && settings.enhancements.smooth_motion();
+        if !(smooth && run.render_between(accumulator.as_secs_f64() / step.as_secs_f64(), &mut fb)) {
+            fb.pixels.copy_from_slice(&run.fb.pixels);
+        }
+        let window_size = canvas.output_size().unwrap_or((WIDTH as u32, HEIGHT as u32));
+        let layout = present::layout(settings.scaling, false, window_size);
+        if let Some(m) = &run.overlay {
+            let nudge = (started.elapsed().as_millis() / 400) as usize & 1;
+            let ctx = DrawCtx { bindings, pad_name: pad_name.as_deref(), scores: &no_scores, input: *input_state, nudge, view: ui::View::new(layout.crops_overlays()) };
+            menu_draw::draw_over(&mut fb, m, &ctx);
+        }
+        presenter.crt = settings.crt;
+        presenter.show(canvas, layout, |p| p.upload(&fb))?;
+        canvas.present();
+        if frame_start.elapsed() < Duration::from_millis(1) && accumulator + slack < step {
+            std::thread::sleep(step.saturating_sub(accumulator).min(Duration::from_millis(1)));
+        }
+    }
+}
+
+/// What a step of the preview's overlay asks for.
+fn apply_c30_outcome(outcome: Outcome, run: &mut C30Run, pending: &mut Pending, bindings: &Bindings) {
+    match outcome {
+        Outcome::Resume => run.overlay = None,
+        Outcome::QuitToTitle => {
+            pending.to_title = true;
+            run.overlay = None;
+        }
+        Outcome::Option(change) => pending.options.push(change),
+        Outcome::Changed => {
+            if let Some(path) = config_path() {
+                if let Err(e) = bindings.save(&path) {
+                    eprintln!("giana-app: could not save the controls to {}: {}", path.display(), e);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -855,7 +1131,7 @@ fn apply_authentic_outcome(outcome: Outcome, run: &mut AuthenticRun, pending: &m
         Outcome::Changed => {
             if let Some(path) = config_path() {
                 if let Err(e) = bindings.save(&path) {
-                    eprintln!("Could not save the controls to {}: {}", path.display(), e);
+                    eprintln!("giana-app: could not save the controls to {}: {}", path.display(), e);
                 }
             }
         }
@@ -918,7 +1194,7 @@ where
         AuthenticExit::ToModern => Ok(AuthenticNext::Continue),
         AuthenticExit::Failed(e) => {
             eprintln!("giana-app: AUTHENTIC stopped: {e}");
-            leave(settings, "AUTHENTIC STOPPED - SEE THE LOG", notice);
+            leave(settings, "AUTHENTIC STOPPED", notice);
             Ok(AuthenticNext::Continue)
         }
     }
@@ -967,7 +1243,7 @@ fn activate_module(store: Option<&Store>, wanted: Option<&str>, data_dir: &std::
 }
 
 fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting The Great Giana Sisters - Native PC Edition (Rust/SDL2)...");
+    println!("The Great Giana Sisters {}", env!("CARGO_PKG_VERSION"));
 
     let sdl_context = sdl2::init().map_err(|e| startup_error("Could not start SDL", e, SDL_HINT))?;
     let video_subsystem = sdl_context.video().map_err(|e| startup_error("Could not start the video system", e, DISPLAY_HINT))?;
@@ -1003,6 +1279,12 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         window.set_icon(surface);
     }
 
+    // Windows: Direct3D 11 rather than SDL2's first choice Direct3D 9, which loses its device on every switch of the
+    // fullscreen mode. SDL falls back to the others when it is missing; SDL_RENDER_DRIVER set by the player still wins.
+    #[cfg(windows)]
+    if std::env::var_os("SDL_RENDER_DRIVER").is_none() {
+        sdl2::hint::set("SDL_RENDER_DRIVER", "direct3d11");
+    }
     // No `accelerated()`: SDL takes the best renderer it finds, also the software one on computers without a working GPU driver
     let mut canvas = window
         .into_canvas()
@@ -1102,11 +1384,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }) {
             Ok(device) => {
                 device.resume();
-                println!("Chris Hülsbeck SID synthesizer initialized @ 44.1 kHz");
+                println!("Sound: 44.1 kHz");
                 Some(device)
             }
             Err(e) => {
-                eprintln!("Warning: Failed to open audio device: {}", e);
+                eprintln!("giana-app: no sound: {e}");
                 None
             }
         }
@@ -1252,9 +1534,10 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
 
                 // A file dropped on the window while the page of the ROM modules is open is added
                 Event::DropFile { filename, .. } if open_menu.as_ref().is_some_and(|m| m.page == menu::Page::Modules) => {
-                    add_module_file(store.as_ref(), &data_dir, std::path::Path::new(&filename), &settings, &mut open_menu, &mut module_list);
+                    add_module_file(store.as_ref(), &data_dir, std::path::Path::new(&filename), &settings, &mut open_menu, &mut module_list, false);
                 }
 
+                Event::RenderDeviceReset { .. } => presenter.reset_textures(),
                 Event::Window { win_event: WindowEvent::FocusLost, .. } => {
                     // Held keys stay down for ever if the release goes to another window
                     held.clear();
@@ -1413,7 +1696,22 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     menu_sound.set_mode(settings.menu_sounds);
                 }
                 OptionChange::Scaling(forward) => settings.scaling = settings.scaling.next(forward),
-                OptionChange::Widescreen(forward) => settings.widescreen = settings.widescreen.next(forward),
+                OptionChange::Widescreen(forward) => {
+                    settings.widescreen = settings.widescreen.next(forward);
+                    // the wide picture comes with the wide rules: a game on this computer alone takes them over at once, a
+                    // network game keeps the host's rules (and its picture)
+                    if session.is_none() {
+                        let k = settings.widescreen.rules().k();
+                        game.set_wide(k);
+                        if let Some(g) = other_game.as_mut() {
+                            g.set_wide(k);
+                        }
+                    }
+                    // a game that is waiting for the other player carries the rules of the host to the one who joins
+                    if let Some(h) = hosting.as_mut() {
+                        h.set_rules(settings.net_rules());
+                    }
+                }
                 OptionChange::Crt => settings.crt = !settings.crt,
                 OptionChange::SmoothMotion => {
                     settings.enhancements.toggle_smooth_motion();
@@ -1469,13 +1767,14 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             accumulator = Duration::ZERO;
             display_hz = canvas.window().display_mode().map_or(0, |m| m.refresh_rate);
         }
-        if std::mem::take(&mut pending.add_module) {
+        let add_c30 = std::mem::take(&mut pending.add_c30);
+        if std::mem::take(&mut pending.add_module) || add_c30 {
             // the dialog must run on this (main) thread; it blocks the window while it is open. The music is driven by
             // the game's frames, so without new frames the sound device would loop its last notes: it pauses meanwhile.
             if let Some(d) = audio_device.as_mut() {
                 d.pause();
             }
-            let file = firstrun::choose_file(firstrun::FileKind::RomModule);
+            let file = firstrun::choose_file(if add_c30 { firstrun::FileKind::C30Disk } else { firstrun::FileKind::RomModule });
             if let Some(d) = audio_device.as_mut() {
                 d.resume();
             }
@@ -1489,7 +1788,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             if let Some(file) = file.or(dropped) {
-                add_module_file(store.as_ref(), &data_dir, &file, &settings, &mut open_menu, &mut module_list);
+                add_module_file(store.as_ref(), &data_dir, &file, &settings, &mut open_menu, &mut module_list, add_c30);
             }
         }
         if let Some(id) = pending.remove_module.take() {
@@ -1506,7 +1805,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Err(e) => {
-                        eprintln!("Could not remove the ROM module: {e}");
+                        eprintln!("giana-app: could not remove the ROM module: {e}");
                         if let Some(m) = open_menu.as_mut() {
                             m.module_added(None, Some(e));
                         }
@@ -1525,6 +1824,43 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             }
             module_list = module_infos(store.as_ref(), &data_dir, &settings);
             save_settings(&settings, &mut open_menu);
+        }
+        if let Some(disk) = pending.play_module.as_deref().filter(|id| *id == c30::store_id()).and_then(|_| store.as_ref()?.c30_disk()) {
+            // the 30th Anniversary preview: its own loop on its own engine, local only (a network game ends first)
+            pending.play_module = None;
+            if let Some(s) = session.as_mut() {
+                s.leave();
+            }
+            session = None;
+            other_game = None;
+            hosting = None;
+            finder = None;
+            joining = None;
+            held.clear();
+            settings.note_played(c30::store_id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+            let pad_name = active_controller.as_ref().map(|c| c.name());
+            let exit = run_c30(&mut canvas, &mut presenter, &mut event_pump, &video_subsystem, &mouse, &mut settings, &mut bindings, &mut input_state, &mut audio_device, &mut lock_factor, &disk, pad_name, started)?;
+            let notice = match exit {
+                C30Exit::Quit => break 'running,
+                C30Exit::ToMenu => None,
+                C30Exit::Failed(e) => {
+                    eprintln!("giana-app: 30th Anniversary preview stopped: {e}");
+                    Some("PREVIEW STOPPED".to_string())
+                }
+                C30Exit::NotDone(addr) => {
+                    eprintln!("giana-app: 30th Anniversary preview: the part at ${addr:04X} has no native port yet");
+                    Some("PREVIEW STOPPED - NOT DONE YET".to_string())
+                }
+            };
+            module_list = module_infos(store.as_ref(), &data_dir, &settings);
+            let mut m = Menu::main();
+            m.notice = notice;
+            open_menu = Some(m);
+            save_settings(&settings, &mut open_menu);
+            last_frame_time = Instant::now();
+            accumulator = Duration::ZERO;
+            display_hz = canvas.window().display_mode().map_or(0, |m| m.refresh_rate);
+            continue 'running;
         }
         if let Some(id) = pending.play_module.take() {
             // Another module means another set of data, switched in place: window, sound device and settings stay, the
@@ -1562,7 +1898,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     suspended = look_at_suspended(&module_id, &mut open_menu);
                 }
                 Err(e) => {
-                    eprintln!("Could not switch the ROM module: {e}");
+                    eprintln!("giana-app: could not switch the ROM module: {e}");
                     if let Some(m) = open_menu.as_mut() {
                         m.notice = Some("ROM MODULE COULD NOT BE LOADED".to_string());
                     }
@@ -1587,7 +1923,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                     open_menu = Some(m);
                 }
                 Some(Err(why)) => {
-                    eprintln!("The suspended game could not be continued: {}", why.notice());
+                    eprintln!("giana-app: could not continue the saved game: {}", why.notice());
                     if let Some(m) = open_menu.as_mut() {
                         m.notice = Some(why.notice().to_string());
                     }
@@ -1628,13 +1964,14 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             match (host, m) {
                 (Ok(h), Some(m)) => {
                     m.host_port = h.port();
+                    println!("Hosting a network game on port {} (TCP and UDP). Over the internet, the host forwards this port.", h.port());
                     m.host_findable = h.can_be_found();
                     hosting = Some(h);
                     m.page = menu::Page::Hosting;
                     m.my_ip = net::local_ip().map_or("NO NETWORK".to_string(), |ip| ip.to_string());
                 }
                 (Err(e), Some(m)) => {
-                    eprintln!("Could not open a network game: {}", e);
+                    eprintln!("giana-app: could not open a network game: {}", e);
                     m.notice = Some("COULD NOT OPEN A GAME".to_string());
                 }
                 _ => {}
@@ -1642,7 +1979,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         if std::mem::take(&mut pending.search) {
             search_started = Instant::now();
-            finder = Finder::new().map_err(|e| eprintln!("Could not search for games: {e}")).ok();
+            finder = Finder::new().map_err(|e| eprintln!("giana-app: could not search for games: {e}")).ok();
             if let (None, Some(m)) = (&finder, open_menu.as_mut()) {
                 m.search = Search::Unavailable;
             }
@@ -1677,7 +2014,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Some(Err(e)) => {
                     joining = None;
-                    eprintln!("Could not join {}: {}", join_address, e);
+                    eprintln!("giana-app: could not join {}: {}", join_address, e);
                     // a received ROM module is only stored (checked against our own data); the player picks it under
                     // ROM MODULES if they want to - a host must not switch our game or restart it
                     if let Some(m) = open_menu.as_mut() {
@@ -1692,7 +2029,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             match h.poll() {
                 Some(Ok(s)) => connected = Some(s),
                 Some(Err(e)) => {
-                    eprintln!("A connection failed: {}", e);
+                    eprintln!("giana-app: connection lost: {}", e);
                     match (&e, open_menu.as_mut()) {
                         (NetError::WrongVersion, Some(m)) => m.notice = Some("ANOTHER VERSION TRIED TO JOIN".to_string()),
                         (NetError::OtherModule, Some(m)) => m.notice = Some("ANOTHER ROM MODULE TRIED TO JOIN".to_string()),
@@ -1886,9 +2223,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // WIDESCREEN: the columns that scroll out of the picture are kept for the extra area
-            if settings.widescreen.is_wide() && game.screen == GameScreen::InGame && !game.legacy_model {
-                wide_history.observe(other_game.as_ref().filter(|_| game.game_over).unwrap_or(&game));
+            // WIDESCREEN: the columns that scroll out of the picture are kept for the extra area (the picture is wide while the game
+            // shown plays by the wide rules, see the render pass)
+            let shown = other_game.as_ref().filter(|_| game.game_over).unwrap_or(&game);
+            if shown.wide_k != 0 && game.screen == GameScreen::InGame && !game.legacy_model {
+                wide_history.observe(shown);
             } else {
                 wide_history.clear();
             }
@@ -1897,7 +2236,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             if settings.enhancements.smooth_motion() && game.screen == GameScreen::InGame && !game.legacy_model && open_menu.is_none() {
                 let shown = other_game.as_ref().filter(|_| game.game_over).unwrap_or(&game);
                 std::mem::swap(&mut vic_prev, &mut vic_curr);
-                let wide_cols = settings.widescreen.is_wide().then(|| WideCols::from_game_with(shown, &wide_history));
+                let wide_cols = (shown.wide_k != 0).then(|| WideCols::from_game_with(shown, &wide_history));
                 let mut view = VicView::from_game(shown);
                 view.wide = wide_cols.as_ref();
                 vic_curr.set(&view);
@@ -1908,9 +2247,8 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Render pass (per vsync)
-        // WIDESCREEN: the picture of a game gets extra columns of the level beside it (the game itself runs as before: see
-        // `Widescreen::rules`)
-        let wide_on = settings.widescreen.is_wide();
+        // WIDESCREEN: the picture of a game that plays by the wide rules (`GameState::set_wide`) gets extra columns of the level
+        // beside it; the rules come from the setting when the game starts (in a network game from the host)
         let mut wide_frame = false;
         match game.screen {
             GameScreen::Intro => {
@@ -1921,12 +2259,11 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             }
             GameScreen::InGame if !game.legacy_model => {
                 let shown = other_game.as_ref().filter(|_| game.game_over).unwrap_or(&game);
+                let wide_on = shown.wide_k != 0;
                 wide_frame = wide_on;
                 // a pause menu dims the game; the pages of the options and the like are on black
                 let paused_page = open_menu.as_ref().filter(|m| m.paused).map(|m| m.page);
                 strips.menu_dim = paused_page.is_some();
-                // the edges are masked while the game plays by the C64's rules (VIEW ONLY, or a game from before the setting changed)
-                strips.mask = wide_on && giana_app::settings::WideRules::of_game(shown).k() == 0;
                 strips.crop = settings.scaling != giana_app::settings::Scaling::Whole;
                 let strips_ref = wide_on.then_some(&mut strips);
                 // SMOOTH MOTION on a display that is not a multiple of 50 Hz: the picture between the last two steps
@@ -2110,13 +2447,9 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             menu_draw::draw(&mut fb, m, &ctx);
         }
 
-        if playing && wide_frame {
-            presenter.upload_wide(&fb, &strips)?;
-        } else {
-            presenter.upload(&fb)?;
-        }
         presenter.crt = settings.crt;
-        presenter.present(&mut canvas, layout)?;
+        let wide_upload = playing && wide_frame;
+        presenter.show(&mut canvas, layout, |p| if wide_upload { p.upload_wide(&fb, &strips) } else { p.upload(&fb) })?;
         canvas.present();
 
         // If vsync is not present or returned immediately and no logic tick is pending, sleep briefly so CPU does not spin at 100%
@@ -2140,7 +2473,7 @@ fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
         match suspend::write(&module_id, &suspend::Identity::current(&module_id), &game) {
             Ok(_) => kept = true,
-            Err(e) => eprintln!("Could not save the game: {e}"),
+            Err(e) => eprintln!("giana-app: could not save the game: {e}"),
         }
     }
     let mut results = Vec::new();

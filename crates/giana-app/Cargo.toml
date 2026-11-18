@@ -1,6 +1,6 @@
 [package]
 name = "giana-app"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
@@ -15,9 +15,11 @@ path = "src/main.rs"
 [dependencies]
 giana-core = { path = "../giana-core" }
 giana-render = { path = "../giana-render" }
-giana-audio = { path = "../giana-audio" }
+giana-audio = { path = "../giana-audio", default-features = false }
 giana-extract = { path = "../giana-extract" }
 giana-module = { path = "../giana-module" }
+# the 30th Anniversary preview (engine family C), local only: read from the player's own .d64
+giana-engine-c = { path = "../giana-engine-c" }
 sdl2 = "0.38.0"
 # native file dialog; on Linux through the desktop portal (no GTK needed at build or run time)
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
@@ -39,6 +41,10 @@ giana-authentic = { path = "../giana-authentic" }
 [features]
 # Builds SDL2 from source into the program, so that the player's computer needs no SDL2 (for the release packages)
 bundled-sdl = ["sdl2/bundled", "sdl2/static-link"]
+# The SID model reSIDfp (libresidfp, C++, built with the cc crate). Without it (--no-default-features) the sound uses
+# resid-rs (reSID 0.16), the model of 0.5.x and earlier, and the build needs no C++ compiler.
+residfp = ["giana-audio/residfp"]
+default = ["residfp"]
 
 [lints]
 workspace = true

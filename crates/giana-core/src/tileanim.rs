@@ -7,6 +7,7 @@
 
 use crate::image::img;
 use crate::state::GameState;
+use crate::wide::{is_wide_ptr, ptr_add, ptr_linear, wide_ptr_cell};
 
 const SLOT_BASE: usize = 0x9B02;
 
@@ -27,9 +28,23 @@ impl GameState {
 
     // ---- screen / colour RAM through the zero-page pointers ----------------------------------------------------------
 
+    /// WIDESCREEN ON: the cell of a wide pointer that is in an extra area (row, column), `None` for a cell of the 40 columns
+    /// (and for a C64 pointer), which the C64's address reaches.
+    fn wide_target(a: u16) -> Option<(usize, i32)> {
+        if !is_wide_ptr(a) {
+            return None;
+        }
+        let (_, r, c) = wide_ptr_cell(a);
+        (!(0..40).contains(&c) && r >= 0).then_some((r as usize, c))
+    }
+
     /// `LDA ($0E),Y`
     fn rd0e(&self, y: u16) -> u8 {
-        let a = self.zp_0e.wrapping_add(y);
+        let a = ptr_add(self.zp_0e, y as i32);
+        if let Some((r, c)) = Self::wide_target(a) {
+            return self.wide_cell(r, c).0;
+        }
+        let a = ptr_linear(a);
         if (0xC800..0xC800 + 1000).contains(&a) {
             self.screen_ram[(a - 0xC800) as usize]
         } else {
@@ -38,14 +53,22 @@ impl GameState {
     }
     /// `STA ($0E),Y`
     fn wr0e(&mut self, y: u16, v: u8) {
-        let a = self.zp_0e.wrapping_add(y);
+        let a = ptr_add(self.zp_0e, y as i32);
+        if let Some((r, c)) = Self::wide_target(a) {
+            return self.wide_put(r, c, Some(v), None);
+        }
+        let a = ptr_linear(a);
         if (0xC800..0xC800 + 1000).contains(&a) {
             self.screen_ram[(a - 0xC800) as usize] = v;
         }
     }
     /// `LDA ($10),Y`
     fn rd10(&self, y: u16) -> u8 {
-        let a = self.zp_10.wrapping_add(y);
+        let a = ptr_add(self.zp_10, y as i32);
+        if let Some((r, c)) = Self::wide_target(a) {
+            return self.wide_cell(r, c).1;
+        }
+        let a = ptr_linear(a);
         if (0xD800..0xD800 + 1000).contains(&a) {
             self.color_ram[(a - 0xD800) as usize]
         } else {
@@ -54,10 +77,20 @@ impl GameState {
     }
     /// `STA ($10),Y`
     fn wr10(&mut self, y: u16, v: u8) {
-        let a = self.zp_10.wrapping_add(y);
+        let a = ptr_add(self.zp_10, y as i32);
+        if let Some((r, c)) = Self::wide_target(a) {
+            return self.wide_put(r, c, None, Some(v));
+        }
+        let a = ptr_linear(a);
         if (0xD800..0xD800 + 1000).contains(&a) {
             self.color_ram[(a - 0xD800) as usize] = v;
         }
+    }
+
+    /// `$0E:$0F += d` (the original's 16-bit arithmetic; a wide pointer moves by the rows and columns `d` means, see `wide.rs`)
+    #[inline]
+    fn move_0e(&mut self, d: i32) {
+        self.zp_0e = ptr_add(self.zp_0e, d);
     }
 
     /// sub_1D46 ($1D46..$1D51): colour pointer = screen pointer + `$1000`
@@ -161,7 +194,7 @@ impl GameState {
                 return; // L19B2
             }
             // $1944: $0E:$0F -= $52
-            self.zp_0e = self.zp_0e.wrapping_sub(0x52);
+            self.move_0e(-0x52);
             let mut x = 0u16;
             let mut y = 2u16;
             loop {
@@ -175,15 +208,17 @@ impl GameState {
                 }
             }
             // L1962
-            self.zp_0e = self.zp_0e.wrapping_add(x).wrapping_sub(0x28);
-            let t = self.tile_flags(self.rd0e(0x50))
-                | self.tile_flags(self.rd0e(0x51))
-                | self.tile_flags(self.rd0e(0x52));
+            self.move_0e(x as i32);
+            self.move_0e(-0x28);
+            // $197B..$1997: $0451 keeps the flags of the first two cells (the third is ORed in A only)
+            let f01 = self.tile_flags(self.rd0e(0x50)) | self.tile_flags(self.rd0e(0x51));
+            self.set_v47(0x451, f01);
+            let t = f01 | self.tile_flags(self.rd0e(0x52));
             if t & 1 != 0 {
                 return;
             }
             self.clear_19ba();
-            self.zp_0e = self.zp_0e.wrapping_add(0x28);
+            self.move_0e(0x28);
             *cx = 0x28;
         }
     }
@@ -200,10 +235,10 @@ impl GameState {
         } else if sum == 1 {
             if self.tile_flags(self.rd0e(0x50)) & 1 != 0 {
                 self.clear_19b3();
-                self.zp_0e = self.zp_0e.wrapping_add(1);
+                self.move_0e(1);
             } else {
                 self.clear_19b3(); // L18DD
-                self.zp_0e = self.zp_0e.wrapping_sub(1);
+                self.move_0e(-1);
             }
         } else {
             // L18D6: INC $9B02,X
@@ -213,7 +248,7 @@ impl GameState {
             return;
         }
         // L18EE: $0E:$0F += $28; store the new position in the slot; X = $28; JMP L1919
-        self.zp_0e = self.zp_0e.wrapping_add(0x28);
+        self.move_0e(0x28);
         let i = self.v47(0x450) as usize;
         self.set_slot(0x9B0A + i, (self.zp_0e & 0xFF) as u8);
         self.set_slot(0x9B12 + i, (self.zp_0e >> 8) as u8);
@@ -326,21 +361,21 @@ impl GameState {
         let mut a = st;
         if (1..6).contains(&a) {
             // $174A: PHA; TAY; $0E:$0F += $A0; sub_1D46; sub_1D52($9D22,Y); $0E:$0F -= $A0; PLA
-            self.zp_0e = self.zp_0e.wrapping_add(0xA0);
+            self.move_0e(0xA0);
             self.colour_pointer_sub_1d46();
             self.colour_fill_sub_1d52(img(0x9D22 + a as usize));
-            self.zp_0e = self.zp_0e.wrapping_sub(0xA0);
+            self.move_0e(-0xA0);
         }
         if a >= 6 && a == 7 {
             // L1704
-            self.zp_0e = self.zp_0e.wrapping_add(0xA0);
+            self.move_0e(0xA0);
             if self.slot(0x9B98 + x) != 0 {
                 self.colour_pointer_sub_1d46();
                 self.colour_fill_sub_1d52(8);
             } else {
                 self.block_graphic_sub_1c9b();
             }
-            self.zp_0e = self.zp_0e.wrapping_sub(0xA0);
+            self.move_0e(-0xA0);
             a = 2;
         }
         if a == 9 {
@@ -348,7 +383,7 @@ impl GameState {
             let x = self.v47(0x44E) as usize;
             if self.slot(0x9B98 + x) != 0 && self.transform_timer == 0 {
                 self.transform_timer = self.transform_timer.wrapping_sub(1);
-                self.zp_0e = self.zp_0e.wrapping_add(0xA0);
+                self.move_0e(0xA0);
                 self.block_graphic_sub_1c9b();
             }
             let x = self.v47(0x44E) as usize;
@@ -358,7 +393,7 @@ impl GameState {
         // L17A1
         let off = img(0x9D28 + a as usize);
         self.set_slot(0x9B88 + x, off);
-        let target = self.zp_0e.wrapping_add(off as u16);
+        let target = ptr_linear(ptr_add(self.zp_0e, off as i32));
         // $12:$13 = target; compare with $C8C8 (the first row below the status bar)
         if target > 0xC8C8 {
             // L17DB: remember the tile, replace it by the rising item
@@ -392,7 +427,7 @@ impl GameState {
 
     /// sub_1C21 ($1C21): `$0E:$0F += Y`
     fn add_y_sub_1c21(&mut self, y: u16) {
-        self.zp_0e = self.zp_0e.wrapping_add(y);
+        self.move_0e(y as i32);
     }
 
     /// sub_1C2E ($1C2E): sum of the three cells at `$0E`
@@ -404,6 +439,7 @@ impl GameState {
 
     /// sub_1A17 ($1A17..$1C20): react to the tiles around Giana (bonus blocks, bricks, doors, bridges)
     pub fn block_interaction_sub_1a17(&mut self) {
+        // (WIDESCREEN ON: the same in the extra areas, the cells come through the wide pointers of `sub_9DF4`)
         let t = self.surrounding_tiles;
         // $1A17: LDA $041A; CMP #$28; BCC; CMP #$2F; BCS; LDA $0448; CMP #3; BCC; LDA #3; STA $0448
         if t[4] >= 0x28 && t[4] < 0x2F && self.timer_subsecond >= 3 {
@@ -441,7 +477,8 @@ impl GameState {
                 return;
             }
             self.st_2169 = 0xFF;
-            self.zp_0e = self.zp_0e.wrapping_sub(0xA0);
+            self.warp_pass_late = true;
+            self.move_0e(-0xA0);
             self.reveal_l1bd2(0);
             return;
         }
@@ -460,7 +497,7 @@ impl GameState {
         let t = self.surrounding_tiles;
         let f = self.surrounding_tile_flags;
         // $0E:$0F = $0432/$0433 - 1
-        self.zp_0e = ((self.head_tile_ptr_high as u16) << 8 | self.head_tile_ptr_low as u16).wrapping_sub(1);
+        self.zp_0e = ptr_add((self.head_tile_ptr_high as u16) << 8 | self.head_tile_ptr_low as u16, -1);
         let (a, y): (u8, u16);
         if f[0] & 0x80 != 0 {
             a = t[0];
@@ -620,7 +657,7 @@ impl GameState {
             }
             self.colour_fill_sub_1d52(1);
             self.set_slot(0x9B68 + x, 1);
-            let p = self.zp_0e.wrapping_sub(0xA0);
+            let p = ptr_add(self.zp_0e, -0xA0);
             self.set_slot(0x9B70 + x, (p & 0xFF) as u8);
             self.set_slot(0x9B78 + x, (p >> 8) as u8);
             self.diamond_l1c4f();
@@ -635,12 +672,10 @@ impl GameState {
         }
         for x in (0..8usize).rev() {
             if self.slot(0x9B50 + x) == 0 {
-                // TYA; CLC; ADC #$A0; ADC $0432 (carry of the first add goes into the second); ...
-                let first = idx as u16 + 0xA0;
-                let lo = first + self.head_tile_ptr_low as u16;
-                self.set_slot(0x9B58 + x, (lo & 0xFF) as u8);
-                let hi = self.head_tile_ptr_high as u16 + (lo >> 8);
-                self.set_slot(0x9B60 + x, (hi & 0xFF) as u8);
+                // TYA; CLC; ADC #$A0; ADC $0432 (carry of the first add goes into the second); ...: head + idx + $A0
+                let p = ptr_add((self.head_tile_ptr_high as u16) << 8 | self.head_tile_ptr_low as u16, idx as i32 + 0xA0);
+                self.set_slot(0x9B58 + x, (p & 0xFF) as u8);
+                self.set_slot(0x9B60 + x, (p >> 8) as u8);
                 self.set_slot(0x9B50 + x, 1);
                 self.hit_check_l1ab2();
                 return;
@@ -667,7 +702,8 @@ impl GameState {
         self.chk[5] = self.player_x_low; // $045D
         self.chk[6] = self.player_y_c64; // $045E
         self.save_sprites_sub_210b();
-        let p = ((self.head_tile_ptr_high as u16) << 8 | self.head_tile_ptr_low as u16).wrapping_add(0x98);
+        // (WIDESCREEN ON: the C64 address of the head cell; the restart looks for the statue on the screen from there)
+        let p = ptr_linear((self.head_tile_ptr_high as u16) << 8 | self.head_tile_ptr_low as u16).wrapping_add(0x98);
         self.chk[7] = (p & 0xFF) as u8; // $045F
         self.chk[8] = (p >> 8) as u8; // $0460
     }
@@ -681,7 +717,8 @@ impl GameState {
         saved[16] = self.sprite_x_msb;
         self.saved_sprites = saved;
         self.saved_vic = [self.en.vic_mdp, self.en.vic_mmc, self.en.vic_me];
-        self.saved_colours = self.en.vic_col;
+        // $212A: LDA $D027,Y reads the unused upper nibble of a colour register as 1s
+        self.saved_colours = self.en.vic_col.map(|c| c | 0xF0);
         for i in 0..8 {
             self.saved_ptrs[i] = self.sptr(i);
         }

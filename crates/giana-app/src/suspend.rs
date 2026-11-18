@@ -76,9 +76,9 @@ impl Reject {
     /// The notice for the menu.
     pub fn notice(self) -> &'static str {
         match self {
-            Reject::Version => "SAVED GAME DISCARDED: OLD FORMAT",
-            Reject::Data => "SAVED GAME DISCARDED: DATA CHANGED",
-            Reject::Damaged => "SAVED GAME DISCARDED: DAMAGED",
+            Reject::Version => "SAVED GAME REMOVED: OLD VERSION",
+            Reject::Data => "SAVED GAME REMOVED: OTHER GAME DATA",
+            Reject::Damaged => "SAVED GAME REMOVED: DAMAGED",
         }
     }
 }

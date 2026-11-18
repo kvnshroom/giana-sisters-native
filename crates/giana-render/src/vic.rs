@@ -427,6 +427,87 @@ fn sprite_pixels(sp: &SpriteDraw, mut put: impl FnMut(isize, isize, u8)) {
 /// ends up on top. `strips`: the extra columns of the widescreen view (`draw_strips`).
 fn draw(fb: &mut Framebuffer, strips: Option<&mut Strips>, bands: &[Band; 3], sprites: &[SpriteDraw], geo: Geometry) {
     let oy = geo.oy;
+    let fg = draw_background(fb, bands, geo);
+    for sp in sprites.iter().rev() {
+        sprite_pixels(sp, |dx, dy, c| {
+            if !visible(dx, dy, &geo) {
+                return;
+            }
+            if sp.behind && fg[dy as usize * 320 + dx as usize] {
+                return;
+            }
+            fb.pixels[(oy + dy as usize) * WIDTH + ORIGIN_X + dx as usize] = c64_color(c);
+        });
+    }
+    if let Some(strips) = strips {
+        draw_strips(strips, bands, sprites, geo);
+    }
+}
+
+/// One row of a sprite as the chip showed it at one raster line, with the registers of that moment: for pictures in which
+/// the sprites change during the frame (the 30A preview's sprite split and object multiplexer, `giana-engine-c`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpriteRowDraw {
+    /// raster line (the first text line is 51)
+    pub line: isize,
+    /// sprite number (0 is in front)
+    pub sprite: u8,
+    /// x register (9 bits)
+    pub x: isize,
+    /// the three shape bytes of the row
+    pub bits: [u8; 3],
+    pub multi: bool,
+    pub expand_x: bool,
+    pub behind: bool,
+    pub color: u8,
+    /// `$D025`, `$D026`
+    pub mc: [u8; 2],
+}
+
+/// [`render_vic_bands`] with the sprites given row by row ([`SpriteRowDraw`]) instead of from `v`'s registers.
+pub fn render_vic_bands_rows(fb: &mut Framebuffer, v: &VicView, specs: [BandSpec; 3], geo: Geometry, rows: &[SpriteRowDraw]) {
+    let views = [0, 1, 2].map(|i| VicView { bg: specs[i].bg, ..*v });
+    let bands = [0, 1, 2].map(|i| Band { view: &views[i], xscroll: (specs[i].xscroll & 7) as i32, hires: specs[i].hires });
+    let oy = geo.oy;
+    let fg = draw_background(fb, &bands, geo);
+    let mut order: Vec<&SpriteRowDraw> = rows.iter().collect();
+    order.sort_by_key(|r| std::cmp::Reverse(r.sprite));
+    for r in order {
+        let dy = r.line - 51;
+        let w = if r.expand_x { 2 } else { 1 };
+        let mut put = |px: isize, n: isize, c: Option<u8>| {
+            let Some(c) = c else { return };
+            for k in 0..n * w {
+                let dx = r.x - 24 + px * w + k;
+                if !visible(dx, dy, &geo) || (r.behind && fg[dy as usize * 320 + dx as usize]) {
+                    continue;
+                }
+                fb.pixels[(oy + dy as usize) * WIDTH + ORIGIN_X + dx as usize] = c64_color(c);
+            }
+        };
+        for (b, &byte) in r.bits.iter().enumerate() {
+            if r.multi {
+                for p in 0..4isize {
+                    let c = match (byte >> (6 - 2 * p)) & 3 {
+                        0 => None,
+                        1 => Some(r.mc[0]),
+                        2 => Some(r.color),
+                        _ => Some(r.mc[1]),
+                    };
+                    put(b as isize * 8 + p * 2, 2, c);
+                }
+            } else {
+                for p in 0..8isize {
+                    put(b as isize * 8 + p, 1, (byte >> (7 - p) & 1 != 0).then_some(r.color));
+                }
+            }
+        }
+    }
+}
+
+/// The text of the three bands, with the 38-column window; returns the foreground flag of every pixel (320 x 200).
+fn draw_background(fb: &mut Framebuffer, bands: &[Band; 3], geo: Geometry) -> Vec<bool> {
+    let oy = geo.oy;
     fb.clear(c64_color(0));
     let mut fg = vec![false; 320 * 200];
     for y in 0..200usize {
@@ -460,20 +541,7 @@ fn draw(fb: &mut Framebuffer, strips: Option<&mut Strips>, bands: &[Band; 3], sp
             }
         }
     }
-    for sp in sprites.iter().rev() {
-        sprite_pixels(sp, |dx, dy, c| {
-            if !visible(dx, dy, &geo) {
-                return;
-            }
-            if sp.behind && fg[dy as usize * 320 + dx as usize] {
-                return;
-            }
-            fb.pixels[(oy + dy as usize) * WIDTH + ORIGIN_X + dx as usize] = c64_color(c);
-        });
-    }
-    if let Some(strips) = strips {
-        draw_strips(strips, bands, sprites, geo);
-    }
+    fg
 }
 
 /// What the picture shows at pixel `x` (counted from the left edge of the character matrix, before the fine scroll) of a
@@ -506,10 +574,9 @@ fn strip_pixel(band: &Band, row: usize, line: usize, x: isize) -> (u8, bool) {
 }
 
 /// The extra columns of the widescreen view: `EXTRA` pixels left of the window and right of it, drawn like the picture
-/// (same bands, fine scrolls, characters and sprites) from the cells that the screen does not have. Shaded towards the outer
-/// edge, and the sprites fade out the further they are beyond the old edge (see the module `wide`).
+/// (same bands, fine scrolls, characters and sprites) from the cells that the screen does not have.
 fn draw_strips(strips: &mut Strips, bands: &[Band; 3], sprites: &[SpriteDraw], geo: Geometry) {
-    let (menu, mask) = (strips.menu_dim, strips.mask);
+    let menu = strips.menu_dim;
     strips.hud = wide::hud_groups(bands[0].view.screen);
     strips.hud_bg = c64_color(bands[0].view.bg[0]);
     let mut fg = vec![false; 2 * EXTRA * 200];
@@ -527,10 +594,7 @@ fn draw_strips(strips: &mut Strips, bands: &[Band; 3], sprites: &[SpriteDraw], g
             for sx in 0..EXTRA {
                 let x = first[side] + sx as isize;
                 let (colr, front) = strip_pixel(&band, y / 8, y % 8, x - band.xscroll as isize);
-                let dist = if side == 0 { EXTRA - sx } else { sx + 1 };
-                // the status bar lines are not shaded
-                let shade_dist = if y < 16 { 0 } else { dist };
-                strips.side_mut(side)[y * EXTRA + sx] = wide::shade(colr, shade_dist, menu, mask);
+                strips.side_mut(side)[y * EXTRA + sx] = wide::shade(colr, menu);
                 fg[(side * 200 + y) * EXTRA + sx] = front;
             }
         }
@@ -540,22 +604,19 @@ fn draw_strips(strips: &mut Strips, bands: &[Band; 3], sprites: &[SpriteDraw], g
             if !(0..200).contains(&dy) {
                 return;
             }
-            let (side, sx, dist) = if (first[0]..geo.left).contains(&dx) {
-                let sx = (dx - first[0]) as usize;
-                (0, sx, EXTRA - sx)
+            let (side, sx) = if (first[0]..geo.left).contains(&dx) {
+                (0, (dx - first[0]) as usize)
             } else if (geo.right..geo.right + EXTRA as isize).contains(&dx) {
-                let sx = (dx - geo.right) as usize;
-                (1, sx, sx + 1)
+                (1, (dx - geo.right) as usize)
             } else {
                 return;
             };
-            let alpha = wide::sprite_alpha(dist, mask);
-            if alpha == 0 || (sp.behind && fg[(side * 200 + dy as usize) * EXTRA + sx]) {
+            if sp.behind && fg[(side * 200 + dy as usize) * EXTRA + sx] {
                 return;
             }
             let at = dy as usize * EXTRA + sx;
             let strip = strips.side_mut(side);
-            strip[at] = wide::mix(strip[at], wide::shade(c, dist, menu, mask), alpha);
+            strip[at] = wide::shade(c, menu);
         });
     }
 }

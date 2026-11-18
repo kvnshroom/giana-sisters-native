@@ -17,13 +17,15 @@
 
 mod driver;
 
+use crate::layout::PREVIEW;
+
 pub use driver::{Driver, DriverCall};
 
-pub const INIT: u16 = 0x5609;
-pub const TICK: u16 = 0x5650;
-pub const START_SONG: u16 = 0x5C93;
-pub const RESTART_SONG: u16 = 0x5C9B;
-pub const START_EFFECT: u16 = 0x5C35;
+pub const INIT: u16 = PREVIEW.music_init;
+pub const TICK: u16 = PREVIEW.music_tick;
+pub const START_SONG: u16 = PREVIEW.music_start_song;
+pub const RESTART_SONG: u16 = PREVIEW.music_restart_song;
+pub const START_EFFECT: u16 = PREVIEW.music_start_effect;
 
 /// The driver on its own memory, with the calls the game makes.
 #[derive(Clone)]

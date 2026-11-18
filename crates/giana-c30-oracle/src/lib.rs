@@ -30,7 +30,7 @@ mod snapshot;
 
 pub use hw::{Hw, Timing, VicWrite, WatchHit};
 pub use machine::{Hook, Machine, FRAME_PC, PICTURE_PC};
-pub use script::{lockstep, Script, Trace};
+pub use script::{lockstep, setup_trace, Script, Trace};
 pub use snapshot::{Diff, Picture, Snapshot};
 
 /// Zero-page cells the game uses as scratch between routines (`$02..$05`, `$0E/$0F`, `$14`, `$22`, `$24/$25`): their value at a

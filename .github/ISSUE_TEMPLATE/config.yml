@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Player's guide
+    url: https://github.com/kvnshroom/giana-sisters-native/blob/main/docs/guide.md
+    about: First start, network play, options, ROM modules, command line and where your files are.
+  - name: Security problem
+    url: https://github.com/kvnshroom/giana-sisters-native/blob/main/SECURITY.md
+    about: Please do not open a public issue for security problems; see how to report them privately.

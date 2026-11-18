@@ -256,12 +256,13 @@ dependencies = [
 
 [[package]]
 name = "giana-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "giana-audio",
  "giana-authentic",
  "giana-core",
+ "giana-engine-c",
  "giana-extract",
  "giana-module",
  "giana-render",
@@ -282,6 +283,7 @@ version = "0.1.0"
 dependencies = [
  "giana-core",
  "resid-rs",
+ "residfp-sys",
 ]
 
 [[package]]
@@ -679,6 +681,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4cf0a31213e31d3ecb79e1dadc41ae14a5936f7503361509df19fa2493199ea"
 dependencies = [
  "bit_field",
+]
+
+[[package]]
+name = "residfp-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

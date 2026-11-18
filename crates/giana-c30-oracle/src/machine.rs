@@ -59,6 +59,10 @@ pub struct Machine {
     pub instrs: u64,
     charged: u32,
     pub(crate) kernal_name: (u8, u16),
+    /// raster IRQ handlers the CPU is in (taken IRQs minus executed `RTI`s)
+    pub irq_depth: u32,
+    /// the main program's `PC` when the outermost IRQ came (valid while `irq_depth > 0`)
+    pub irq_from: u16,
 }
 
 impl Machine {
@@ -69,7 +73,7 @@ impl Machine {
         hw.ram[1] = 0x35;
         let mut cpu = Cpu::default();
         cpu.pc = pc;
-        Machine { cpu, hw, hooks: Vec::new(), hook_at: vec![0; 65536], sync_pc: FRAME_PC, frame_no: 0, instrs: 0, charged: 0, kernal_name: (0, 0) }
+        Machine { cpu, hw, hooks: Vec::new(), hook_at: vec![0; 65536], sync_pc: FRAME_PC, frame_no: 0, instrs: 0, charged: 0, kernal_name: (0, 0), irq_depth: 0, irq_from: 0 }
     }
 
     /// Starts the game from the unpacked disk image like VICE does in `tools/c30/snapshot.py`: the intro and title are
@@ -92,11 +96,44 @@ impl Machine {
         Ok(m)
     }
 
+    /// The machine at the game's entry (`$1D10`) with nothing patched and nothing run: the intro, the title and every
+    /// other screen of the game flow run as on the real machine (they wait for fire and keys: [`Machine::set_joy`],
+    /// [`Machine::set_key`]). `d64` as in [`Machine::boot`].
+    pub fn power_on(image: &Image, d64: Option<&[u8]>) -> Machine {
+        let mut m = Machine::new(&image.ram, image.entry);
+        crate::kernal::install(&mut m, d64.map(|d| d.to_vec()));
+        m.cpu.sp = 0xFF;
+        m
+    }
+
+    /// Runs until the raster reaches the start of line `line` (the instruction boundary at or after it): one video frame
+    /// when called again with the same line. Unlike [`Machine::frame`] it does not depend on the game's IRQ chain, so it
+    /// also steps the screens of the game flow (intro, title, high scores) and the delays with the raster IRQ off.
+    pub fn run_to_line(&mut self, line: u16) -> Result<(), String> {
+        self.hw.vic_log.clear();
+        self.hw.sid_log.clear();
+        self.hw.coll_reads.clear();
+        let start = self.hw.frames * 312 + self.hw.line as u64;
+        let target = if (self.hw.line) < line { start - self.hw.line as u64 + line as u64 } else { start - self.hw.line as u64 + 312 + line as u64 };
+        let mut n = 0u64;
+        while self.hw.frames * 312 + (self.hw.line as u64) < target {
+            self.step()?;
+            n += 1;
+            if n > MAX_INSTR_PER_FRAME {
+                return Err(format!("line {line} not reached (pc = ${:04X})", self.cpu.pc));
+            }
+        }
+        self.frame_no += 1;
+        Ok(())
+    }
+
     /// Restarts stage `n` (0..15, 100..104 for the special rooms) the way `tools/c30/vice_stages.py` does (`$FC = n`,
     /// jump to `$1E56`) and runs 60 frames, ending at a `$3488` again. The VICE reference for this is `v<n>.ram`.
     pub fn start_stage(&mut self, n: u8) -> Result<(), String> {
         self.hw.ram[0xFC] = n;
         self.cpu.pc = 0x1E56;
+        // the jump leaves the IRQ handler the machine was in for good
+        self.irq_depth = 0;
         for _ in 0..60 {
             self.frame()?;
         }
@@ -115,6 +152,8 @@ impl Machine {
             instrs: self.instrs,
             charged: 0,
             kernal_name: self.kernal_name,
+            irq_depth: self.irq_depth,
+            irq_from: self.irq_from,
         }
     }
 
@@ -211,6 +250,10 @@ impl Machine {
     pub fn step(&mut self) -> Result<(), String> {
         if !self.cpu.i && self.hw.irq_pending() {
             let pc = self.cpu.pc;
+            if self.irq_depth == 0 {
+                self.irq_from = pc;
+            }
+            self.irq_depth += 1;
             self.cpu.push(&mut self.hw, (pc >> 8) as u8);
             self.cpu.push(&mut self.hw, pc as u8);
             let f = self.cpu.flags(false);
@@ -243,7 +286,11 @@ impl Machine {
         }
         let exact = self.exact_cycles();
         self.hw.cur_pc = pc;
+        let rti = self.hw.ram[pc as usize] == 0x40;
         self.cpu.step(&mut self.hw)?;
+        if rti && self.irq_depth > 0 {
+            self.irq_depth -= 1;
+        }
         self.instrs += 1;
         let c = exact + std::mem::take(&mut self.charged);
         self.hw.advance(c);
@@ -342,7 +389,35 @@ impl Machine {
         Ok(self.cpu.cycles - c0)
     }
 
+    /// Runs the raster IRQ handler at `vector` to its `RTI` as if the IRQ came now (IRQs stay masked inside, the raster
+    /// keeps counting). Returns the cycles.
+    pub fn call_irq(&mut self, vector: u16) -> Result<u64, String> {
+        let (pc0, i0, c0) = (self.cpu.pc, self.cpu.i, self.cpu.cycles);
+        self.cpu.push(&mut self.hw, (SENTINEL >> 8) as u8);
+        self.cpu.push(&mut self.hw, SENTINEL as u8);
+        let f = self.cpu.flags(false);
+        self.cpu.push(&mut self.hw, f);
+        self.cpu.pc = vector;
+        let mut n = 0u64;
+        while self.cpu.pc != SENTINEL {
+            self.cpu.i = true;
+            self.step_no_irq()?;
+            n += 1;
+            if n > MAX_INSTR_PER_FRAME {
+                return Err(format!("IRQ ${vector:04X} did not return (pc = ${:04X})", self.cpu.pc));
+            }
+        }
+        self.cpu.pc = pc0;
+        self.cpu.i = i0;
+        Ok(self.cpu.cycles - c0)
+    }
+
     // ---- snapshots --------------------------------------------------------------------------------------------
+
+    /// The main program's `PC`: the current one, or where the outermost raster IRQ handler that runs will return to.
+    pub fn main_pc(&self) -> u16 {
+        if self.irq_depth > 0 { self.irq_from } else { self.cpu.pc }
+    }
 
     /// The machine state now, with this frame's logs.
     pub fn snapshot(&self) -> Snapshot {

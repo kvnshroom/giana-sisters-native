@@ -110,6 +110,27 @@ impl Trace {
     }
 }
 
+/// The start of a `tools/c30/vtrace.py` trace on a booted machine, from the trace's header lines: `# prepokes=a:v,..`
+/// (hex RAM cells poked before the stage restart, e.g. the restart column `$CBF3`), `# stage=n` (the restart, 60
+/// frames, [`Machine::start_stage`]) and `# pokes=a:v,..` (poked after it, e.g. the power level `$FD`). VICE does the
+/// same in `vtrace.py` (`C30_PREPOKES`, `C30_POKES`).
+pub fn setup_trace(m: &mut Machine, text: &str) -> Result<(), String> {
+    let header = |key: &str| text.lines().find_map(|l| l.strip_prefix(&format!("# {key}="))).map(str::trim);
+    let poke = |m: &mut Machine, key: &str| -> Result<(), String> {
+        for p in header(key).unwrap_or("").split(',').filter(|p| !p.is_empty()) {
+            let (a, v) = p.split_once(':').ok_or_else(|| format!("bad poke '{p}'"))?;
+            let a = u16::from_str_radix(a, 16).map_err(|_| format!("bad poke '{p}'"))?;
+            m.poke(a, u8::from_str_radix(v, 16).map_err(|_| format!("bad poke '{p}'"))?);
+        }
+        Ok(())
+    };
+    poke(m, "prepokes")?;
+    if let Some(s) = header("stage") {
+        m.start_stage(s.parse().map_err(|_| format!("bad stage '{s}'"))?)?;
+    }
+    poke(m, "pokes")
+}
+
 /// Runs two machines (typically the same state, one with hooks) for `frames` frames of the same input and returns the
 /// first frame at which they differ in the `ranges` (RAM), the VIC/SID/colour state or the `$D01E` reads.
 /// `Err((frame, diff))`: `frame` counts from 0 for the first frame run here; `diff` has `left` = `a`, `right` = `b`.

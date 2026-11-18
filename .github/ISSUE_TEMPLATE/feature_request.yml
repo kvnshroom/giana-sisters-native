@@ -1,0 +1,41 @@
+name: Feature request
+description: An idea for the game, the menus, a platform, or a ROM hack that should play.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The game plays like the C64 original by default. Ideas that change how it plays are welcome, but they would
+        come as an option that is off by default (see [CONTRIBUTING.md](https://github.com/kvnshroom/giana-sisters-native/blob/main/CONTRIBUTING.md)).
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Gameplay (as an option)
+        - Menus and options
+        - Picture or sound
+        - Controls and controllers
+        - Network play
+        - ROM modules / a fan hack that should play
+        - Platform or packaging (e.g. Flatpak, signed builds)
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What should the game do, and why would it help you?
+    validations:
+      required: true
+
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Other games that do it well, a link to the hack on CSDb, screenshots.
+    validations:
+      required: false

@@ -133,10 +133,18 @@ pub struct ModuleInfo {
     pub description: String,
     /// the module changes code that the port runs itself (so it may not play as intended)
     pub changes_code: bool,
+    /// the 30th Anniversary preview (engine family C): its own loop, no widescreen, no network, never shared
+    pub c30: bool,
 }
 
-/// Said on the detail page of a module that changes game code, on two lines.
-pub const CODE_NOTICE: [&str; 2] = ["CHANGES GAME CODE -", "MAY NOT PLAY AS INTENDED"];
+/// Said on the detail page of a module that changes game code (the port runs its own code, so such changes are lost).
+pub const CODE_NOTICE: &str = "MAY NOT PLAY AS INTENDED";
+
+/// Said on the detail page of the 30th Anniversary preview: the settings it does not take.
+pub const C30_NOTICE: &str = "NO WIDESCREEN OR NETWORK";
+
+/// The row of the modules page that asks for the 30th Anniversary preview's disk (while it is not in the store).
+pub const C30_ADD: &str = "ADD 30A PREVIEW...";
 
 fn shown(s: &str) -> String {
     safe_text(&s.to_ascii_uppercase())
@@ -144,7 +152,13 @@ fn shown(s: &str) -> String {
 
 impl ModuleInfo {
     pub fn new(id: &str, name: &str, author: &str, version: &str, description: &str, changes_code: bool) -> ModuleInfo {
-        ModuleInfo { id: id.to_string(), name: shown(name), author: shown(author), version: shown(version), description: shown(description), changes_code }
+        ModuleInfo { id: id.to_string(), name: shown(name), author: shown(author), version: shown(version), description: shown(description), changes_code, c30: false }
+    }
+
+    /// The entry is the 30th Anniversary preview.
+    pub fn as_c30(mut self) -> ModuleInfo {
+        self.c30 = true;
+        self
     }
 
     /// `NAME  V1.0`, cut to `width` characters (the name gives way, the version stays).
@@ -192,7 +206,7 @@ pub(crate) enum DetailItem {
 impl DetailItem {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            DetailItem::Play => "PLAY THIS",
+            DetailItem::Play => "PLAY",
             DetailItem::Favorite => "FAVORITE",
             DetailItem::Remove => "REMOVE",
             DetailItem::Back => "BACK",
@@ -448,6 +462,8 @@ pub enum Outcome {
     Update,
     /// `ADD ROM MODULE...`: the app asks for a file
     ModuleAdd,
+    /// `ADD 30A PREVIEW...`: the app asks for the preview's `.d64`
+    C30Add,
     /// the options page asks for the disk image again: AUTHENTIC needs a file that older data folders lack
     AuthenticData,
     /// play this module (its id, empty for the original game): the app saves the choice and switches the game in place
@@ -688,9 +704,20 @@ impl Menu {
         Outcome::None
     }
 
-    /// Rows of the modules page: `ORIGINAL`, the modules, `ADD ROM MODULE...`, `BACK`.
+    /// Rows of the modules page: `ORIGINAL`, the modules, `ADD 30A PREVIEW...` (while it is not in the list),
+    /// `ADD ROM MODULE...`, `BACK`.
     pub(crate) fn module_rows(&self) -> usize {
-        self.modules.len() + 3
+        self.modules.len() + 3 + usize::from(self.c30_row().is_some())
+    }
+
+    /// The row of `ADD 30A PREVIEW...`, `None` when the preview is in the list already.
+    pub(crate) fn c30_row(&self) -> Option<usize> {
+        (!self.modules.iter().any(|m| m.c30)).then_some(self.modules.len() + 1)
+    }
+
+    /// The row of `ADD ROM MODULE...`.
+    pub(crate) fn add_row(&self) -> usize {
+        self.modules.len() + 1 + usize::from(self.c30_row().is_some())
     }
 
     fn leave_modules(&mut self) {
@@ -709,8 +736,9 @@ impl Menu {
             Nav::Sort => return Outcome::ModuleSort,
             // Y on the controller is `Clear`: on this page it marks a favorite
             Nav::Favorite | Nav::Clear if (1..=m).contains(&self.cursor) => return Outcome::ModuleFavorite(self.modules[self.cursor - 1].id.clone()),
-            Nav::Confirm if self.cursor == m + 1 => return Outcome::ModuleAdd,
-            Nav::Confirm if self.cursor == m + 2 => self.leave_modules(),
+            Nav::Confirm if Some(self.cursor) == self.c30_row() => return Outcome::C30Add,
+            Nav::Confirm if self.cursor == self.add_row() => return Outcome::ModuleAdd,
+            Nav::Confirm if self.cursor == self.add_row() + 1 => self.leave_modules(),
             Nav::Confirm => {
                 self.module_sel = self.cursor.checked_sub(1);
                 self.page = Page::ModuleDetail;
@@ -1688,9 +1716,10 @@ mod tests {
     #[test]
     fn the_modules_page_lists_original_modules_add_and_back() {
         let (mut m, mut b) = modules_page();
-        assert_eq!(m.module_rows(), 5);
-        // ORIGINAL, the two modules, ADD ROM MODULE..., BACK
-        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Confirm]), Outcome::ModuleAdd);
+        assert_eq!(m.module_rows(), 6);
+        // ORIGINAL, the two modules, ADD 30A PREVIEW..., ADD ROM MODULE..., BACK
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Confirm]), Outcome::C30Add);
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::ModuleAdd);
         assert_eq!(m.page, Page::Modules);
         assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Confirm]), Outcome::None);
         assert_eq!((m.page, m.cursor), (Page::Root, 3), "back to the item that opened the page");
@@ -1736,7 +1765,7 @@ mod tests {
     fn remove_asks_first_and_is_not_offered_for_the_original_or_the_active_module() {
         let (mut m, mut b) = modules_page();
         m.active_module = "bbbbbbbbbbbbbbbb".into();
-        // the original game: PLAY THIS, BACK
+        // the original game: PLAY, BACK
         m.step(Nav::Confirm, &mut b);
         assert_eq!(m.detail_items(), vec![DetailItem::Play, DetailItem::Back]);
         m.step(Nav::Back, &mut b);
@@ -1744,7 +1773,7 @@ mod tests {
         nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Confirm]);
         assert_eq!(m.detail_items(), vec![DetailItem::Play, DetailItem::Favorite, DetailItem::Back]);
         m.step(Nav::Back, &mut b);
-        // any other: PLAY THIS, FAVORITE, REMOVE, BACK; the question starts on NO
+        // any other: PLAY, FAVORITE, REMOVE, BACK; the question starts on NO
         nav(&mut m, &mut b, &[Nav::Up, Nav::Confirm, Nav::Down, Nav::Down, Nav::Confirm]);
         assert_eq!(m.page, Page::ConfirmRemove);
         assert_eq!(m.cursor, 1);
@@ -1758,8 +1787,23 @@ mod tests {
         assert_eq!(m.page, Page::Modules);
         // the app reads the folder again
         m.set_modules(&two_modules()[1..], "bbbbbbbbbbbbbbbb");
-        assert_eq!(m.module_rows(), 4);
+        assert_eq!(m.module_rows(), 5);
         assert!(m.cursor < m.module_rows());
+    }
+
+    #[test]
+    fn the_30a_preview_row_asks_for_its_disk_until_it_is_in_the_list() {
+        let (mut m, mut b) = modules_page();
+        assert_eq!(m.c30_row(), Some(3));
+        let mut list = two_modules();
+        list.push(ModuleInfo::new("cccccccccccccccc", "30th Anniversary", "Merlin", "2.0", "", false).as_c30());
+        m.set_modules(&list, "");
+        // ORIGINAL, the three entries, ADD ROM MODULE..., BACK: the preview is a row like the modules
+        assert_eq!((m.c30_row(), m.module_rows(), m.add_row()), (None, 6, 4));
+        assert_eq!(nav(&mut m, &mut b, &[Nav::Down, Nav::Down, Nav::Down, Nav::Down, Nav::Confirm]), Outcome::ModuleAdd);
+        nav(&mut m, &mut b, &[Nav::Up, Nav::Confirm]);
+        assert!(m.selected_module().is_some_and(|i| i.c30));
+        assert_eq!(m.step(Nav::Confirm, &mut b), Outcome::ModulePlay("cccccccccccccccc".into()));
     }
 
     const ID_A: &str = "aaaaaaaaaaaaaaaa";
@@ -1875,7 +1919,8 @@ mod tests {
         // a list that shrinks keeps the cursor on the page
         m.cursor = 4;
         m.set_modules(&[], "");
-        assert_eq!(m.cursor, 2);
+        // ORIGINAL, ADD 30A PREVIEW..., ADD ROM MODULE..., BACK
+        assert_eq!(m.cursor, 3);
     }
 
     #[test]
@@ -1887,6 +1932,6 @@ mod tests {
         assert_eq!(label.chars().count(), 20);
         assert!(label.ends_with("  V1.0"));
         assert_eq!(ModuleInfo::new("0", "A", "", "", "", false).list_label(20), "A");
-        assert_eq!(CODE_NOTICE.join(" "), "CHANGES GAME CODE - MAY NOT PLAY AS INTENDED");
+        assert_eq!(CODE_NOTICE, "MAY NOT PLAY AS INTENDED");
     }
 }

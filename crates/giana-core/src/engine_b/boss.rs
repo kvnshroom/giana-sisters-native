@@ -302,7 +302,9 @@ impl GameState {
             if borrow {
                 self.sprite_x_msb ^= 0x10;
             }
-            let gone = if self.wide_on() { self.wide_x9(4) < 0x10 - self.wide_e() as i32 } else { self.sprite_x_msb & 0x10 == 0 && self.spr(8) < 0x10 };
+            // WIDESCREEN ON: gone when its 24 pixels are clear of the wide view (`32 - E`); the C64's `X < $10` takes it with 7 of
+            // them still in its window, which in the wide picture would be a flame vanishing in view
+            let gone = if self.wide_on() { self.wide_x9(4) + 24 <= 32 - self.wide_e() as i32 } else { self.sprite_x_msb & 0x10 == 0 && self.spr(8) < 0x10 };
             if gone {
                 self.en.vic_me &= 0xEF;
                 return;
@@ -538,13 +540,12 @@ impl GameState {
                 let ex = self.spr(2 * y);
                 let ehi = (self.sprite_x_msb & self.bit(y) != 0) as u8;
                 let phi = self.sprite_x_msb & 1;
-                let (lo, b) = self.spr(0).overflowing_sub(ex);
-                let hi = phi.wrapping_sub(ehi).wrapping_sub(b as u8);
+                // (WIDESCREEN ON: in front or behind by signed X)
+                let (lo, hi, borrow) = self.x9_sub((self.spr(0), phi), (ex, ehi));
                 self.set_v47(0x48A, lo);
                 self.set_v47(0x48B, hi);
                 self.set_v47(0x48C, ex);
                 self.set_v47(0x48D, ehi);
-                let borrow = (phi as i16 - ehi as i16 - b as i16) < 0;
                 let facing = if self.facing_right { 0u8 } else { 0xFF };
                 if borrow != (facing != 0) {
                     return;
@@ -573,9 +574,8 @@ impl GameState {
         let ex = self.spr(t * 2);
         let ehi = (self.sprite_x_msb & self.bit(t) != 0) as u8;
         let ey = self.spr(t * 2 + 1).wrapping_sub(0x0A);
-        let (mut dx, b) = fx.overflowing_sub(ex);
-        let mut dxh = fhi.wrapping_sub(ehi).wrapping_sub(b as u8);
-        let neg = (fhi as i16 - ehi as i16 - b as i16) < 0;
+        // (WIDESCREEN ON: signed X, an enemy may be left of X = 0)
+        let (mut dx, mut dxh, neg) = self.x9_sub((fx, fhi), (ex, ehi));
         
         let dirx = if neg {
             dx = !dx;

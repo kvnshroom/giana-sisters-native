@@ -445,19 +445,16 @@ mod tests {
         }
     }
 
-    /// RMS of what a cue adds: the same 60 steps rendered with and without the cue, the difference up to its last audible
-    /// sample (the chip's own level and its slow DC drift, which the output high-pass of the SID model does not always remove
-    /// completely, are the same in both and cancel)
+    /// RMS of what a cue adds: the same 60 steps rendered with and without the cue, the difference over the same span
+    /// (about 1 s) after the cue for every cue and mode (the chip's own level and its slow DC drift are the same in both
+    /// renders and cancel). The span is fixed so that a cue that ends early is not measured over a shorter time than one
+    /// that drifts on: up to resid-rs's slower-settling DC, "until the last audible sample" was the whole span anyway.
     fn rms(mode: MenuSoundMode, cue: Cue) -> f64 {
         let lead = 8;
         let with = render_cue(mode, cue, lead, 60);
         let without = render_cue(mode, cue, usize::MAX, 60);
         let after: Vec<f64> = with[lead * 882..].iter().zip(&without[lead * 882..]).map(|(&a, &b)| a as f64 - b as f64).collect();
-        let end = after.iter().rposition(|v| v.abs() > 30.0).map_or(0, |i| i + 1);
-        if end == 0 {
-            return 0.0;
-        }
-        (after[..end].iter().map(|v| v * v).sum::<f64>() / end as f64).sqrt()
+        (after.iter().map(|v| v * v).sum::<f64>() / after.len() as f64).sqrt()
     }
 
     #[test]

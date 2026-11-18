@@ -194,8 +194,9 @@ impl GameState {
                     self.sprite_x_msb &= 0xF8;
                 }
                 // $899B: with an MSB set she is on the right half: nothing more; else the platform turns round
-                // before it would carry her off the left edge
-                if self.sprite_x_msb & 7 == 0 && gx < 0x1E {
+                // before it would carry her off the left edge (WIDESCREEN ON: past her wall in the extra area, as far from
+                // it as on the C64)
+                if self.sprite_x_msb & 7 == 0 && gx < 0x1E - self.wide_giana_e() {
                     let l = self.b_slot(0x7B4 + x) ^ 1;
                     self.b_set_slot(0x7B4 + x, l);
                 }

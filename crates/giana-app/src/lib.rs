@@ -2,6 +2,7 @@
 
 pub mod authentic;
 pub mod bindings;
+pub mod c30;
 pub mod cli;
 pub mod display;
 pub mod firstrun;

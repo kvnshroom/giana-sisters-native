@@ -3,6 +3,23 @@ use giana_app::net::{join, Host, NetMode, Session};
 use giana_core::state::{ControllerInput, GameState};
 use std::time::{Duration, Instant};
 
+/// A free port of this machine. Fixed ports collide with other programs and with parallel test runs (CI).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+/// The free port that stands for the fixed number `n` in this file: the same `n` gives the same port in one run.
+fn port(n: u16) -> u16 {
+    static PORTS: std::sync::Mutex<Vec<(u16, u16)>> = std::sync::Mutex::new(Vec::new());
+    let mut ports = PORTS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&(_, p)) = ports.iter().find(|(k, _)| *k == n) {
+        return p;
+    }
+    let p = free_port();
+    ports.push((n, p));
+    p
+}
+
 /// Plays with made-up inputs until `frames` steps or the end of the game. Returns the checksums that agreed, the steps per
 /// player and how it ended.
 fn play(mut s: Session, frames: usize, seed: u32, tamper_at: Option<usize>) -> (u64, [usize; 2], Option<&'static str>) {
@@ -75,7 +92,7 @@ fn one_shared_game(port: u16) {
 #[test]
 fn a_game_that_drifts_apart_is_noticed() {
     giana_core::skip_without_data!();
-    let (a, b) = connect(NetMode::TakeTurns, 47105);
+    let (a, b) = connect(NetMode::TakeTurns, port(47105));
     let t = std::thread::spawn(move || play(b, 3000, 77, Some(200)));
     let a = play(a, 3000, 5, None);
     let b = t.join().unwrap();
@@ -86,7 +103,7 @@ fn a_game_that_drifts_apart_is_noticed() {
 #[test]
 fn both_computers_show_the_same_game_taking_turns() {
     giana_core::skip_without_data!();
-    one_shared_game(47101);
+    one_shared_game(port(47101));
 }
 
 /// Inputs from a seed, the same until the end whoever runs them.
@@ -128,7 +145,7 @@ fn play_same_time(mut s: Session, seed: u32, stop_after: usize) -> (GameState, G
 #[test]
 fn each_computer_plays_its_own_game_and_the_copy_stays_true() {
     giana_core::skip_without_data!();
-    let (a, b) = connect(NetMode::SameTime, 47102);
+    let (a, b) = connect(NetMode::SameTime, port(47102));
     let t = std::thread::spawn(move || play_same_time(b, 77, usize::MAX));
     let a = play_same_time(a, 5, usize::MAX);
     let b = t.join().unwrap();
@@ -147,7 +164,7 @@ fn each_computer_plays_its_own_game_and_the_copy_stays_true() {
 #[test]
 fn the_games_differ_because_each_player_has_their_own() {
     giana_core::skip_without_data!();
-    let (a, b) = connect(NetMode::SameTime, 47106);
+    let (a, b) = connect(NetMode::SameTime, port(47106));
     let t = std::thread::spawn(move || play_same_time(b, 77, usize::MAX));
     let a = play_same_time(a, 5, usize::MAX);
     let b = t.join().unwrap();
@@ -157,8 +174,8 @@ fn the_games_differ_because_each_player_has_their_own() {
 #[test]
 fn leaving_tells_the_other_player() {
     giana_core::skip_without_data!();
-    let mut host = Host::on_port(NetMode::TakeTurns, 47103).unwrap();
-    let c = std::thread::spawn(|| join("127.0.0.1:47103").unwrap());
+    let mut host = Host::on_port(NetMode::TakeTurns, port(47103)).unwrap();
+    let c = std::thread::spawn(|| join(&format!("127.0.0.1:{}", port(47103))).unwrap());
     let mut s = loop {
         if let Some(r) = host.poll() {
             break r.unwrap();
@@ -178,8 +195,8 @@ fn leaving_tells_the_other_player() {
 #[test]
 fn a_wrong_program_is_turned_away() {
     use std::io::Write;
-    let mut host = Host::on_port(NetMode::TakeTurns, 47104).unwrap();
-    let mut c = std::net::TcpStream::connect("127.0.0.1:47104").unwrap();
+    let mut host = Host::on_port(NetMode::TakeTurns, port(47104)).unwrap();
+    let mut c = std::net::TcpStream::connect(format!("127.0.0.1:{}", port(47104))).unwrap();
     c.write_all(b"SOMETHIN").unwrap();
     let r = loop {
         if let Some(r) = host.poll() {
@@ -193,8 +210,8 @@ fn a_wrong_program_is_turned_away() {
 fn another_build_is_turned_away_and_told_so() {
     use giana_app::net::NetError;
     use std::io::{Read, Write};
-    let mut host = Host::on_port(NetMode::TakeTurns, 47107).unwrap();
-    let mut c = std::net::TcpStream::connect("127.0.0.1:47107").unwrap();
+    let mut host = Host::on_port(NetMode::TakeTurns, port(47107)).unwrap();
+    let mut c = std::net::TcpStream::connect(format!("127.0.0.1:{}", port(47107))).unwrap();
     // the right program, a build id that is not ours
     c.write_all(b"GIANANT5").unwrap();
     c.write_all(&[0, 0, 0, 0]).unwrap();
@@ -212,8 +229,8 @@ fn another_build_is_turned_away_and_told_so() {
 
 #[test]
 fn a_silent_client_does_not_hold_up_the_host() {
-    let mut host = Host::on_port(NetMode::TakeTurns, 47108).unwrap();
-    let _silent = std::net::TcpStream::connect("127.0.0.1:47108").unwrap();
+    let mut host = Host::on_port(NetMode::TakeTurns, port(47108)).unwrap();
+    let _silent = std::net::TcpStream::connect(format!("127.0.0.1:{}", port(47108))).unwrap();
     let t = Instant::now();
     for _ in 0..50 {
         assert!(host.poll().is_none());
@@ -221,7 +238,7 @@ fn a_silent_client_does_not_hold_up_the_host() {
     }
     assert!(t.elapsed() < Duration::from_secs(1), "polling never waits for the handshake");
     // a real player still gets in while the silent one waits
-    let c = std::thread::spawn(|| join("127.0.0.1:47108").unwrap());
+    let c = std::thread::spawn(|| join(&format!("127.0.0.1:{}", port(47108))).unwrap());
     let s = loop {
         if let Some(r) = host.poll() {
             break r.unwrap();
@@ -235,8 +252,8 @@ fn a_silent_client_does_not_hold_up_the_host() {
 #[test]
 fn the_joiner_connects_in_the_background() {
     use giana_app::net::Joiner;
-    let mut host = Host::on_port(NetMode::SameTime, 47109).unwrap();
-    let mut j = Joiner::start("127.0.0.1:47109", "");
+    let mut host = Host::on_port(NetMode::SameTime, port(47109)).unwrap();
+    let mut j = Joiner::start(&format!("127.0.0.1:{}", port(47109)), "");
     let (mut a, mut b) = (None, None);
     let deadline = Instant::now() + Duration::from_secs(5);
     while (a.is_none() || b.is_none()) && Instant::now() < deadline {
@@ -250,7 +267,7 @@ fn the_joiner_connects_in_the_background() {
 #[test]
 fn a_pause_is_seen_by_the_other_player() {
     giana_core::skip_without_data!();
-    let (mut a, mut b) = connect(NetMode::TakeTurns, 47110);
+    let (mut a, mut b) = connect(NetMode::TakeTurns, port(47110));
     let (mut ga, mut gb) = (a.new_games().0, b.new_games().0);
     let i = ControllerInput::new();
     // Giana (the host) has the first turn and opens the pause menu
@@ -270,7 +287,8 @@ fn a_pause_is_seen_by_the_other_player() {
 #[test]
 fn the_joiner_gets_the_rule_for_the_winner_from_the_host() {
     use giana_app::result::Winner;
-    for (port, rule) in [(47111, Winner::Score), (47112, Winner::Furthest)] {
+    for rule in [Winner::Score, Winner::Furthest] {
+        let port = free_port();
         let mut host = Host::on_port(NetMode::SameTime, port).unwrap();
         host.set_winner(rule);
         let client = std::thread::spawn(move || join(&format!("127.0.0.1:{port}")).unwrap());
@@ -289,12 +307,12 @@ fn the_joiner_gets_the_rule_for_the_winner_from_the_host() {
 fn the_rules_of_the_host_reach_the_other_side_and_unknown_ones_are_refused() {
     use giana_app::net::NetError;
     // no enhancement changes the game yet: the rules are 0 on both sides
-    let (a, b) = connect(NetMode::TakeTurns, 47113);
+    let (a, b) = connect(NetMode::TakeTurns, port(47113));
     assert_eq!((a.rules, b.rules), (0, 0));
     // a host of a newer build that plays by a rule this build does not know is refused
-    let mut host = Host::on_port(NetMode::TakeTurns, 47114).unwrap();
+    let mut host = Host::on_port(NetMode::TakeTurns, port(47114)).unwrap();
     host.set_rules(0x01);
-    let client = std::thread::spawn(|| join("127.0.0.1:47114"));
+    let client = std::thread::spawn(|| join(&format!("127.0.0.1:{}", port(47114))));
     let t = Instant::now();
     while t.elapsed() < Duration::from_secs(3) && !client.is_finished() {
         let _ = host.poll();
@@ -306,6 +324,7 @@ fn the_rules_of_the_host_reach_the_other_side_and_unknown_ones_are_refused() {
 // ---- ROM modules over the network ----
 
 mod module_transfer {
+    use super::port;
     use giana_app::modules::{Base, Store};
     use giana_app::net::{join_receiving, Host, ModuleSink, NetError, NetMode};
     use sha2::{Digest, Sha256};
@@ -401,11 +420,11 @@ mod module_transfer {
     #[test]
     fn host_original_and_guest_module_is_a_plain_refusal() {
         let (s, dir) = sink("orig", PathBuf::from("/nonexistent"));
-        let mut host = Host::on_port(NetMode::TakeTurns, 47131).unwrap();
+        let mut host = Host::on_port(NetMode::TakeTurns, port(47131)).unwrap();
         host.set_module("");
         let c = std::thread::spawn({
             let s = s.clone();
-            move || join_receiving("127.0.0.1:47131", "0123456789abcdef", Some(&s))
+            move || join_receiving(&format!("127.0.0.1:{}", port(47131)), "0123456789abcdef", Some(&s))
         });
         let h = loop {
             if let Some(r) = host.poll() {
@@ -432,13 +451,13 @@ mod module_transfer {
         let host_store = Store::new(work.join("host"));
         let added = host_store.add(&image, &data_dir).unwrap();
 
-        let mut host = Host::on_port(NetMode::TakeTurns, 47132).unwrap();
+        let mut host = Host::on_port(NetMode::TakeTurns, port(47132)).unwrap();
         host.set_module(&added.id);
         host.share_module(&host_store);
         let (s, dir) = sink("guest", data_dir.clone());
         let c = std::thread::spawn({
             let s = s.clone();
-            move || join_receiving("127.0.0.1:47132", "", Some(&s))
+            move || join_receiving(&format!("127.0.0.1:{}", port(47132)), "", Some(&s))
         });
         let h = loop {
             if let Some(r) = host.poll() {
@@ -456,7 +475,7 @@ mod module_transfer {
         assert_eq!(s.store.read_module(&added.id), host_store.read_module(&added.id));
         // now both play it: the join works
         let id = added.id.clone();
-        let c = std::thread::spawn(move || join_receiving("127.0.0.1:47132", &id, Some(&s)));
+        let c = std::thread::spawn(move || join_receiving(&format!("127.0.0.1:{}", port(47132)), &id, Some(&s)));
         let h = loop {
             if let Some(r) = host.poll() {
                 break r;

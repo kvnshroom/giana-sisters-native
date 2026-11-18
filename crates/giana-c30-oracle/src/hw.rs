@@ -28,6 +28,8 @@ pub struct SpriteDma {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WatchHit {
     pub line: u16,
+    /// cycle within the line at the start of the writing instruction
+    pub cycle: u8,
     /// address of the writing instruction
     pub pc: u16,
     pub addr: u16,
@@ -456,7 +458,7 @@ impl Bus for Hw {
             return self.io_write(a, v);
         }
         if !self.watch.is_empty() && self.watch.iter().any(|&(lo, hi)| (lo..=hi).contains(&a)) {
-            self.watch_log.push(WatchHit { line: self.line, pc: self.cur_pc, addr: a, val: v });
+            self.watch_log.push(WatchHit { line: self.line, cycle: self.cycle as u8, pc: self.cur_pc, addr: a, val: v });
         }
         self.ram[a as usize] = v;
     }

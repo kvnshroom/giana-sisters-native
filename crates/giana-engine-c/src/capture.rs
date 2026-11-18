@@ -40,7 +40,7 @@ pub const VICE_PALETTE: [u32; 16] = [
     0xffffff,
     0xaf3c58,
     0x7ef3d6,
-    u32::MAX,
+    0xaa40f5,
     0x62d532,
     0x2c3dec,
     0xffff46,

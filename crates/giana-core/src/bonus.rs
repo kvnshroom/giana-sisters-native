@@ -404,7 +404,8 @@ impl GameState {
         self.en.vic_mmc = self.saved_vic[1];
         self.en.vic_me = self.saved_vic[2];
         for i in 0..8 {
-            self.en.vic_col[i] = self.saved_colours[i];
+            // STA $D027,Y: the chip keeps the low nibble
+            self.en.vic_col[i] = self.saved_colours[i] & 0x0F;
             self.set_sptr(i, self.saved_ptrs[i]);
         }
         let _ = img(0);
@@ -413,6 +414,11 @@ impl GameState {
 
 impl GameState {
     /// The last chain of a swap that ended in the gap before the interrupts of its frame
+    /// The last chain of the swap on the way in ends after the interrupt `$1393` of its frame (`BonusTiming::swap_late`)
+    pub fn bonus_swap_ends_late(&self, p: &BonusPhase) -> bool {
+        matches!(p, BonusPhase::Swap { back: false, .. }) && self.bonus_timing_front().swap_late
+    }
+
     pub fn bonus_swap_ends_early(&self, p: &BonusPhase) -> bool {
         match p {
             BonusPhase::Swap { chain, back } => {

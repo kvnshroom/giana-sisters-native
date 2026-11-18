@@ -316,7 +316,7 @@ impl AuthenticRun {
         let running = h.screen.run_frame(HsInput { joy, keys: matrix(&keys) });
         if let Some(e) = h.screen.hs.error() {
             // the native code met something it does not know: leave the screen, keep the game going
-            eprintln!("AUTHENTIC high score screen stopped: {e}");
+            eprintln!("giana-app: AUTHENTIC high score screen stopped: {e}");
         }
         if h.screen.hs.waiting_for_save_key() {
             self.since_prompt = 0;
@@ -326,7 +326,7 @@ impl AuthenticRun {
         for prg in h.screen.hs.take_saves() {
             if let Some(path) = &self.scores {
                 if let Err(e) = crate::fsutil::write_atomic_bytes(path, &prg) {
-                    eprintln!("Could not save the high scores to {}: {e}", path.display());
+                    eprintln!("giana-app: could not save the high scores to {}: {e}", path.display());
                     self.notice = Some("COULD NOT SAVE THE HIGH SCORES".to_string());
                 }
             }

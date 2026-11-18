@@ -114,13 +114,57 @@ pub struct Presenter<'r, C> {
     /// a small blurred copy of the frame for the glow of the CRT look
     crt_glow: Option<Texture<'r>>,
     wide_scratch: Vec<u32>,
+    /// frames in a row that could not be drawn (see `show`)
+    failed: u32,
 }
+
+/// How many frames in a row may fail before the game gives up (3 seconds at 50 Hz). Switching fullscreen on Windows
+/// (Direct3D) loses the graphics device for a moment: those frames are skipped instead of ending the game.
+const MAX_FAILED_FRAMES: u32 = 150;
 
 impl<'r, C> Presenter<'r, C> {
     pub fn new(creator: &'r TextureCreator<C>) -> Result<Self, String> {
+        let frame = Self::frame_texture(creator)?;
+        Ok(Self { creator, frame, enlarged: None, crt: false, crt_mask: None, crt_glow: None, wide_scratch: Vec::new(), failed: 0 })
+    }
+
+    fn frame_texture(creator: &'r TextureCreator<C>) -> Result<Texture<'r>, String> {
         let mut frame = creator.create_texture_streaming(PixelFormatEnum::ARGB8888, WIDE_WIDTH as u32, HEIGHT as u32).map_err(|e| e.to_string())?;
         frame.set_scale_mode(ScaleMode::Nearest);
-        Ok(Self { creator, frame, enlarged: None, crt: false, crt_mask: None, crt_glow: None, wide_scratch: Vec::new() })
+        Ok(frame)
+    }
+
+    /// Make every texture again. After the renderer lost its device (SDL's `RenderDeviceReset`, seen on Windows when the
+    /// display mode changes) the old ones draw nothing.
+    pub fn reset_textures(&mut self) {
+        self.enlarged = None;
+        self.crt_mask = None;
+        self.crt_glow = None;
+        if let Ok(frame) = Self::frame_texture(self.creator) {
+            self.frame = frame;
+        }
+    }
+
+    /// Upload the picture with `upload` and draw it as `layout` says. A frame that fails is skipped and the textures are
+    /// made again; only when frames keep failing for `MAX_FAILED_FRAMES` the error is returned.
+    pub fn show<T: RenderTarget<Context = C>>(&mut self, canvas: &mut Canvas<T>, layout: Layout, upload: impl FnOnce(&mut Self) -> Result<(), String>) -> Result<(), String> {
+        match upload(self).and_then(|()| self.present(canvas, layout)) {
+            Ok(()) => {
+                self.failed = 0;
+                Ok(())
+            }
+            Err(e) => {
+                self.failed += 1;
+                if self.failed == 1 {
+                    eprintln!("giana-app: a frame could not be drawn ({e}), trying again");
+                }
+                if self.failed > MAX_FAILED_FRAMES {
+                    return Err(e);
+                }
+                self.reset_textures();
+                Ok(())
+            }
+        }
     }
 
     /// Copy the frame buffer and the strips of the widescreen view to the texture (see `wide::compose`).

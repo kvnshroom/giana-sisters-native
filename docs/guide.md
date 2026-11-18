@@ -2,6 +2,25 @@
 
 Details that the [README](../README.md) leaves out.
 
+## First start
+
+You need your own copy of the original game as a `.g64` or `.d64` disk image. Any dump of the original disk works, as
+long as the game files on it are unmodified: the game compares the program and title files on the disk (not the whole
+image file) with the original, so different dumps and both formats are fine. Cracked or modified versions are refused
+with a clear message.
+
+The game shows a page that asks for your disk image. Do one of these:
+
+- click **CHOOSE FILE...** (or press Enter) and pick the `.g64` or `.d64`,
+- drag the disk image onto the window, or onto the app icon,
+- type or paste its path, or let the game search Downloads, Documents and your home folder (only if you choose that).
+
+After that the game starts straight into the menu. From a terminal: `giana-app --import /path/to/disk.g64` (or `.d64`).
+On Linux the file dialog needs the desktop portal or zenity; without one, use drag and drop.
+
+**Windows:** the program is not signed; in SmartScreen click "More info" → "Run anyway". **macOS:** the app is not
+notarized; open it once, then System Settings → Privacy & Security → "Open Anyway" (older macOS: right-click → Open).
+
 ## Two players
 
 - **2 PLAYERS** – Giana and Maria take turns on one computer, like in the original.
@@ -25,19 +44,19 @@ OPTIONS is a hub with three pages: VIDEO, SOUND and GENERAL. Every line shows a 
 
 - **Fullscreen**, and **picture size**: *no border* (the default: sharp and as large as possible – the game 5× and the
   menus 4× on a 1920×1080 screen), *with border* (sharp, the whole C64 frame, menus 3× on 1920×1080) or *fill screen*.
-- **Widescreen: ON / VIEW ONLY / OFF** (off by default; never in the AUTHENTIC style). The picture shows 48 more pixels of
-  the level on each side (24 with *no border* / *fill screen*): 480×272 with the border, 352×200 without, both about 16:9.
-  *On* moves the edges of the game to the new picture: enemies, shots and items are created beyond the new right edge and
-  removed beyond the new edges, so nothing pops in or out in view, and they walk, fall and turn correctly in the extra
-  columns. Giana herself stays exactly as on the C64 (same walls, same scroll point, same collision), and so do the
-  levels, the bosses (they start 48 pixels further out and move by the same script), the four enemy slots and the rooms
-  (statue and bonus rooms play like on the C64 with blank margins). One thing changes: an enemy now lives 48 pixels
-  longer on each side, so in the busiest places (stages 27 to 32 of the original) a few more of the enemies that the C64
-  already loses for lack of a free sprite are lost. *View only* plays exactly like the C64: enemies still appear and
-  vanish at the old edges, so the extra parts are darker towards the outer edge and enemies fade in and out there. *Off*
-  is the 4:3 picture of the C64. Beyond the ends of a level the border colour shows. The rules of a game are fixed when
-  it starts (switching the setting during a game changes the picture only). In a network game each computer chooses its
-  own picture, but the game follows the host's setting on both computers; a game that is suspended keeps its rules.
+- **Widescreen: ON / OFF** (off by default; never in the AUTHENTIC style). *On* turns the game into a wide game: the
+  picture shows 48 more pixels of the level on each side (24 with *no border* / *fill screen*): 480×272 with the border,
+  352×200 without, both about 16:9. The game works from the new edges: enemies, shots and items are created beyond the
+  new right edge and removed beyond the new edges, so nothing pops in or out in view, and they walk, fall and turn in the
+  extra columns. Giana can walk 24 pixels into each extra area too (the part that every picture size shows), and the
+  extra areas are part of the level like the middle: she stands on their ground, hits the blocks and takes the diamonds
+  there, bridges crumble under her, and enemies there hit her and are hit by her shots. **This changes how the game plays**, and it can make a stage easier or harder: you see enemies and
+  gaps earlier, but enemies also stay around longer, so in the busiest places (stages 27 to 32 of the original) a few
+  more of them are lost for lack of a free sprite, and the bosses start 48 pixels further out. The levels, the scroll and
+  the rooms (statue and bonus rooms play like on the C64, with blank sides) stay as they are. *Off* is the 4:3 picture
+  and the game exactly as on the C64. Beyond the ends of a level the border colour shows. Switching the setting during a
+  game takes effect at once; in a network game the host's setting counts on both computers, and a saved game keeps the
+  setting it was started with. (Up to 0.5.0 there was a third setting, VIEW ONLY; it is ON now.)
 - **Screen filter: sharp or CRT TV**: CRT TV makes the picture look like on a tube television (scanlines, glow, soft pixels).
 - **50 Hz mode**: the game runs at 50 frames per second like a European C64. In fullscreen it picks a 50, 100,
   150 or 200 Hz mode if your monitor has one, so every frame is shown evenly.
@@ -108,7 +127,7 @@ turns it into a module; a module is a patch against *your own* extracted game da
 the original.
 
 - **Add one:** main menu, *ROM MODULES*, *ADD ROM MODULE...* and choose the hack's disk image or a `.grom` file (or drop
-  it on the window, open it with the game, or run `giana-app FILE`). Pick it in the list and choose *PLAY THIS*: the game
+  it on the window, open it with the game, or run `giana-app FILE`). Pick it in the list and choose *PLAY*: the game
   switches to it right away (same window, back at the title; no restart). *ORIGINAL* at the top of the list is the unchanged game. Each module has its own high scores.
 - **Which hacks work:** hacks that change levels, graphics and colours work as they are. Hacks that bring their own
   engine run on a native port of that engine:
@@ -118,8 +137,16 @@ the original.
   - hacks on the 7A3 *Construction-Set* engine (Ridley X, Power Edition 2023, Giana Sisters Junior, Super Marioahner
     Sisters, games made with the construction set) and *Giana Sisters II (Gem Nightmare)* on its older variant.
 
-  Not yet: the *30th Anniversary* preview. For an unknown hack with changed code the
-  module page warns that it may not play as intended.
+  For an unknown hack with changed code the module page warns that it may not play as intended.
+- **30th Anniversary preview** (*Giana Sisters 30th Anniversary Extended Preview*, demo 2.0, CSDb release 168405): a
+  fan sequel with its own engine, ported natively like the original. *ROM MODULES*, *ADD 30A PREVIEW...* and choose its
+  `.d64` (or add it like a module). The disk is checked and kept in the modules folder of this computer only: it is
+  never sent to another player. Works: the intro, the title (keys *1*, *2*, *H*), the stages with their enemies,
+  boss and power-ups, the treasure rooms, deaths, stage clear, the stage select and saved-game menu of the title, the
+  end of the game, game over and the high-score table with name entry (saved in `c30a_scores.bin` next to the
+  settings). *P* opens the preview's own pause menu (save and quit); Escape, F1, F10 or the controller's Back/Start open
+  the app's menu (leave the preview there). Volume, picture size, CRT, fullscreen and SMOOTH MOTION apply; widescreen
+  and network play do not.
 - **Network games:** both computers have to play the same module. If you join a host that plays a module you do not have, the host sends it (a `.grom` holds no original data; it is checked against your own game data) and your game stores it. Pick it under ROM MODULES, then join again - a host never switches your game by itself.
 - **Make one:** from a modified game image with `giana-app --make-module INPUT -o OUT.grom --name "NAME"` (optional
   `--author`, `--version`, `--description`, `--title F_2.PRG`). `INPUT` is the hack's disk image, a 64K image or RAM dump, a VICE snapshot
@@ -129,20 +156,32 @@ the original.
 ## Command line
 
 ```
-giana-app [OPTIONS] [FILE.g64 | FILE.grom]
+USAGE:
+    giana-app [OPTIONS] [FILE]
 
-    FILE.g64           on the first start, use this disk image ("Open with", or drag it onto giana-app.exe)
-    FILE.grom          add this ROM module and play it from now on
-    --module FILE|ID   play this ROM module in this run only
-    --list-modules     list the installed ROM modules and exit
+FILE is your disk image (.g64, .d64) or a ROM module (.grom). Dropping it on the program works too.
+
+FIRST START:
+    --import FILE      import the game data from your disk image and exit
+    --data DIR         keep the game data in DIR
+
+PLAY:
+    --stage N          start in stage N (1 to 33), without the menu
+    --module FILE|ID   play this ROM module this time only
+    --debug            F1 lives, F2 invulnerable, F3/F4 previous/next stage
+
+ROM MODULES (these exit when done):
+    --list-modules     list the installed modules
+    --add-module FILE  add a module or a hack's disk image
     --make-module INPUT -o OUT.grom --name NAME [--author A] [--version V] [--description D] [--title F_2.PRG]
-                       make a ROM module from a modified game and exit
-    --import FILE.g64  extract the game data from your original disk image (.g64 or .d64) and exit
-    --data DIR         use the original game data in DIR (extract into it on first start)
-    --stage N          skip the menu and start in stage N (1 to 33)
-    --debug            debug keys: F1 lives, F2 invulnerable, F3/F4 previous/next stage
-    --check-update     look for a new version now, print the result and exit
-    --no-update-check  never look for a new version (also OPTIONS > UPDATE CHECK)
+                       make a module from a modified game: a hack's disk image, a 64K image or RAM dump,
+                       a PRG of disk file 1, a VICE snapshot (.vsf) or a .bps patch. Needs your game data.
+
+UPDATES:
+    --check-update     check for updates and exit
+    --no-update-check  never check for updates (also OPTIONS > GENERAL > UPDATE CHECK)
+
+OTHER:
     -h, --help         show this text
     -V, --version      show the version
 ```

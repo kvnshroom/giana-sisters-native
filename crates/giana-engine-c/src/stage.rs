@@ -16,15 +16,16 @@
 //! The builder follows the game routine at `$8C0E`/`$8C26` step by step (including its quirks: a repeat count of 0 means
 //! 256, the write pointer is 16 bits so a shape that runs past column 255 continues in the next row).
 
+use crate::layout::PREVIEW;
 use crate::Image;
 
 /// Address of the stage pointer table and of the special room table.
-const STAGE_TABLE: u16 = 0x8FBC;
-const ROOM_TABLE: u16 = 0x8FB0;
+const STAGE_TABLE: u16 = PREVIEW.stage_table;
+const ROOM_TABLE: u16 = PREVIEW.room_table;
 /// Word pointers to the shapes the map commands use.
-const SHAPE_TABLE: u16 = 0x8757;
+const SHAPE_TABLE: u16 = PREVIEW.shape_table;
 /// First address of the level buffer, columns and rows.
-pub const LEVEL_BASE: u16 = 0x0400;
+pub const LEVEL_BASE: u16 = PREVIEW.level;
 pub const LEVEL_COLS: usize = 256;
 pub const LEVEL_ROWS: usize = 20;
 /// Tile code that a shape leaves out ("transparent").

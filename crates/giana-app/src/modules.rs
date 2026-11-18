@@ -31,12 +31,25 @@ pub struct Installed {
 }
 
 impl Installed {
+    /// The 30th Anniversary preview (engine family C): a disk of this computer, never shared.
+    pub fn is_c30(&self) -> bool {
+        self.engine.as_deref() == Some(giana_engine_c::ENGINE_C)
+    }
+
+    /// The store entry of the preview's disk at `path`.
+    fn c30(path: PathBuf) -> Installed {
+        let mut meta = Meta::new(crate::c30::NAME, crate::c30::AUTHOR, crate::c30::VERSION, crate::c30::DESCRIPTION);
+        meta.engine = Some(giana_engine_c::ENGINE_C.to_string());
+        Installed { id: crate::c30::store_id().to_string(), meta, path, code_changes: None, files: 0, engine: Some(giana_engine_c::ENGINE_C.to_string()) }
+    }
+
     /// What kind of game the module is, for lists: empty for a module of the original engine, otherwise a few words.
     pub fn kind_text(&self) -> String {
         match (self.engine.as_deref(), self.files) {
             (None, 0) => String::new(),
             (None, n) => format!("{n} files"),
             (Some(e), n) if e == giana_module::tnw::ENGINE_T => format!("TNW game, {n} stage files"),
+            (Some(e), _) if e == giana_engine_c::ENGINE_C => "30th Anniversary preview, local only".to_string(),
             (Some(_), n) => format!("construction-set game, {n} stage and monster files"),
         }
     }
@@ -126,9 +139,9 @@ fn in_words(e: &str) -> String {
 
 /// How popular the known modules are, for `SORT: POPULAR`: the number of downloads on CSDb (checked 2026-11-03). The
 /// 1989 Construction Kit hacks have no download numbers there; they come after the others in the order the scene
-/// rates them, with made-up weights below the smallest real count. The 30th Anniversary preview (4208 downloads) has no
-/// module id yet.
-const POPULARITY: [(&str, u32); 14] = [
+/// rates them, with made-up weights below the smallest real count.
+const POPULARITY: [(&str, u32); 15] = [
+    ("f811b12dc5b39394", 4208), // 30th Anniversary preview (the store id of the demo 2.0 disk)
     ("da6409a65d5d148d", 3118), // Power Edition 2023
     ("41220fc5c98bafe3", 2851), // Gem Nightmare
     ("f6d968ea0fe0aaf0", 1974), // construction-set game
@@ -190,6 +203,26 @@ impl Store {
         self.dir.join(format!("{id}.grom"))
     }
 
+    /// The copy of the 30th Anniversary preview's disk (`<id>.d64`; local only, see [`Installed::is_c30`]).
+    fn c30_file(&self) -> PathBuf {
+        self.dir.join(format!("{}.d64", crate::c30::store_id()))
+    }
+
+    /// The preview's disk in the store, if it was added.
+    pub fn c30_disk(&self) -> Option<PathBuf> {
+        Some(self.c30_file()).filter(|p| p.is_file())
+    }
+
+    /// Adds the 30th Anniversary preview: the `.d64` is checked (it unpacks and is the known demo 2.0) and copied into
+    /// the store. It is kept on this computer only.
+    pub fn add_c30(&self, path: &Path) -> Result<Installed, String> {
+        let bytes = read_input(path)?;
+        crate::c30::check_disk(&bytes)?;
+        let dest = self.c30_file();
+        write_bytes_atomic(&dest, &bytes).map_err(|e| format!("cannot store the disk image in {}: {e}", dest.display()))?;
+        Ok(Installed::c30(dest))
+    }
+
     /// The installed modules by name. Files that are not readable modules are left out. With the data folder the number
     /// of changed code ranges is filled in as well.
     pub fn list(&self, data_dir: Option<&Path>) -> Vec<Installed> {
@@ -205,6 +238,9 @@ impl Store {
             let (files, engine) = (module.files.len(), module.meta.engine.clone());
             out.push(Installed { id: id.to_ascii_lowercase(), meta: module.meta, path: path.clone(), code_changes, files, engine });
         }
+        if let Some(disk) = self.c30_disk() {
+            out.push(Installed::c30(disk));
+        }
         out.sort_by(|a, b| a.meta.name.to_ascii_uppercase().cmp(&b.meta.name.to_ascii_uppercase()).then(a.id.cmp(&b.id)));
         out
     }
@@ -212,8 +248,12 @@ impl Store {
     /// Adds a file: a `.grom`, or something to make a module from (a modified 64K image, a RAM dump, a PRG, a VICE
     /// snapshot, a `.bps`). The result is checked by applying it to the original data first.
     pub fn add(&self, path: &Path, data_dir: &Path) -> Result<Installed, String> {
-        let base = Base::read(data_dir)?;
         let bytes = read_input(path)?;
+        // the 30th Anniversary preview is not a module of the original game: its disk is kept as it is
+        if !looks_like_module(path, &bytes) && crate::c30::check_disk(&bytes).is_ok() {
+            return self.add_c30(path);
+        }
+        let base = Base::read(data_dir)?;
         let (module, applied) = if looks_like_module(path, &bytes) {
             let module = Module::read(&bytes).map_err(|e| format!("this is not a valid ROM module: {e}"))?;
             let applied = giana_module::apply(&module, &base.ingame, &base.f2)?;
@@ -257,6 +297,9 @@ impl Store {
     pub fn remove(&self, id: &str) -> Result<(), String> {
         if !is_id(id) {
             return Err("not a module id".into());
+        }
+        if id == crate::c30::store_id() && self.c30_file().is_file() {
+            return std::fs::remove_file(self.c30_file()).map_err(|e| format!("cannot remove the disk image: {e}"));
         }
         std::fs::remove_file(self.file(id)).map_err(|e| format!("cannot remove the module: {e}"))
     }
@@ -343,6 +386,8 @@ mod tests {
         assert!(POPULARITY.windows(2).all(|w| w[0].1 > w[1].1));
         assert_eq!(popularity("da6409a65d5d148d"), Some(3118));
         assert_eq!(popularity("0000000000000001"), None);
+        // the 30th Anniversary preview has the most downloads, so it leads
+        assert_eq!(POPULARITY[0].0, crate::c30::store_id());
     }
 
     #[test]

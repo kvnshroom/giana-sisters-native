@@ -1,0 +1,112 @@
+name: Bug report
+description: Something crashes, looks wrong, or plays differently from the C64 original.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please [search the open issues](https://github.com/kvnshroom/giana-sisters-native/issues) first.
+        **Do not attach your disk image or any extracted game data**, not even zipped.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in the main menu, or run `giana-app --version`.
+      placeholder: e.g. 0.5.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: System
+      options:
+        - Windows (x86_64)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (x86_64)
+        - Linux (64-bit ARM, e.g. Raspberry Pi)
+        - Built from source (say where in the description)
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: System version
+      description: Windows version, macOS version, or Linux distribution and desktop (X11 / Wayland).
+      placeholder: e.g. Windows 11 24H2, macOS 15.3, Fedora 44 KDE Wayland
+    validations:
+      required: false
+
+  - type: dropdown
+    id: disk-image
+    attributes:
+      label: Disk image
+      description: Which file did you give the game on the first start?
+      options:
+        - .g64
+        - .d64
+        - I don't know
+    validations:
+      required: true
+
+  - type: input
+    id: module
+    attributes:
+      label: ROM module
+      description: The name of the ROM module that was active, if any (main menu → ROM MODULES).
+      placeholder: none (original game)
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: settings
+    attributes:
+      label: Settings that were on
+      options:
+        - label: AUTHENTIC style
+        - label: Widescreen (ON or VIEW ONLY)
+        - label: Network game
+        - label: Two players on one computer
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Stage, position, what Giana was doing. The fewer steps, the faster it gets fixed.
+      placeholder: |
+        1. Start a new game, stage 3
+        2. Jump onto the second moving platform
+        3. ...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: original
+    attributes:
+      label: Does the C64 original do the same?
+      description: If you can, check the same spot in an emulator such as VICE.
+      options:
+        - Not checked
+        - "No, the original behaves differently"
+        - "Yes, the original does it too"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error message, screenshot or video
+      description: If the game stopped with an error, paste `last-error.txt` from the settings folder (`~/.config/giana-native/` or `%APPDATA%\giana-native\`). Drag screenshots or videos in here.
+    validations:
+      required: false

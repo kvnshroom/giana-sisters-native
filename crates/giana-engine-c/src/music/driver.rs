@@ -50,10 +50,13 @@ impl Driver {
 
     #[inline]
     fn wr(&mut self, a: u16, v: u8) {
+        // the SID's registers are I/O (the game plays music only with the I/O window in): the RAM under them keeps
+        // its bytes (sprite shapes live there)
         if (0xD400..0xD420).contains(&a) {
             self.sid[(a - 0xD400) as usize] = v;
+        } else {
+            self.mem[a as usize] = v;
         }
-        self.mem[a as usize] = v;
     }
 
     fn adc(&mut self, m: u8) {
