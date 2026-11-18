@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-18
+
+### Changed
+
+- Linux install: `.d64` disk images (most ROM hacks and the 30th Anniversary preview come as one) open with the game,
+  like `.g64` and `.grom` already did: double-click one, or *Open with*, to add it.
+- README: adding a ROM hack is one step (*ROM MODULES*, *ADD ROM MODULE...*, or drop its disk image on the window).
+
 ## [0.6.0] - 2026-11-18
 
 Network play needs the new version on both computers. Suspended games from 0.5.0 cannot be continued (the saved game
@@ -247,7 +255,8 @@ On top of the original game:
 - rebindable keyboard and game controller controls, stage select (`--stage N`)
 - prebuilt packages for Linux x86_64, Windows x86_64 and macOS (Apple Silicon and Intel)
 
-[Unreleased]: https://github.com/kvnshroom/giana-sisters-native/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/kvnshroom/giana-sisters-native/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/kvnshroom/giana-sisters-native/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/kvnshroom/giana-sisters-native/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/kvnshroom/giana-sisters-native/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/kvnshroom/giana-sisters-native/compare/v0.4.0...v0.4.1
